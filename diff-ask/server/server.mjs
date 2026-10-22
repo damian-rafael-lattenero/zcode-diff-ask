@@ -14,7 +14,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.join(HERE, "..");
@@ -322,29 +322,39 @@ async function handleRequest(msg) {
   }
 }
 
-const rl = readline.createInterface({ input: process.stdin, terminal: false });
-rl.on("line", (line) => {
-  line = line.trim();
-  if (!line) return;
-  let msg;
-  try {
-    msg = JSON.parse(line);
-  } catch {
-    return; // not JSON — ignore the line
-  }
-  if (typeof msg.method !== "string") return;
-  if (msg.id === undefined) return; // client notification — nothing to do
-  handleRequest(msg)
-    .then((result) => send({ jsonrpc: "2.0", id: msg.id, result }))
-    .catch((e) =>
-      send({
-        jsonrpc: "2.0",
-        id: msg.id,
-        error: { code: e.code ?? -32603, message: e.message ?? String(e) },
-      }),
-    );
-});
+// The ZCode plugin host (zcode.cjs __zcode-plugin-host) imports this module
+// in-process and calls `await main()` — exporting main() is REQUIRED. When
+// run directly (`node server.mjs`, e.g. tools/check-server.mjs) main() runs
+// via the argv guard below, the same pattern as the official documents server.
+export async function main() {
+  const rl = readline.createInterface({ input: process.stdin, terminal: false });
+  rl.on("line", (line) => {
+    line = line.trim();
+    if (!line) return;
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      return; // not JSON — ignore the line
+    }
+    if (typeof msg.method !== "string") return;
+    if (msg.id === undefined) return; // client notification — nothing to do
+    handleRequest(msg)
+      .then((result) => send({ jsonrpc: "2.0", id: msg.id, result }))
+      .catch((e) =>
+        send({
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: e.code ?? -32603, message: e.message ?? String(e) },
+        }),
+      );
+  });
+  log(`server up — workspace: ${WORKSPACE}`);
+}
 
 process.on("uncaughtException", (e) => log("uncaught:", e?.stack ?? e));
 process.on("unhandledRejection", (e) => log("unhandled:", e?.stack ?? e));
-log(`server up — workspace: ${WORKSPACE}`);
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  await main();
+}
