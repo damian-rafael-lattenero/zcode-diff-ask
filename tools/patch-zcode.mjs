@@ -276,16 +276,18 @@ execFileSync("npx", ["-y", "@electron/asar", "pack", WORK, ASAR, "--unpack", "**
   cwd: ROOT,
 });
 // El ejecutable spawn-helper de node-pty pierde el bit +x al extraer/empaquetar.
-const spawnHelper = path.join(APP, "Contents/Resources/app.asar.unpacked/node-pty/prebuilds/darwin-arm64/spawn-helper");
+const spawnHelper = path.join(APP, "Contents/Resources/app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper");
 if (fs.existsSync(spawnHelper)) fs.chmodSync(spawnHelper, 0o755);
 
 const hash = createHash("sha256").update(fs.readFileSync(ASAR)).digest("hex");
 log(`nuevo hash asar: ${hash}`);
-const integJson = JSON.parse(execFileSync("plutil", ["-convert", "json", "-o", "-", PLIST], { encoding: "utf8" }));
-const key = Object.keys(integJson.ElectronAsarIntegrity?.hashes ?? {})[0];
-if (!key) die("no encontré ElectronAsarIntegrity en Info.plist");
-execFileSync("plutil", ["-replace", `ElectronAsarIntegrity.hashes.${key}`, "-string", hash, PLIST]);
-log(`✓ Info.plist ElectronAsarIntegrity actualizado (${key})`);
+// macOS guarda el digest directo bajo ElectronAsarIntegrity → "Resources/app.asar"
+// (la clave contiene puntos/barras → PlistBuddy, no plutil keypath).
+const integKey = "/usr/libexec/PlistBuddy";
+execFileSync(integKey, ["-c", `Set :ElectronAsarIntegrity:Resources/app.asar:hash ${hash}`, PLIST], {
+  stdio: "inherit",
+});
+log("✓ Info.plist ElectronAsarIntegrity actualizado");
 
 log("re-firmando ad-hoc con entitlements originales (puede tardar)…");
 execFileSync("codesign", ["--force", "--deep", "--sign", "-", "--options", "runtime", "--entitlements", entPath, APP], {
