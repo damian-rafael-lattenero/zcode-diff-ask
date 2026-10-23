@@ -57,7 +57,7 @@ function runGit(args, { expectDiffExit = false } = {}) {
   });
 }
 
-function parsePorcelainZ(out) {
+export function parsePorcelainZ(out) {
   // `git status --porcelain=v1 -z`: NUL-separated records; rename/copy
   // records are followed by an extra NUL-separated origin path.
   const toks = out.split("\0").filter((t) => t !== "");
@@ -79,7 +79,7 @@ function parsePorcelainZ(out) {
   return files;
 }
 
-function splitPatch(patchText) {
+export function splitPatch(patchText) {
   // Split a multi-file unified diff into per-file chunks keyed by new path.
   if (!patchText) return new Map();
   const chunks = patchText.split(/^(?=diff --git )/m).filter((c) => c.startsWith("diff --git"));
@@ -190,6 +190,22 @@ async function buildDiff({ includePatches = true } = {}) {
       f.added = n.added;
       f.deleted = n.deleted;
       if (n.added === "-") f.binary = true;
+    } else if (!f.binary) {
+      // `git diff HEAD --numstat` no cubre untracked: contamos del contenido
+      // (o del parche --no-index) para que el resumen del panel sea real.
+      if (f.status === "?" && typeof f.after === "string" && f.after.length) {
+        f.added = String(f.after.split("\n").length - (f.after.endsWith("\n") ? 1 : 0));
+        f.deleted = "0";
+      } else if (f.patch) {
+        let a = 0;
+        let d = 0;
+        for (const l of f.patch.split("\n")) {
+          if (l.startsWith("+") && !l.startsWith("+++")) a++;
+          else if (l.startsWith("-") && !l.startsWith("---")) d++;
+        }
+        f.added = String(a);
+        f.deleted = String(d);
+      }
     }
     if (f.patch && /^Binary files /m.test(f.patch)) f.binary = true;
   }
