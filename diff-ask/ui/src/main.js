@@ -75,6 +75,7 @@ async function sendAllPending() {
   }
   pendingAsks.length = 0;
   renderPile();
+  renderAnchors();
 }
 
 function queueQuestion(path, range, quoteLines, question) {
@@ -82,10 +83,11 @@ function queueQuestion(path, range, quoteLines, question) {
     // Pregunta anclada al archivo entero: la "cita" es su mini-resumen.
     pendingAsks.push({ kind: "file", path, label: "archivo", quoteLines, question });
   } else {
-    const { lines, label } = rangeLabel(range);
-    pendingAsks.push({ kind: "line", path, start: range.start, lines, label, quoteLines, question });
+    const { side, lines, label } = rangeLabel(range);
+    pendingAsks.push({ kind: "line", path, start: range.start, lines, label, side, quoteLines, question });
   }
   renderPile();
+  renderAnchors();
 }
 
 // ------------------------------------------------------------------ shell
@@ -102,6 +104,7 @@ function ensureShell() {
     <textarea id="askbar-input" rows="2" placeholder="Preguntá algo del diff (sin ancla)…"></textarea>
     <div class="askbar-actions">
       <span class="hint">Enter agrega a la pila · Shift+Enter salto de línea · ⌘↵ envía todo</span>
+      <button class="ghost danger" id="askbar-clear" title="Borrar todas las preguntas pendientes">🗑 Borrar todo</button>
       <button class="primary" id="askbar-send" disabled>Enviar todo (⌘↵)</button>
     </div>`;
   document.body.append(pile, askbar);
@@ -119,6 +122,11 @@ function ensureShell() {
     }
   });
   send.onclick = () => sendAllPending();
+  askbar.querySelector("#askbar-clear").onclick = () => {
+    pendingAsks.length = 0;
+    renderPile();
+    renderAnchors();
+  };
 }
 
 // La pila: cada pendiente es una card editable in-place (click y escribí).
@@ -247,10 +255,6 @@ function closeComposer(entry) {
 // pierre) y la cita VERBATIM: lo que el usuario subrayó, no la línea entera.
 let selChip = null;
 
-function hideSelChip() {
-  if (selChip) { selChip.remove(); selChip = null; }
-}
-
 // El <diffs-container> (light DOM nuestro) que contiene al nodo, cruzando
 // la frontera del shadow root — null si la selección no es de un diff.
 function containerOf(node) {
@@ -298,24 +302,51 @@ function selectionAsk() {
   const text = sel.toString();
   if (!text.trim()) return null;
   for (const e of rendered.values()) {
-    if (e.body.contains(host))
-      return { entry: e, path: e.path, range: askRange, text, rect: range.getBoundingClientRect() };
+    if (!e.body.contains(host)) continue;
+    const endRow = selRows.find((r) => r.contains(range.endContainer)) ?? selRows[selRows.length - 1];
+    return { entry: e, path: e.path, range: askRange, text, rows: selRows, endRow };
   }
   return null;
 }
 
-function showSelChip(info) {
-  hideSelChip();
-  selChip = document.createElement("button");
-  selChip.className = "sel-chip";
-  selChip.textContent = "＋ Preguntar sobre la selección";
-  selChip.onclick = () => {
-    hideSelChip();
+function clearSelectionUI() {
+  document.querySelectorAll(".mini-plus, .big-plus").forEach((n) => n.remove());
+}
+
+// Mientras seleccionás: un ＋ chiquito al costado de CADA línea cubierta;
+// al terminar, UN ＋ grande al final de la selección (el que se clickea).
+function updateSelectionUI(info) {
+  clearSelectionUI();
+  const bodyRect = info.entry.body.getBoundingClientRect();
+  let layer = info.entry.body.querySelector(".sel-layer");
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.className = "sel-layer";
+    info.entry.body.appendChild(layer);
+  }
+  layer.textContent = "";
+  for (const row of info.rows) {
+    if (row === info.endRow) continue;
+    const mini = document.createElement("div");
+    mini.className = "mini-plus";
+    mini.textContent = "＋";
+    layer.appendChild(mini);
+    const r = row.getBoundingClientRect();
+    mini.style.top = `${r.top - bodyRect.top + (r.height - mini.offsetHeight) / 2}px`;
+  }
+  const big = document.createElement("button");
+  big.className = "big-plus";
+  big.textContent = "＋";
+  const { lines } = rangeLabel(info.range);
+  big.title = `Preguntar sobre ${info.path}:${lines}`;
+  big.onclick = () => {
+    clearSelectionUI();
+    document.getSelection()?.removeAllRanges();
     openComposer(info.entry, info.path, info.range, { verbatim: info.text });
   };
-  document.body.appendChild(selChip);
-  selChip.style.left = `${Math.max(8, Math.min(info.rect.left, window.innerWidth - 290))}px`;
-  selChip.style.top = `${Math.max(8, info.rect.top - 38)}px`;
+  layer.appendChild(big);
+  const r = info.endRow.getBoundingClientRect();
+  big.style.top = `${r.top - bodyRect.top + (r.height - big.offsetHeight) / 2}px`;
 }
 
 let selTimer = null;
@@ -323,9 +354,126 @@ document.addEventListener("selectionchange", () => {
   clearTimeout(selTimer);
   selTimer = setTimeout(() => {
     const info = selectionAsk();
-    if (info) showSelChip(info);
-    else hideSelChip();
+    if (info) updateSelectionUI(info);
+    else clearSelectionUI();
   }, 150);
+});
+
+// ------------------------------------------------- anclajes inline (0.2.1)
+// Cada pregunta ANCLADA vive colapsada sobre su línea: un 💬 en el borde
+// derecho de la fila (chip en el file-head para archivo/línea oculta).
+// Click → editor in-place (editar / borrar). Free questions van a la pila.
+
+function ensureLayer(entry) {
+  let layer = entry.body.querySelector(".anchor-layer");
+  if (!layer) {
+    entry.body.classList.add("has-anchors");
+    layer = document.createElement("div");
+    layer.className = "anchor-layer";
+    entry.body.appendChild(layer);
+  }
+  layer.textContent = "";
+  return layer;
+}
+
+// La fila del shadow DOM que muestra esa línea (según el lado del ancla).
+function findRow(entry, start, side) {
+  const host = entry.body.querySelector("diffs-container");
+  const content = host?.shadowRoot?.querySelector("[data-content]");
+  if (!content) return null;
+  const want = String(start);
+  for (const r of content.children) {
+    if (!r.hasAttribute("data-line") || r.dataset.line !== want) continue;
+    const t = r.dataset.lineType;
+    if (side === "deletions" ? t === "change-deletion" : t !== "change-deletion") return r;
+  }
+  return null;
+}
+
+function addHeadChip(entry, i, note) {
+  if (entry.section.querySelector(".head-marker")) return;
+  const chip = document.createElement("button");
+  chip.className = "head-marker";
+  chip.textContent = "💬";
+  const a = pendingAsks[i];
+  chip.title = note ? `${a.path}:${a.lines} (línea no visible — expandila)` : `${a.path} · archivo`;
+  chip.onclick = () => openInlineEditor(i, chip);
+  entry.section.querySelector(".file-head .fplus").after(chip);
+}
+
+function renderAnchors() {
+  document.querySelectorAll(".inline-editor").forEach((n) => n.remove());
+  document.querySelectorAll(".head-marker").forEach((n) => n.remove());
+  document.querySelectorAll(".sel-layer").forEach((n) => n.remove());
+  for (const entry of rendered.values()) ensureLayer(entry);
+  pendingAsks.forEach((a, i) => {
+    if (a.kind === "free") return;
+    const entry = rendered.get(a.path);
+    if (!entry) return;
+    if (a.kind === "file") { addHeadChip(entry, i); return; }
+    const row = findRow(entry, a.start, a.side);
+    if (!row || entry.section.classList.contains("collapsed")) {
+      addHeadChip(entry, i, !row);
+      return;
+    }
+    const bodyRect = entry.body.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    const mk = document.createElement("button");
+    mk.className = "line-marker";
+    mk.textContent = "💬";
+    mk.title = `${a.path}:${a.lines} — ${a.question.slice(0, 100)}`;
+    mk.onclick = () => openInlineEditor(i, mk);
+    const layer = entry.body.querySelector(".anchor-layer");
+    layer.appendChild(mk);
+    mk.style.top = `${r.top - bodyRect.top + (r.height - mk.offsetHeight) / 2}px`;
+  });
+}
+
+// Editor in-place del anclaje: editar la pregunta o borrarla, ahí mismo.
+function openInlineEditor(i, at) {
+  document.querySelectorAll(".inline-editor").forEach((n) => n.remove());
+  const a = pendingAsks[i];
+  if (!a) return;
+  const card = document.createElement("div");
+  card.className = "inline-editor";
+  card.innerHTML = `
+    <div class="ie-head"><span class="anchor"></span><button class="ghost danger ie-del" title="Borrar esta pregunta">🗑 Borrar</button></div>
+    <textarea rows="2"></textarea>
+    <div class="ie-actions"><span class="hint">Enter guarda · Shift+Enter salto de línea</span><button class="primary ie-ok">Listo</button></div>`;
+  card.querySelector(".anchor").textContent =
+    a.kind === "file" ? `${a.path} · archivo` : `${a.path}:${a.lines}`;
+  const ta = card.querySelector("textarea");
+  ta.value = a.question;
+  ta.addEventListener("input", () => { a.question = ta.value; });
+  const close = () => { card.remove(); renderAnchors(); };
+  card.querySelector(".ie-del").onclick = () => {
+    pendingAsks.splice(i, 1);
+    close();
+    renderPile();
+  };
+  card.querySelector(".ie-ok").onclick = close;
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); close(); }
+  });
+  document.body.appendChild(card);
+  const r = at.getBoundingClientRect();
+  card.style.left = `${Math.max(8, Math.min(r.left - 300, window.innerWidth - 340))}px`;
+  card.style.top = `${Math.min(r.bottom + 6, window.innerHeight - 150)}px`;
+  ta.focus();
+}
+
+// Los separadores expandidos / colapsos desplazan filas: reposicionar.
+document.addEventListener("click", (e) => {
+  const body = e.target.closest?.(".file-body");
+  if (body) setTimeout(renderAnchors, 250);
+});
+document.addEventListener("click", (e) => {
+  const head = e.target.closest?.(".file-head");
+  if (head) setTimeout(renderAnchors, 30);
+});
+// El editor flotante se cierra al scrollear (queda lejos de su línea).
+document.getElementById("root").addEventListener("scroll", () => {
+  document.querySelectorAll(".inline-editor").forEach((n) => n.remove());
 });
 
 // --------------------------------------------------------------- render
@@ -568,6 +716,7 @@ async function refresh(explicit = false) {
     document.documentElement.dataset.repo = diffData?.error ? "no" : "yes";
     renderAll();
     renderPile();
+    renderAnchors();
   } catch (e) {
     const err = document.createElement("div");
     err.className = "state error";
