@@ -53,6 +53,34 @@ export function rangeLabel(range) {
   return { side, lines, label: `líneas ${lines} · ${side === "deletions" ? "deletions" : "additions"}` };
 }
 
+// Índices de fila seleccionados (SET de cajitas) → corridas contiguas
+// [{first,last}] ordenadas — la unidad de pintado y de cita del multi-select.
+export function compressRuns(indices) {
+  const sorted = [...new Set(indices)].sort((a, b) => a - b);
+  const runs = [];
+  for (const i of sorted) {
+    const last = runs[runs.length - 1];
+    if (last && i === last.last + 1) last.last = i;
+    else runs.push({ first: i, last: i });
+  }
+  return runs;
+}
+
+// Etiqueta de líneas multi-rango: "3-5, 9, 12-14" (para el ancla y el título).
+export function linesLabel(ranges) {
+  return ranges
+    .map((r) => (r.end > r.start ? `${r.start}-${r.end}` : `${r.start}`))
+    .join(", ");
+}
+
+// Cita de varias corridas: cada rango por su lado, concatenadas en orden
+// (los rangos son disjuntos y crecientes — sin duplicados ni saltos de ida).
+export function quoteForRanges(entry, ranges, side) {
+  const out = [];
+  for (const r of ranges) out.push(...quoteFor(entry, { ...r, side }, null));
+  return out;
+}
+
 // Cita las líneas del rango: desde el contenido completo si lo hay (render
 // desde before/after — números de línea directos), sino desde el parche.
 // `verbatim` (selección de texto) gana siempre: es lo que el usuario vio.
