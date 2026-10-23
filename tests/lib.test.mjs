@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage } from "../diff-ask/ui/src/lib.js";
+import {
+  esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
+  compressRuns, linesLabel, quoteForRanges,
+} from "../diff-ask/ui/src/lib.js";
 
 const PATCH = [
   "diff --git a/x.py b/x.py",
@@ -86,4 +89,51 @@ test("buildAskMessage: solo libres, plural/singular", () => {
 
 test("esc: caracteres HTML", () => {
   assert.equal(esc(`<a href="x">&'`), "&lt;a href=&quot;x&quot;&gt;&amp;&#39;");
+});
+
+test("compressRuns: set de cajitas → corridas contiguas, dedup y orden", () => {
+  assert.deepEqual(compressRuns([3, 4, 5, 9, 12, 13, 1]), [
+    { first: 1, last: 1 },
+    { first: 3, last: 5 },
+    { first: 9, last: 9 },
+    { first: 12, last: 13 },
+  ]);
+  assert.deepEqual(compressRuns([]), []);
+  assert.deepEqual(compressRuns([7, 7]), [{ first: 7, last: 7 }]);
+});
+
+test("linesLabel: multi-rango con singletones", () => {
+  assert.equal(
+    linesLabel([{ start: 3, end: 5 }, { start: 9, end: 9 }, { start: 12, end: 14 }]),
+    "3-5, 9, 12-14",
+  );
+  assert.equal(linesLabel([{ start: 7, end: 7 }]), "7");
+});
+
+test("quoteForRanges: concatena por rango en orden (contenido y fallback parche)", () => {
+  const entry = { afterLines: ["l1", "l2", "l3", "l4", "l5"], patch: PATCH };
+  assert.deepEqual(
+    quoteForRanges(entry, [{ start: 1, end: 2 }, { start: 5, end: 5 }], "additions"),
+    ["l1", "l2", "l5"],
+  );
+  assert.deepEqual(
+    quoteForRanges({ patch: PATCH }, [{ start: 3, end: 4 }], "additions"),
+    ["ctx3", "new4"],
+  );
+  assert.deepEqual(
+    quoteForRanges({ patch: PATCH }, [{ start: 3, end: 3 }, { start: 4, end: 4 }], "deletions"),
+    ["ctx3", "old4"],
+  );
+});
+
+test("buildAskMessage: pregunta multi-rango cita las líneas de todas las corridas", () => {
+  const { text } = buildAskMessage([
+    {
+      kind: "line", path: "a.py", start: 3,
+      lines: "3-5, 9", label: "líneas 3-5, 9 · additions",
+      quoteLines: ["x3", "x4", "x5", "x9"], question: "por qué estas?",
+    },
+  ]);
+  assert.ok(text.includes("- `a.py:3` (Diff Ask · diff, líneas 3-5, 9 · additions):"));
+  assert.ok(text.includes("> x3\n> x4\n> x5\n> x9"));
 });

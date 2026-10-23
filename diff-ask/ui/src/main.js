@@ -17,7 +17,10 @@
 import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
 import { ResourceUpdatedNotificationSchema } from "@modelcontextprotocol/core";
 import { FileDiff, parsePatchFiles, isHighlighterLoaded, isHighlighterLoading, isHighlighterNull } from "@pierre/diffs";
-import { esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage } from "./lib.js";
+import {
+  esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
+  compressRuns, linesLabel, quoteForRanges,
+} from "./lib.js";
 
 const DIFF_URI = "diff://workspace";
 const app = new App({ name: "diff-ask", version: "0.1.0" }, {});
@@ -74,39 +77,48 @@ function applyQuestionMarks() {
       r.hasAttribute("data-line-index"),
     );
     for (const a of pendingAsks) {
-      // el span/los números son de ESTE archivo — en los demás no aplica
+      // el span/los spans del GESTO mandan: se pintan exactamente las filas
+      // cubiertas (multi-select = varias corridas). Fallback (asks sin span):
+      // anclas por número DEL LADO (sin cruces).
       if (a.kind !== "line" || a.path !== entryPath) continue;
       const side = a.side ?? "additions";
       const end = a.end ?? a.start;
-      // El span del GESTO manda: se pintan exactamente las filas cubiertas.
-      // Fallback (asks sin span): anclas por número DEL LADO (sin cruces).
-      let first = a.span?.first ?? -1;
-      let last = a.span?.last ?? -1;
-      if (first === -1 || last === -1) {
-        crows.forEach((r, i) => {
-          const t = r.dataset.lineType;
-          const num =
-            t === "context" && side === "deletions"
-              ? parseInt(r.dataset.altLine ?? r.dataset.line, 10)
-              : parseInt(r.dataset.line, 10);
-          const belongs = t === "change-deletion" ? side === "deletions" : side === "additions";
-          if (belongs && num >= a.start && num <= end) {
-            if (first === -1) first = i;
-            last = i;
-          }
-        });
+      let pairs = a.spans?.map((s) => [s.first, s.last]);
+      if (!pairs && a.span) pairs = [{ first: a.span.first, last: a.span.last }].map((s) => [s.first, s.last]);
+      if (!pairs) {
+        // fallback numérico (multi-rango si lo hay, sino start..end)
+        const numRanges = a.ranges ?? [{ start: a.start, end }];
+        pairs = numRanges.map((rg) => {
+          let first = -1;
+          let last = -1;
+          crows.forEach((r, i) => {
+            const t = r.dataset.lineType;
+            const num =
+              t === "context" && side === "deletions"
+                ? parseInt(r.dataset.altLine ?? r.dataset.line, 10)
+                : parseInt(r.dataset.line, 10);
+            const belongs = t === "change-deletion" ? side === "deletions" : side === "additions";
+            if (belongs && num >= rg.start && num <= rg.end) {
+              if (first === -1) first = i;
+              last = i;
+            }
+          });
+          return first === -1 ? null : [first, last];
+        }).filter(Boolean);
       }
-      if (first === -1 || last === -1) continue;
-      for (let i = first; i <= last; i++) {
-        const r = crows[i];
-        const t = r.dataset.lineType;
-        const qa = t === "change-deletion" ? "del" : t === "change-addition" ? "add" : "ctx";
-        r.setAttribute("data-qa", qa);
-        entry.qaRows.push(r);
-        const g = grows.find((x) => x.getAttribute("data-line-index") === r.getAttribute("data-line-index"));
-        if (g) {
-          g.setAttribute("data-qa", qa);
-          entry.qaRows.push(g);
+      for (const [first, last] of pairs) {
+        for (let i = first; i <= last; i++) {
+          const r = crows[i];
+          if (!r || entry.qaRows.includes(r)) continue;
+          const t = r.dataset.lineType;
+          const qa = t === "change-deletion" ? "del" : t === "change-addition" ? "add" : "ctx";
+          r.setAttribute("data-qa", qa);
+          entry.qaRows.push(r);
+          const g = grows.find((x) => x.getAttribute("data-line-index") === r.getAttribute("data-line-index"));
+          if (g) {
+            g.setAttribute("data-qa", qa);
+            entry.qaRows.push(g);
+          }
         }
       }
     }
@@ -389,10 +401,11 @@ function closeComposer(entry) {
 }
 
 // ------------------------------------------------------------ selección
-// Seleccionar texto dentro de un diff renderizado → chip flotante "＋"
-// que abre el composer con el rango resuelto (data-line del shadow DOM de
-// pierre) y la cita VERBATIM: lo que el usuario subrayó, no la línea entera.
-let selChip = null;
+// Un SOLO modelo de selección: las CAJITAS del riel (0.2.15). Click = sumar o
+// quitar una línea; click y arrastre = pintar/despintar en modo pintura; se
+// pueden marcar varias corridas salteadas; el ＋ grande vive debajo de la
+// ÚLTIMA cajita pintada y abre el composer de toda la selección. La selección
+// de texto del mouse alimenta el mismo modelo (con cita VERBATIM).
 
 // El <diffs-container> (light DOM nuestro) que contiene al nodo, cruzando
 // la frontera del shadow root — null si la selección no es de un diff.
@@ -415,121 +428,163 @@ function selectionAsk() {
   if (!content) return null;
   const rows = [...content.children].filter((r) => r.hasAttribute("data-line"));
   const selRows = rows.filter((r) => range.intersectsNode(r));
-  if (!selRows.length) return null;
-  // data-line = número NUEVO (o viejo en change-deletion); data-alt-line =
-  // número viejo en contexto. Si la selección toca algo no-borrado anclamos
-  // por el lado nuevo; si es todo borrado, por el viejo.
-  const news = [];
-  const olds = [];
-  for (const r of selRows) {
-    const t = r.dataset.lineType;
-    const n = parseInt(r.dataset.line, 10);
-    if (t === "change-deletion") olds.push(n);
-    else if (t === "change-addition") news.push(n);
-    else {
-      news.push(n);
-      olds.push(parseInt(r.dataset.altLine ?? n, 10));
-    }
-  }
-  const byNew = news.length > 0;
-  const nums = byNew ? news : olds;
-  const askRange = {
-    start: Math.min(...nums),
-    end: Math.max(...nums),
-    side: byNew ? "additions" : "deletions",
-  };
   const text = sel.toString();
-  if (!text.trim()) return null;
+  if (!selRows.length || !text.trim()) return null;
   for (const e of rendered.values()) {
-    if (!e.body.contains(host)) continue;
-    const endRow = selRows.find((r) => r.contains(range.endContainer)) ?? selRows[selRows.length - 1];
-    const crows = contentRowsOf(e);
-    return {
-      entry: e, path: e.path, range: askRange, text, rows: selRows, endRow,
-      span: { first: crows.indexOf(selRows[0]), last: crows.indexOf(selRows[selRows.length - 1]) },
-    };
+    if (e.body.contains(host)) return { entry: e, rows: selRows, text };
   }
   return null;
 }
 
+// boxSel: Map<path, Set<key>> — key "A:<n>" (addiciones/contexto, número
+// nuevo) | "D:<n>" (borrados, número viejo). entry.selVerbatim: cita textual
+// mientras la selección vino del mouse de texto (una cajita la invalida).
+const boxSel = new Map();
 
-
-function clearSelectionUI() {
-  document.querySelectorAll(".mini-plus, .big-plus, .drag-stripe").forEach((n) => n.remove());
+function keyOfRow(row) {
+  return row.dataset.lineType === "change-deletion"
+    ? `D:${row.dataset.line}`
+    : `A:${row.dataset.line}`;
 }
 
-function ensureSelLayer(entry) {
+function selKeysOf(entry) {
+  return boxSel.get(entry.path) ?? new Set();
+}
+
+function setBoxSel(entry, keys, verbatim = null) {
+  if (keys.size) boxSel.set(entry.path, keys);
+  else boxSel.delete(entry.path);
+  entry.selVerbatim = verbatim;
+  renderSelUI(entry);
+}
+
+function selectedRowsOf(entry) {
+  const keys = selKeysOf(entry);
+  if (!keys.size) return [];
+  return contentRowsOf(entry).filter((r) => keys.has(keyOfRow(r)));
+}
+
+// Pinta el riel de un archivo: cajitas (una por fila), franja tintada por
+// fila seleccionada y el ＋ grande debajo de la última seleccionada.
+function renderSelUI(entry) {
   let layer = entry.body.querySelector(".sel-layer");
   if (!layer) {
     layer = document.createElement("div");
     layer.className = "sel-layer";
     entry.body.appendChild(layer);
   }
-  return layer;
-}
-
-// Painter unificado: franja pintada por cada línea cubierta + ＋ chiquitos
-// por fila + (con info) el ＋ grande al final, listo para abrir el composer.
-function paintSelectionUI(entry, rows, endRow, info) {
-  clearSelectionUI();
+  layer.textContent = "";
+  if (entry.section.classList.contains("collapsed")) return;
+  const rows = contentRowsOf(entry);
   if (!rows.length) return;
-  const layer = ensureSelLayer(entry);
+  const keys = selKeysOf(entry);
   const bodyRect = entry.body.getBoundingClientRect();
-  const gx = 2; // riel izquierdo: sobre los números, NUNCA sobre el texto
+  let last = null;
+  const frag = document.createDocumentFragment();
   for (const row of rows) {
-    const stripe = document.createElement("div");
-    stripe.className = "drag-stripe";
-    layer.appendChild(stripe);
+    const k = keyOfRow(row);
+    const on = keys.has(k);
     const r = row.getBoundingClientRect();
-    stripe.style.top = `${r.top - bodyRect.top}px`;
-    stripe.style.height = `${r.height}px`;
+    if (on) {
+      const stripe = document.createElement("div");
+      stripe.className = "drag-stripe";
+      stripe.dataset.k = k;
+      stripe.style.top = `${r.top - bodyRect.top}px`;
+      stripe.style.height = `${r.height}px`;
+      frag.appendChild(stripe);
+      last = row;
+    }
+    const box = document.createElement("button");
+    box.type = "button";
+    box.className = `sel-box${on ? " on" : ""}`;
+    box.dataset.k = k;
+    box.title = on ? "Quitar de la selección" : "Sumar a la selección";
+    box.style.top = `${r.top - bodyRect.top + (r.height - 13) / 2}px`;
+    frag.appendChild(box);
   }
-  for (const row of rows) {
-    if (row === endRow) continue;
-    const mini = document.createElement("div");
-    mini.className = "mini-plus";
-    mini.textContent = "＋";
-    layer.appendChild(mini);
-    const r = row.getBoundingClientRect();
-    mini.style.top = `${r.top - bodyRect.top + (r.height - mini.offsetHeight) / 2}px`;
-    mini.style.left = `${gx}px`;
-  }
-  if (info) {
-    const big = document.createElement("button");
-    big.className = "big-plus";
-    big.textContent = "＋";
-    big.style.left = "24px"; // más adentro que los minis (2px), todo < números
-    const { lines } = rangeLabel(info.range);
-    big.title = `Preguntar sobre ${info.path}:${lines}`;
-    big.onclick = () => {
-      clearSelectionUI();
-      openComposer(info.entry, info.path, info.range, { verbatim: info.text ?? null, row: endRow, span: info.span });
-    };
-    layer.appendChild(big);
-    const r = endRow.getBoundingClientRect();
-    big.style.top = `${r.top - bodyRect.top + (r.height - big.offsetHeight) / 2}px`;
-    big.style.left = `${gx}px`;
-  }
+  layer.appendChild(frag);
+  if (!last) return;
+  const big = document.createElement("button");
+  big.className = "big-plus";
+  big.textContent = "＋";
+  big.title = "Preguntar sobre la selección";
+  const br = last.getBoundingClientRect();
+  big.style.top = `${br.bottom - bodyRect.top + 3}px`;
+  big.style.left = "22px"; // misma columna que las cajitas
+  big.onclick = () => openComposerMulti(entry);
+  layer.appendChild(big);
 }
 
-// info = {entry, path, range, rows, endRow, text?} → franjas + minis + ＋ grande
-function updateSelectionUI(info) {
-  paintSelectionUI(info.entry, info.rows, info.endRow, info);
+// Cambio in-place del estado de una cajita (sin rebuild: el drag va fluido).
+function applyBoxState(entry, key, on, row) {
+  const keys = selKeysOf(entry);
+  if (on) keys.add(key);
+  else keys.delete(key);
+  if (keys.size) boxSel.set(entry.path, keys);
+  else boxSel.delete(entry.path);
+  entry.selVerbatim = null; // tocó una cajita: la cita sale de las líneas
+  const layer = entry.body.querySelector(".sel-layer");
+  const box = layer?.querySelector(`.sel-box[data-k="${CSS.escape(key)}"]`);
+  if (box) {
+    box.classList.toggle("on", on);
+    box.title = on ? "Quitar de la selección" : "Sumar a la selección";
+  }
+  const stripe = layer?.querySelector(`.drag-stripe[data-k="${CSS.escape(key)}"]`);
+  if (on && row && !stripe) {
+    const st = document.createElement("div");
+    st.className = "drag-stripe";
+    st.dataset.k = key;
+    const r = row.getBoundingClientRect();
+    const bodyRect = entry.body.getBoundingClientRect();
+    st.style.top = `${r.top - bodyRect.top}px`;
+    st.style.height = `${r.height}px`;
+    layer.appendChild(st);
+  } else if (!on && stripe) stripe.remove();
 }
 
-// Dueño de la UI de selección: "drag" (números) o "text". El path de texto
-// no puede borrar la UI del drag: el click que colapsa una selección vieja
-// no se lleva puesto el ＋ que estás por tocar.
-let selOwner = "drag";
+// Gestura de las cajitas: click = toggle; arrastre = pintar (o despintar,
+// según el estado ORIGINAL de la cajita donde arrancó) todo lo traversado.
+let boxDrag = null;
+document.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  const box = e.target.closest?.(".sel-box");
+  if (!box) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const body = box.closest(".file-body");
+  let entry = null;
+  for (const en of rendered.values()) if (en.body === body) { entry = en; break; }
+  if (!entry) return;
+  hideHoverPlus();
+  const mode = !box.classList.contains("on");
+  boxDrag = { entry, mode, x0: e.clientX, y0: e.clientY, moved: false };
+  applyBoxState(entry, box.dataset.k, mode);
+}, true);
+
+document.addEventListener("pointermove", (e) => {
+  if (!boxDrag) return;
+  if (Math.hypot(e.clientX - boxDrag.x0, e.clientY - boxDrag.y0) > 4) boxDrag.moved = true;
+  if (!boxDrag.moved) return;
+  const row = rowFromPoint(e.clientX, e.clientY, boxDrag.entry);
+  if (row) applyBoxState(boxDrag.entry, keyOfRow(row), boxDrag.mode, row);
+});
+
+function endBoxDrag() {
+  if (!boxDrag) return;
+  const { entry } = boxDrag;
+  boxDrag = null;
+  renderSelUI(entry); // franjas + ＋ grande recalculados al terminar el gesto
+}
+document.addEventListener("pointerup", endBoxDrag, true);
+document.addEventListener("pointercancel", endBoxDrag, true);
+
+// Selección de texto del mouse → el MISMO modelo de cajitas (con verbatim).
 let selTimer = null;
 document.addEventListener("selectionchange", () => {
   clearTimeout(selTimer);
   selTimer = setTimeout(() => {
     const info = selectionAsk();
-    if (info) {
-      selOwner = "text";
-      updateSelectionUI(info);
-    } else if (selOwner !== "drag") clearSelectionUI();
+    if (info) setBoxSel(info.entry, new Set(info.rows.map(keyOfRow)), info.text);
   }, 150);
 });
 
@@ -573,7 +628,7 @@ function showHoverPlus(entry, row) {
 }
 
 document.addEventListener("pointermove", (e) => {
-  if (dragSel) { hideHoverPlus(); return; }
+  if (boxDrag) { hideHoverPlus(); return; }
   if (e.target.closest?.(".hover-plus")) return; // parado sobre el ＋: queda
   const body = e.target.closest?.(".file-body");
   if (!body) { hideHoverPlus(); return; }
@@ -586,46 +641,29 @@ document.addEventListener("pointermove", (e) => {
 });
 document.documentElement.addEventListener("pointerleave", hideHoverPlus);
 
-// --------------------------------------------- drag propio del gutter
-// La selección de líneas de pierre no arranca en el webview de la app, así
-// que el drag lo implementamos NOSOTROS sobre la columna de números: el
-// comportamiento es idéntico en la app y en Chrome. Click en un número =
-// seleccionar esa línea; arrastrar = rango; el ＋ grande abre el composer.
-let dragSel = null;
-
+// ------------------------------------------------- filas del shadow DOM
+// El acceso a las filas de pierre (shadow DOM) para hover-＋ y cajitas:
+// document.elementFromPoint NO atraviesa el shadow (devuelve el host), hay
+// que preguntarle directo al shadowRoot del diffs-container.
 function contentRowsOf(entry) {
   const content = entry.body.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-content]");
   return content ? [...content.children].filter((r) => r.hasAttribute("data-line")) : [];
 }
 
-// Fila bajo un punto: si cae en el contenido, su fila; si cae en el gutter,
-// la fila con el mismo data-line-index (las celdas de números comparten el
-// índice con las filas de contenido).
+// Fila bajo un punto: GEOMETRÍA sobre los rects de las filas de contenido.
+// El hit-test clásico no sirve acá: nuestros overlays (cajitas, franjas,
+// hover-＋) tapan el punto y elementFromPoint los devuelve a ellos — medir
+// rects es inmune a lo que esté encima (y no depende del shadow DOM).
 function rowFromPoint(x, y, entry) {
-  // document.elementFromPoint NO atraviesa el shadow DOM (devuelve el host):
-  // preguntarle directo al shadowRoot del container sí llega a la celda/fila.
-  const host = entry.body.querySelector("diffs-container");
-  const el = host?.shadowRoot?.elementFromPoint?.(x, y) ?? document.elementFromPoint(x, y);
-  if (!el) return null;
-  let n = el;
-  let idx = null;
-  while (n && n !== document.body) {
-    if (n.hasAttribute?.("data-line")) return n;
-    if (idx === null && n.hasAttribute?.("data-line-index")) idx = n.getAttribute("data-line-index");
-    n = n.parentElement;
+  for (const r of contentRowsOf(entry)) {
+    const rect = r.getBoundingClientRect();
+    if (y >= rect.top && y <= rect.bottom) return r;
   }
-  if (idx === null) return null;
-  return contentRowsOf(entry).find((r) => r.getAttribute("data-line-index") === idx) ?? null;
+  return null;
 }
 
-function rowsBetween(entry, a, b) {
-  const rows = contentRowsOf(entry);
-  const i = rows.indexOf(a);
-  const j = rows.indexOf(b);
-  if (i === -1 || j === -1) return [];
-  return i <= j ? rows.slice(i, j + 1) : rows.slice(j, i + 1);
-}
-
+// Lado del ancla de un conjunto de filas: si toca algo no-borrado es el
+// lado nuevo; si es todo borrado, el viejo (mismo criterio que el resto).
 function rangeFromRows(rows) {
   const news = [];
   const olds = [];
@@ -642,58 +680,69 @@ function rangeFromRows(rows) {
   return { start: Math.min(...nums), end: Math.max(...nums), side: byNew ? "additions" : "deletions" };
 }
 
-document.addEventListener("pointerdown", (e) => {
-  if (e.button !== 0) return;
-  const body = e.target.closest?.(".file-body");
-  if (!body) return;
-  // no intervenir sobre nuestra propia UI
-  if (e.target.closest?.(".inline-editor, .line-marker, .head-marker, .composer, .big-plus")) return;
-  let entry = null;
-  for (const en of rendered.values()) if (en.body === body) { entry = en; break; }
-  if (!entry) return;
-  const g = entry.body.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-gutter]");
-  if (!g) return;
-  const gr = g.getBoundingClientRect();
-  if (e.clientX < gr.left - 4 || e.clientX > gr.right + 14) return; // sólo la zona de números
-  const row = rowFromPoint(e.clientX, e.clientY, entry);
-  if (!row) return;
-  hideHoverPlus();
-  e.stopPropagation(); // la sesión es nuestra: la lib no arranca la suya
-  e.preventDefault(); // sin selección de texto nativa colgante tras el drag
-  dragSel = { entry, startRow: row, lastRow: row, moved: false, x0: e.clientX, y0: e.clientY };
-}, true);
-
-document.addEventListener("pointermove", (e) => {
-  if (!dragSel) return;
-  if (Math.hypot(e.clientX - dragSel.x0, e.clientY - dragSel.y0) > 5) dragSel.moved = true;
-  const row = rowFromPoint(e.clientX, e.clientY, dragSel.entry);
-  if (!row) return;
-  dragSel.lastRow = row;
-  const rows = rowsBetween(dragSel.entry, dragSel.startRow, row);
-  if (rows.length) paintSelectionUI(dragSel.entry, rows, row, null); // pintado en vivo, sin ＋ aún
-});
-
-function endDragSel() {
-  if (!dragSel) return;
-  selOwner = "drag";
-  const d = dragSel;
-  dragSel = null;
-  const rows = rowsBetween(d.entry, d.startRow, d.lastRow);
-  const range = rangeFromRows(rows);
-  if (!range || !d.moved) {
-    clearSelectionUI(); // click sin arrastre: nada pegado (hover-＋ = una línea)
-    return;
+// Composer de la SELECCIÓN multi: filas seleccionadas → corridas → rangos
+// numéricos por lado; el ＋ grande (debajo de la última cajita) abre esto.
+function openComposerMulti(entry) {
+  const rows = selectedRowsOf(entry);
+  if (!rows.length) return;
+  const crows = contentRowsOf(entry);
+  const runs = compressRuns(rows.map((r) => crows.indexOf(r)));
+  const side = rangeFromRows(rows)?.side ?? "additions";
+  const ranges = [];
+  for (const run of runs) {
+    const nums = [];
+    for (const r of crows.slice(run.first, run.last + 1)) {
+      if (side === "deletions") {
+        if (r.dataset.lineType === "change-deletion") nums.push(parseInt(r.dataset.line, 10));
+      } else if (r.dataset.lineType !== "change-deletion") nums.push(parseInt(r.dataset.line, 10));
+    }
+    if (nums.length) ranges.push({ start: Math.min(...nums), end: Math.max(...nums) });
   }
-  const crows = contentRowsOf(d.entry);
-  const span = { first: crows.indexOf(rows[0]), last: crows.indexOf(rows[rows.length - 1]) };
-  updateSelectionUI({
-    entry: d.entry, path: d.entry.path, range,
-    rows, endRow: d.lastRow, span,
-    text: quoteFor(d.entry, range).join("\n"),
+  if (!ranges.length) return;
+  const lines = linesLabel(ranges);
+  const verbatim = entry.selVerbatim ?? null;
+  const spans = runs.map((r) => ({ first: r.first, last: r.last }));
+  closeComposer(entry);
+  const card = document.createElement("div");
+  card.className = "composer";
+  card.innerHTML = `
+    <div class="composer-head">
+      <span class="anchor"></span>
+      <button class="ghost close" title="Cancelar">✕</button>
+    </div>
+    <textarea rows="3"></textarea>
+    <div class="composer-actions">
+      <span class="hint">⌘↵ envía</span>
+      <button class="ghost cancel">Cancelar</button>
+      <button class="primary ask">Preguntar</button>
+    </div>`;
+  card.querySelector(".anchor").textContent = `${entry.path}:${lines}`;
+  const ta = card.querySelector("textarea");
+  ta.placeholder = `Preguntá sobre líneas ${lines}…`;
+  const close = () => card.remove();
+  card.querySelector(".close").onclick = close;
+  card.querySelector(".cancel").onclick = close;
+  function submit() {
+    const q = ta.value.trim();
+    if (!q) { ta.focus(); return; }
+    const quoteLines = verbatim ? verbatim.split("\n") : quoteForRanges(entry, ranges, side);
+    pendingAsks.push({
+      kind: "line", path: entry.path,
+      start: ranges[0].start, end: ranges[ranges.length - 1].end,
+      lines, label: `líneas ${lines} · ${side}`, side, quoteLines, question: q, spans, ranges,
+    });
+    close();
+    setBoxSel(entry, new Set()); // la pregunta quedó anclada: selección a cero
+    renderPile();
+    renderAnchors();
+  }
+  card.querySelector(".ask").onclick = submit;
+  ta.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); }
   });
+  positionComposerAtRow(entry, card, rows[rows.length - 1]);
+  ta.focus();
 }
-document.addEventListener("pointerup", endDragSel, true);
-document.addEventListener("pointercancel", () => { dragSel = null; clearSelectionUI(); }, true);
 
 // Re-posicionado de anclajes REACTIVO: un solo rAF coalesce cualquier
 // cantidad de disparadores (onHunkExpand, observer estructural, colapso) —
@@ -764,7 +813,10 @@ function addHeadChip(entry, i, note) {
 function renderAnchors() {
   document.querySelectorAll(".inline-editor").forEach((n) => n.remove());
   document.querySelectorAll(".head-marker").forEach((n) => n.remove());
-  for (const entry of rendered.values()) ensureLayer(entry);
+  for (const entry of rendered.values()) {
+    ensureLayer(entry);
+    renderSelUI(entry); // cajitas + franjas + ＋ grande sobreviven el re-render
+  }
   pendingAsks.forEach((a, i) => {
     if (a.kind === "free") return;
     const entry = rendered.get(a.path);
@@ -833,7 +885,7 @@ document.getElementById("root").addEventListener("scroll", () => {
 // --------------------------------------------------------------- render
 
 function clearRendered() {
-  dragSel = null;
+  boxDrag = null;
   hideHoverPlus();
   for (const entry of rendered.values()) {
     try { entry.fd?.cleanUp(); } catch { /* already gone */ }
@@ -966,7 +1018,9 @@ function renderFileInner(f) {
   attachStructureObserver(entry);
 }
 
-// Composer del ＋ por archivo: mismo look, sin setSelectedLines (no hay rango).
+// Composer del ＋ por archivo: mismo look, sin setSelectedLines (no hay
+// rango). Funciona COLAPSADO también: la caja vive bajo el encabezado (el
+// body está display:none — el composer no puede ir ahí).
 function openComposerFile(entry, path, summary) {
   closeComposer(entry);
   const card = document.createElement("div");
@@ -999,7 +1053,14 @@ function openComposerFile(entry, path, summary) {
   ta.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); }
   });
-  positionComposerAtRow(entry, card, null);
+  if (entry.section.classList.contains("collapsed")) {
+    // colapsado: bajo el head, estático — el body está oculto.
+    card.classList.add("under-head");
+    entry.section.appendChild(card);
+    card.scrollIntoView({ block: "nearest" });
+  } else {
+    positionComposerAtRow(entry, card, null);
+  }
   ta.focus();
 }
 
@@ -1055,7 +1116,7 @@ function renderAll() {
 
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Hover en una línea → ＋ a la izquierda (click = preguntar por esa línea) · arrastrá desde los números para varias → ＋ grande · ＋ en el encabezado = archivo. Abajo: libres; ⌘↵ manda todo junto.";
+  hint.textContent = "Cajitas del riel: click = sumar/quitar línea, arrastrás y pintás varias (salteadas también) → ＋ grande debajo de la última abre la pregunta · hover en una línea → ＋ = preguntar por esa línea · ＋ del encabezado = archivo (andá colapsado, igual aparece). Abajo: libres; ⌘↵ manda todo junto.";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
@@ -1152,6 +1213,8 @@ if (window.__DA_TEST__) {
     get rendered() { return rendered; },
     get diffData() { return diffData; },
     get pendingAsks() { return pendingAsks; },
+    get boxSel() { return boxSel; },
+    renderSelUI,
     re: (path) => {
       const e = rendered.get(path);
       const fd = new FileDiff({

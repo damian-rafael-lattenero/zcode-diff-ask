@@ -4,7 +4,7 @@
     {
       "name": "diff-ask",
       "source": "./diff-ask",
-      "version": "0.2.14",
+      "version": "0.2.15",
       "description": "Ask questions about your workspace diff, anchored to exact lines: hover + to question a line, drag line numbers for ranges, free-form questions from the ask bar, one message with everything.",
       "displayName": "Diff Ask"
     }

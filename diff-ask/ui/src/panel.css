@@ -338,7 +338,7 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   inset: 0;
   pointer-events: none;
 }
-.anchor-layer > *, .sel-layer > .big-plus { pointer-events: auto; }
+.anchor-layer > *, .sel-layer > .sel-box, .sel-layer > .big-plus { pointer-events: auto; }
 .line-marker {
   position: absolute;
   right: 10px;
@@ -367,8 +367,10 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
 }
 .head-marker:hover { background: var(--accent); color: var(--accent-contrast); }
 
-/* Selección propia del gutter: franja pintada por línea, ＋ chiquitos
-   por fila y ＋ grande al final — todos pegados a la derecha de los números. */
+/* Selección por cajitas (0.2.15): una cajita por fila en el riel (left:22px,
+   a la derecha del hover-＋ de 2px — nunca sobre el texto). Click = toggle;
+   arrastre = modo pintura; franja tintada por fila seleccionada; ＋ grande
+   debajo de la última cajita pintada. */
 .drag-stripe {
   position: absolute;
   left: 0;
@@ -377,25 +379,32 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   pointer-events: none;
 }
-.mini-plus {
+.sel-box {
   position: absolute;
+  left: 22px;
   z-index: 5;
-  width: 16px;
-  height: 15px;
-  font-size: 10px;
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  color: var(--accent);
-  border: 1px solid var(--accent);
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  border-radius: 3px;
   background: var(--card);
-  opacity: 0.8;
-  pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--muted) 55%, transparent);
+  opacity: 0.45;
+  cursor: pointer;
+}
+.sel-box:hover {
+  opacity: 1;
+  border-color: var(--accent);
+}
+.sel-box.on {
+  opacity: 1;
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .big-plus {
   position: absolute;
+  left: 22px;
   z-index: 7;
   width: 26px;
   height: 21px;
@@ -408,6 +417,11 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   color: var(--accent-contrast);
   border: none;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+/* Composer del ＋ de archivo con el archivo COLAPSADO: estático bajo el
+   encabezado (el body está display:none — ahí no se ve). */
+.composer.under-head {
+  margin: 8px 10px;
 }
 /* Editor in-place de un anclaje (editar / borrar ahí mismo). */
 .inline-editor {
