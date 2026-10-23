@@ -203,6 +203,20 @@ document.addEventListener("keydown", (e) => {
 });
 
 // -------------------------------------------------------------- composer
+// El composer aparece JUSTO DEBAJO de la línea seleccionada (contexto a la
+// vista), no al pie del archivo. Fila oculta → fallback al pie del body.
+function positionComposerAtRow(entry, card, row) {
+  entry.body.appendChild(card);
+  card.classList.add("anchored");
+  const bodyRect = entry.body.getBoundingClientRect();
+  const top = row
+    ? row.getBoundingClientRect().bottom - bodyRect.top + 6
+    : 4; // sin fila (＋ de archivo): pegado al inicio del body, bajo el head
+  card.style.top = `${top}px`;
+  card.scrollIntoView({ block: "nearest" });
+}
+
+
 
 function openComposer(entry, path, range, opts = {}) {
   // working: el rango se puede EXTENDER en el composer ("hasta línea") — así
@@ -263,7 +277,7 @@ function openComposer(entry, path, range, opts = {}) {
   ta.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); }
   });
-  entry.body.after(card);
+  positionComposerAtRow(entry, card, opts.row ?? findRow(entry, range.end ?? range.start, range.side ?? "additions"));
   ta.focus();
 }
 
@@ -382,7 +396,7 @@ function paintSelectionUI(entry, rows, endRow, info) {
     big.title = `Preguntar sobre ${info.path}:${lines}`;
     big.onclick = () => {
       clearSelectionUI();
-      openComposer(info.entry, info.path, info.range, { verbatim: info.text ?? null });
+      openComposer(info.entry, info.path, info.range, { verbatim: info.text ?? null, row: endRow });
     };
     layer.appendChild(big);
     const r = endRow.getBoundingClientRect();
@@ -442,7 +456,7 @@ function showHoverPlus(entry, row) {
   hoverPlus.title = "Preguntar sobre esta línea";
   hoverPlus.onclick = () => {
     hideHoverPlus();
-    openComposer(entry, entry.path, rangeOfRow(row));
+    openComposer(entry, entry.path, rangeOfRow(row), { row });
   };
   entry.body.appendChild(hoverPlus);
   const bodyRect = entry.body.getBoundingClientRect();
@@ -874,7 +888,7 @@ function openComposerFile(entry, path, summary) {
   ta.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); }
   });
-  entry.section.appendChild(card);
+  positionComposerAtRow(entry, card, null);
   ta.focus();
 }
 
