@@ -309,6 +309,100 @@ function selectionAsk() {
   return null;
 }
 
+
+// Selección multi-línea NATIVA de pierre (enableLineSelection — la misma vía
+// que usa la app para sus code comments): arrastrar sobre las líneas las
+// resalta de línea a línea; al soltar, onLineSelected trae el rango y
+// mostramos los ＋ chiquitos + el ＋ grande al final. Reemplaza en la
+// práctica a la selección nativa de texto (pierre controla el pointer).
+function onLibLineSelected(entry, path, range) {
+  if (!range || range.start == null || range.end == null) {
+    clearSelectionUI();
+    return;
+  }
+  const host = entry.body.querySelector("diffs-container");
+  const content = host?.shadowRoot?.querySelector("[data-content]");
+  if (!content) return;
+  const side = range.side ?? "additions";
+  const covered = [];
+  for (const r of content.children) {
+    if (!r.hasAttribute("data-line")) continue;
+    const t = r.dataset.lineType;
+    let num = null;
+    if (t === "change-deletion") num = side === "deletions" ? parseInt(r.dataset.line, 10) : null;
+    else if (t === "change-addition") num = side === "deletions" ? null : parseInt(r.dataset.line, 10);
+    else num = parseInt((side === "deletions" ? r.dataset.altLine : r.dataset.line) ?? r.dataset.line, 10);
+    if (num != null && num >= range.start && num <= range.end) covered.push(r);
+  }
+  if (!covered.length) return;
+  updateSelectionUI({
+    entry,
+    path,
+    range,
+    rows: covered,
+    endRow: covered[covered.length - 1],
+    text: quoteFor(entry, range).join("\n"),
+  });
+}
+
+
+// La selección de líneas de la lib marca las filas con data-selected-line
+// (click, shift-click y drag, en vivo). Lo observamos con un
+// MutationObserver — reactivo, sin polling — y pintamos los ＋ chiquitos
+// por línea + el ＋ grande al final del rango marcado.
+function attachSelectionObserver(entry, path) {
+  let tries = 0;
+  const go = () => {
+    // El shadowRoot es estable; el [data-content] interno puede ser
+    // REEMPLAZADO por la lib (re-render/theme) — observar el root con
+    // subtree cubre atributos y reemplazos en un solo observer.
+    const sr = entry.body.querySelector("diffs-container")?.shadowRoot;
+    if (!sr) {
+      if (++tries < 40) setTimeout(go, 100); // render async de pierre
+      return;
+    }
+    let t = null;
+    const mo = new MutationObserver(() => {
+      clearTimeout(t);
+      t = setTimeout(() => onLibSelectionChanged(entry, path), 180);
+    });
+    mo.observe(sr, { childList: true, subtree: true, attributeFilter: ["data-selected-line"] });
+    entry.selObserver = mo;
+  };
+  go();
+}
+
+function onLibSelectionChanged(entry, path) {
+  const content = entry.body.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-content]");
+  if (!content) return;
+  const rows = [...content.querySelectorAll("[data-selected-line]")].filter((r) => r.hasAttribute("data-line"));
+  if (!rows.length) {
+    clearSelectionUI();
+    return;
+  }
+  const news = [];
+  const olds = [];
+  for (const r of rows) {
+    const ty = r.dataset.lineType;
+    const n = parseInt(r.dataset.line, 10);
+    if (ty === "change-deletion") olds.push(n);
+    else if (ty === "change-addition") news.push(n);
+    else { news.push(n); olds.push(parseInt(r.dataset.altLine ?? n, 10)); }
+  }
+  const byNew = news.length > 0;
+  const nums = byNew ? news : olds;
+  const range = {
+    start: Math.min(...nums),
+    end: Math.max(...nums),
+    side: byNew ? "additions" : "deletions",
+  };
+  updateSelectionUI({
+    entry, path, range, rows,
+    endRow: rows[rows.length - 1],
+    text: quoteFor(entry, range).join("\n"),
+  });
+}
+
 function clearSelectionUI() {
   document.querySelectorAll(".mini-plus, .big-plus").forEach((n) => n.remove());
 }
@@ -481,6 +575,7 @@ document.getElementById("root").addEventListener("scroll", () => {
 function clearRendered() {
   for (const entry of rendered.values()) {
     try { entry.fd?.cleanUp(); } catch { /* already gone */ }
+    entry.selObserver?.disconnect();
     entry.section.remove();
   }
   rendered.clear();
@@ -549,6 +644,8 @@ function renderFileInner(f) {
     themeType: theme,
     diffStyle: "unified",
     enableGutterUtility: true,
+    enableLineSelection: true,
+    onLineSelected: (range) => onLibLineSelected(entry, f.path, range),
     lineHoverHighlight: "both",
     // 10 líneas de contexto alrededor de cada cambio; los tramos más largos
     // quedan como separador expandible (click = ver más código, read-only).
@@ -577,6 +674,7 @@ function renderFileInner(f) {
           : null,
     });
     fd.setThemeType(theme);
+    attachSelectionObserver(entry, f.path);
     return;
   }
 
@@ -600,6 +698,7 @@ function renderFileInner(f) {
   }
   fd.render({ fileContainer: container, fileDiff: meta });
   fd.setThemeType(theme);
+  attachSelectionObserver(entry, f.path);
 }
 
 // Composer del ＋ por archivo: mismo look, sin setSelectedLines (no hay rango).
@@ -685,7 +784,7 @@ function renderAll() {
 
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Hover en una línea → + · ＋ en el encabezado pregunta por el archivo · seleccioná texto en el diff para preguntar por esa selección. La caja de abajo acumula preguntas libres; ⌘↵ manda todo junto.";
+  hint.textContent = "Hover en una línea → + · arrastra desde los NÚMEROS de línea (o click + shift-click) para preguntar de línea a línea · ＋ en el encabezado pregunta por el archivo. Abajo: preguntas libres; ⌘↵ manda todo junto.";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
