@@ -94,7 +94,20 @@ button.ghost { background: transparent; }
   gap: 8px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
 }
+.chev {
+  flex: none;
+  width: 14px;
+  display: inline-flex;
+  justify-content: center;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.file.collapsed .chev { transform: rotate(-90deg); }
+.file.collapsed .file-body { display: none; }
+.file.collapsed .file-head { border-bottom: none; }
 .file-head .path {
   flex: 1;
   font-weight: 600;
@@ -191,3 +204,55 @@ button.ghost { background: transparent; }
 }
 .sent-chip.sent { color: var(--ok); border: 1px solid var(--ok); }
 .sent-chip.context { color: var(--warn); border: 1px solid var(--warn); }
+
+/* Bandeja de preguntas acumuladas — sticky al pie del panel. */
+.inbox {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  margin: 12px -10px -40vh;
+  padding: 10px;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  border-radius: 8px 8px 0 0;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.18);
+}
+.inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 32vh;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+.inbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+.inbox-item .anchor {
+  flex: none;
+  max-width: 45%;
+  font-family: ui-monospace, Menlo, monospace;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inbox-item .q {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inbox-item .rm { padding: 2px 7px; }
+.inbox-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
