@@ -512,3 +512,17 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   opacity: 0.85;
 }
 .hover-plus:hover { background: var(--accent); color: var(--accent-contrast); opacity: 1; }
+
+/* Colores de líneas con pregunta (WCAG): variables que HEREDAN al shadow DOM
+   de pierre — el tema las cambia solas. Ratios verificados: light 11-16:1,
+   dark 6.5-8.3:1 (AA doblado / AAA). */
+:root {
+  --da-qa-add-bg: #0E4429; --da-qa-add-fg: #FFFFFF;
+  --da-qa-del-bg: #5A1E22; --da-qa-del-fg: #FFFFFF;
+  --da-qa-ctx-bg: #EBEBEF; --da-qa-ctx-fg: #101014;
+}
+:root[data-theme="dark"] {
+  --da-qa-add-bg: #1F6B45; --da-qa-add-fg: #FFFFFF;
+  --da-qa-del-bg: #8C3838; --da-qa-del-fg: #FFFFFF;
+  --da-qa-ctx-bg: #414855; --da-qa-ctx-fg: #F2F3F5;
+}

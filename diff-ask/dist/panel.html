@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Diff Ask</title>
-    <script>window.__DA_BUILD="0.2.9";</script>
+    <script>window.__DA_BUILD="0.2.10";</script>
     <style>:root {
   --bg: #f7f7f8;
   --card: #ffffff;
@@ -519,6 +519,20 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   opacity: 0.85;
 }
 .hover-plus:hover { background: var(--accent); color: var(--accent-contrast); opacity: 1; }
+
+/* Colores de líneas con pregunta (WCAG): variables que HEREDAN al shadow DOM
+   de pierre — el tema las cambia solas. Ratios verificados: light 11-16:1,
+   dark 6.5-8.3:1 (AA doblado / AAA). */
+:root {
+  --da-qa-add-bg: #0E4429; --da-qa-add-fg: #FFFFFF;
+  --da-qa-del-bg: #5A1E22; --da-qa-del-fg: #FFFFFF;
+  --da-qa-ctx-bg: #EBEBEF; --da-qa-ctx-fg: #101014;
+}
+:root[data-theme="dark"] {
+  --da-qa-add-bg: #1F6B45; --da-qa-add-fg: #FFFFFF;
+  --da-qa-del-bg: #8C3838; --da-qa-del-fg: #FFFFFF;
+  --da-qa-ctx-bg: #414855; --da-qa-ctx-fg: #F2F3F5;
+}
 </style>
     
   </head>
@@ -809,7 +823,7 @@ ${a.question}`}),r=e.filter(a=>a.kind!=="free").length,n=t-r,i=r&&n?`${r} anclad
 
 ${o.join(`
 
-`)}`}}var $k="diff://workspace",bn=new ff({name:"diff-ask",version:"0.1.0"},{}),it=null,mt=new Map,$e=[],ca=new Set,Fn="light",H7=['[data-qa="add"]{background:#0E4429 !important;color:#FFFFFF !important;}','[data-qa="del"]{background:#5A1E22 !important;color:#FFFFFF !important;}','[data-qa="ctx"]{background:#EBEBEF !important;color:#101014 !important;}'].join(`
+`)}`}}var $k="diff://workspace",bn=new ff({name:"diff-ask",version:"0.1.0"},{}),it=null,mt=new Map,$e=[],ca=new Set,Fn="light",H7=['[data-qa="add"]{background:var(--da-qa-add-bg,#0E4429) !important;}','[data-qa="add"],[data-qa="add"] *{color:var(--da-qa-add-fg,#FFFFFF) !important;}','[data-qa="del"]{background:var(--da-qa-del-bg,#5A1E22) !important;}','[data-qa="del"],[data-qa="del"] *{color:var(--da-qa-del-fg,#FFFFFF) !important;}','[data-qa="ctx"]{background:var(--da-qa-ctx-bg,#EBEBEF) !important;}','[data-qa="ctx"],[data-qa="ctx"] *{color:var(--da-qa-ctx-fg,#101014) !important;}'].join(`
 `);function V7(){for(let e of mt.values()){(e.qaRows??[]).forEach(i=>i.removeAttribute("data-qa")),e.qaRows=[];let t=e.body.querySelector("diffs-container")?.shadowRoot;if(!t)continue;if(!t.querySelector("style.da-qa")){let i=document.createElement("style");i.className="da-qa",i.textContent=H7,t.appendChild(i)}let o=t.querySelector("[data-content]");if(!o)continue;let r=[...o.children].filter(i=>i.hasAttribute("data-line")),n=[...t.querySelector("[data-gutter]")?.children??[]].filter(i=>i.hasAttribute("data-line-index"));for(let i of $e){if(i.kind!=="line")continue;let a=i.side??"additions",s=i.end??i.start;for(let c of r){let l=parseInt(c.dataset.line,10),u=c.dataset.lineType;if(!(u==="change-deletion"?a==="deletions":a!=="deletions"||u==="context")||l<i.start||l>s)continue;let f=u==="context"&&a==="deletions"?parseInt(c.dataset.altLine??l,10):l;if(f<i.start||f>s)continue;let p=u==="change-deletion"?"del":u==="change-addition"?"add":"ctx";c.setAttribute("data-qa",p),e.qaRows.push(c);let g=n.find(h=>h.getAttribute("data-line-index")===c.getAttribute("data-line-index"));g&&(g.setAttribute("data-qa",p),e.qaRows.push(g))}}}}function c2(e){let t=document.getElementById("pile")??document.getElementById("root");t.style.display="";let o=document.createElement("div");o.className="sent-chip sent",o.textContent=e,t.appendChild(o),setTimeout(()=>{o.remove(),vn()},1e4)}function f2(){let e=document.getElementById("askbar-input");if(!e)return;let t=e.value.trim();t&&($e.push({kind:"free",question:t}),e.value="",vn())}async function zk(){if(f2(),!$e.length)return;let{n:e,text:t}=s2($e);try{let o=await bn.sendMessage({role:"user",content:[{type:"text",text:t}]});if(o&&o.isError)throw new Error("host rejected sendMessage");c2(`\u2713 ${e} pregunta${e===1?"":"s"} en el chat`)}catch{await bn.updateModelContext({content:[{type:"text",text:t}]}),c2(`\u21AA contexto listo (${e} pregunta${e===1?"":"s"}) \u2014 mand\xE1 tu mensaje`)}$e.length=0,vn(),la()}function m2(e,t,o,r){if(!t)$e.push({kind:"file",path:e,label:"archivo",quoteLines:o,question:r});else{let{side:n,lines:i,label:a}=sa(t);$e.push({kind:"line",path:e,start:t.start,end:t.end,lines:i,label:a,side:n,quoteLines:o,question:r})}vn(),la()}function g2(){if(document.getElementById("askbar"))return;let e=document.createElement("div");e.id="pile";let t=document.createElement("div");t.id="askbar",t.innerHTML=`
     <textarea id="askbar-input" rows="2" placeholder="Pregunt\xE1 algo del diff (sin ancla)\u2026"></textarea>
     <div class="askbar-actions">
