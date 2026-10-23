@@ -347,14 +347,6 @@ function ensureSelLayer(entry) {
   return layer;
 }
 
-// El borde derecho de la columna de números: ahí (a su derecha, pegado)
-// viven los ＋ — donde el ojo ya está mirando, no en el borde lejano.
-function gutterRightOf(entry) {
-  const g = entry.body.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-gutter]");
-  const r = g?.getBoundingClientRect();
-  return r ? r.right - entry.body.getBoundingClientRect().left : 46;
-}
-
 // Painter unificado: franja pintada por cada línea cubierta + ＋ chiquitos
 // por fila + (con info) el ＋ grande al final, listo para abrir el composer.
 function paintSelectionUI(entry, rows, endRow, info) {
@@ -362,7 +354,7 @@ function paintSelectionUI(entry, rows, endRow, info) {
   if (!rows.length) return;
   const layer = ensureSelLayer(entry);
   const bodyRect = entry.body.getBoundingClientRect();
-  const gx = gutterRightOf(entry) + 6;
+  const gx = 2; // riel izquierdo: sobre los números, NUNCA sobre el texto
   for (const row of rows) {
     const stripe = document.createElement("div");
     stripe.className = "drag-stripe";
@@ -385,6 +377,7 @@ function paintSelectionUI(entry, rows, endRow, info) {
     const big = document.createElement("button");
     big.className = "big-plus";
     big.textContent = "＋";
+    big.style.left = "24px"; // más adentro que los minis (2px), todo < números
     const { lines } = rangeLabel(info.range);
     big.title = `Preguntar sobre ${info.path}:${lines}`;
     big.onclick = () => {
@@ -418,6 +411,58 @@ document.addEventListener("selectionchange", () => {
     } else if (selOwner !== "drag") clearSelectionUI();
   }, 150);
 });
+
+// ------------------------------------------------ hover-＋ (riel izquierdo)
+// Hover en una línea → ＋ chiquito pegado a la IZQUIERDA (sobre los números,
+// nunca sobre el texto seleccionable). Se va con el mouse. Click → composer
+// de esa línea. Un solo botón global que vive en el body de su archivo.
+let hoverPlus = null;
+let hoverRow = null;
+
+function hideHoverPlus() {
+  hoverPlus?.remove();
+  hoverPlus = null;
+  hoverRow = null;
+}
+
+function rangeOfRow(row) {
+  const t = row.dataset.lineType;
+  const n = parseInt(row.dataset.line, 10);
+  if (t === "change-deletion") return { start: n, end: n, side: "deletions" };
+  return { start: n, end: n, side: "additions" };
+}
+
+function showHoverPlus(entry, row) {
+  if (row === hoverRow && hoverPlus?.isConnected) return;
+  hideHoverPlus();
+  hoverRow = row;
+  hoverPlus = document.createElement("button");
+  hoverPlus.className = "hover-plus";
+  hoverPlus.textContent = "＋";
+  hoverPlus.title = "Preguntar sobre esta línea";
+  hoverPlus.onclick = () => {
+    hideHoverPlus();
+    openComposer(entry, entry.path, rangeOfRow(row));
+  };
+  entry.body.appendChild(hoverPlus);
+  const bodyRect = entry.body.getBoundingClientRect();
+  const r = row.getBoundingClientRect();
+  hoverPlus.style.top = `${r.top - bodyRect.top + (r.height - hoverPlus.offsetHeight) / 2}px`;
+}
+
+document.addEventListener("pointermove", (e) => {
+  if (dragSel) { hideHoverPlus(); return; }
+  if (e.target.closest?.(".hover-plus")) return; // parado sobre el ＋: queda
+  const body = e.target.closest?.(".file-body");
+  if (!body) { hideHoverPlus(); return; }
+  let entry = null;
+  for (const en of rendered.values()) if (en.body === body) { entry = en; break; }
+  if (!entry) { hideHoverPlus(); return; }
+  const row = rowFromPoint(e.clientX, e.clientY, entry);
+  if (!row) { hideHoverPlus(); return; }
+  showHoverPlus(entry, row);
+});
+document.documentElement.addEventListener("pointerleave", hideHoverPlus);
 
 // --------------------------------------------- drag propio del gutter
 // La selección de líneas de pierre no arranca en el webview de la app, así
@@ -490,6 +535,7 @@ document.addEventListener("pointerdown", (e) => {
   if (e.clientX < gr.left - 4 || e.clientX > gr.right + 14) return; // sólo la zona de números
   const row = rowFromPoint(e.clientX, e.clientY, entry);
   if (!row) return;
+  hideHoverPlus();
   e.stopPropagation(); // la sesión es nuestra: la lib no arranca la suya
   e.preventDefault(); // sin selección de texto nativa colgante tras el drag
   dragSel = { entry, startRow: row, lastRow: row, moved: false, x0: e.clientX, y0: e.clientY };
@@ -513,16 +559,7 @@ function endDragSel() {
   const rows = rowsBetween(d.entry, d.startRow, d.lastRow);
   const range = rangeFromRows(rows);
   if (!range || !d.moved) {
-    // click simple en un número: selección de UNA línea con su ＋
-    if (!d.moved && d.startRow) {
-      const r1 = rangeFromRows([d.startRow]);
-      if (r1)
-        updateSelectionUI({
-          entry: d.entry, path: d.entry.path, range: r1,
-          rows: [d.startRow], endRow: d.startRow,
-          text: quoteFor(d.entry, r1).join("\n"),
-        });
-    } else clearSelectionUI();
+    clearSelectionUI(); // click sin arrastre: nada pegado (hover-＋ = una línea)
     return;
   }
   updateSelectionUI({
@@ -672,6 +709,7 @@ document.getElementById("root").addEventListener("scroll", () => {
 
 function clearRendered() {
   dragSel = null;
+  hideHoverPlus();
   for (const entry of rendered.values()) {
     try { entry.fd?.cleanUp(); } catch { /* already gone */ }
     entry.structureObserver?.disconnect();
@@ -886,7 +924,7 @@ function renderAll() {
 
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Click en un NÚMERO selecciona esa línea; arrastrá sobre los números para varias → ＋ pregunta de línea a línea. ＋ en el encabezado = archivo entero. Abajo: preguntas libres; ⌘↵ manda todo junto.";
+  hint.textContent = "Hover en una línea → ＋ a la izquierda (click = preguntar por esa línea) · arrastrá desde los números para varias → ＋ grande · ＋ en el encabezado = archivo. Abajo: libres; ⌘↵ manda todo junto.";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
