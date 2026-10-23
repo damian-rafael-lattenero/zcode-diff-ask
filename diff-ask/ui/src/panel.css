@@ -531,3 +531,18 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   --da-qa-del-bg: #B23A3E; --da-qa-del-fg: #FFFFFF; --da-qa-del-bar: #F87171;
   --da-qa-ctx-bg: #4C5568; --da-qa-ctx-fg: #F2F3F5; --da-qa-ctx-bar: #A5B4CC;
 }
+
+/* ⟳ refrescar: más grande (se ve qué es) y gira al usarse — feedback. */
+.header .refresh {
+  font-size: 17px;
+  line-height: 1;
+  padding: 3px 10px;
+}
+.header .refresh.spinning {
+  animation: da-spin 0.6s ease;
+  pointer-events: none;
+}
+@keyframes da-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
