@@ -17,6 +17,12 @@ const app = new App({ name: "diff-ask", version: "0.1.0" }, {});
 /** @type {any} */ let diffData = null;
 /** @type {Map<string, {section: HTMLElement, body: HTMLElement, fd: import("@pierre/diffs").FileDiff|null, patch: string}>} */
 const rendered = new Map();
+// Preguntas acumuladas: el "+" encola acá y "Enviar todo" (⌘↵) manda UN solo
+// mensaje con todas las anclas. Sobrevive los refresh del diff vivo.
+/** @type {{path:string, start:number, lines:string, label:string, quoteLines:string[], question:string}[]} */
+const pendingAsks = [];
+// Archivos colapsados por path — persiste durante la sesión entre re-renders.
+const collapsedPaths = new Set();
 let theme = "light";
 
 // ------------------------------------------------------------- diff text
@@ -62,6 +68,21 @@ function rangeLabel(range) {
   return { side, lines, label: `${side === "deletions" ? "líneas" : "líneas"} ${lines} · ${side === "deletions" ? "deletions" : "additions"}` };
 }
 
+// Cita las líneas del rango: desde el contenido completo si lo hay (render
+// desde before/after — números de línea directos), sino desde el parche.
+function quoteFor(entry, range) {
+  const side = range.side ?? "additions";
+  const arr = side === "deletions" ? entry.beforeLines : entry.afterLines;
+  if (arr) {
+    const out = [];
+    for (let n = range.start; n <= range.end; n++) {
+      if (arr[n - 1] !== undefined) out.push(arr[n - 1]);
+    }
+    if (out.length) return out;
+  }
+  return extractLines(entry.patch, side, range.start, range.end);
+}
+
 // ------------------------------------------------------------------ ask
 
 function buildQuestionText(path, range, quoteLines, question) {
@@ -71,21 +92,81 @@ function buildQuestionText(path, range, quoteLines, question) {
   return quoted ? `${head}\n${quoted}\n\n${question}` : `${head}\n\n${question}`;
 }
 
-async function sendQuestion(path, range, quoteLines, question) {
-  const text = buildQuestionText(path, range, quoteLines, question);
-  try {
-    const res = await app.sendMessage({
-      role: "user",
-      content: [{ type: "text", text }],
-    });
-    if (res && res.isError) throw new Error("host rejected sendMessage");
-    return { mode: "sent" };
-  } catch {
-    // Fallback: attach as context for the next user turn.
-    await app.updateModelContext({ content: [{ type: "text", text }] });
-    return { mode: "context" };
-  }
+function chip(text) {
+  const c = document.createElement("div");
+  c.className = "sent-chip sent";
+  c.textContent = text;
+  document.getElementById("root").appendChild(c);
+  setTimeout(() => c.remove(), 10_000);
 }
+
+async function sendAllPending() {
+  if (!pendingAsks.length) return;
+  const n = pendingAsks.length;
+  const blocks = pendingAsks.map(({ path, start, label, quoteLines, question }) => {
+    const quoted = quoteLines.length ? quoteLines.map((l) => `> ${l}`).join("\n") : "";
+    const head = `- \`${path}:${start}\` (Diff Ask · diff, ${label}):`;
+    return quoted ? `${head}\n${quoted}\n\n${question}` : `${head}\n\n${question}`;
+  });
+  const text =
+    `Diff Ask — ${n} pregunta${n === 1 ? "" : "s"} anclada${n === 1 ? "" : "s"} al diff:\n\n` +
+    blocks.join("\n\n");
+  try {
+    const res = await app.sendMessage({ role: "user", content: [{ type: "text", text }] });
+    if (res && res.isError) throw new Error("host rejected sendMessage");
+    chip(`✓ ${n} pregunta${n === 1 ? "" : "s"} en el chat`);
+  } catch {
+    await app.updateModelContext({ content: [{ type: "text", text }] });
+    chip(`↪ contexto listo (${n} pregunta${n === 1 ? "" : "s"}) — mandá tu mensaje`);
+  }
+  pendingAsks.length = 0;
+  renderInbox();
+}
+
+function queueQuestion(path, range, quoteLines, question) {
+  const { lines, label } = rangeLabel(range);
+  pendingAsks.push({ path, start: range.start, lines, label, quoteLines, question });
+  renderInbox();
+}
+
+function renderInbox() {
+  document.querySelectorAll(".inbox").forEach((n) => n.remove());
+  if (!pendingAsks.length) return;
+  const box = document.createElement("div");
+  box.className = "inbox";
+  const list = document.createElement("div");
+  list.className = "inbox-list";
+  pendingAsks.forEach((a, i) => {
+    const row = document.createElement("div");
+    row.className = "inbox-item";
+    row.innerHTML = `<span class="anchor"></span><span class="q"></span><button class="ghost rm" title="Quitar">✕</button>`;
+    row.querySelector(".anchor").textContent = `${a.path}:${a.lines}`;
+    const q = row.querySelector(".q");
+    q.textContent = a.question.length > 70 ? `${a.question.slice(0, 67)}…` : a.question;
+    q.title = a.question;
+    row.querySelector(".rm").onclick = () => { pendingAsks.splice(i, 1); renderInbox(); };
+    list.appendChild(row);
+  });
+  const actions = document.createElement("div");
+  actions.className = "inbox-actions";
+  actions.innerHTML = `<button class="ghost clear">Limpiar</button><button class="primary send"></button>`;
+  const send = actions.querySelector(".send");
+  send.textContent = `Enviar ${pendingAsks.length} pregunta${pendingAsks.length === 1 ? "" : "s"} (⌘↵)`;
+  send.onclick = sendAllPending;
+  actions.querySelector(".clear").onclick = () => { pendingAsks.length = 0; renderInbox(); };
+  box.append(list, actions);
+  document.getElementById("root").appendChild(box);
+}
+
+document.addEventListener("keydown", (e) => {
+  if (
+    (e.metaKey || e.ctrlKey) && e.key === "Enter" && pendingAsks.length &&
+    !e.target.closest?.("textarea")
+  ) {
+    e.preventDefault();
+    sendAllPending();
+  }
+});
 
 // -------------------------------------------------------------- composer
 
@@ -114,14 +195,10 @@ function openComposer(entry, path, range) {
   card.querySelector(".close").onclick = close;
   card.querySelector(".cancel").onclick = close;
 
-  async function submit() {
+  function submit() {
     const q = ta.value.trim();
     if (!q) { ta.focus(); return; }
-    const quote = extractLines(entry.patch, range.side ?? "additions", range.start, range.end);
-    ask.disabled = true;
-    ask.textContent = "Enviando…";
-    const res = await sendQuestion(path, range, quote, q);
-    addSentChip(entry, path, range, res.mode);
+    queueQuestion(path, range, quoteFor(entry, range), q);
     close();
   }
   ask.onclick = submit;
@@ -130,17 +207,6 @@ function openComposer(entry, path, range) {
   });
   entry.body.after(card);
   ta.focus();
-}
-
-function addSentChip(entry, path, range, mode) {
-  const chip = document.createElement("div");
-  chip.className = `sent-chip ${mode}`;
-  chip.textContent =
-    mode === "sent"
-      ? `✓ ${path}:${rangeLabel(range).lines} — pregunta en el chat`
-      : `↪ ${path}:${rangeLabel(range).lines} — contexto listo, mandá tu mensaje`;
-  entry.section.appendChild(chip);
-  setTimeout(() => chip.remove(), 10_000);
 }
 
 function closeComposer(entry) {
@@ -170,32 +236,84 @@ function renderFile(f) {
 
 function renderFileInner(f) {
   const section = document.createElement("section");
-  section.className = "file";
+  section.className = "file" + (collapsedPaths.has(f.path) ? " collapsed" : "");
   document.getElementById("root").appendChild(section);
   const head = document.createElement("div");
   head.className = "file-head";
   const status = f.status ?? "M";
-  head.innerHTML = `<span class="chip s-${status === "?" ? "A" : status}"></span>
+  head.innerHTML = `<span class="chev">▾</span><span class="chip s-${status === "?" ? "A" : status}"></span>
     <span class="path"></span>
     <span class="counts"></span>`;
   head.querySelector(".path").textContent = f.oldPath ? `${f.oldPath} → ${f.path}` : f.path;
   const counts = head.querySelector(".counts");
   if (f.added !== undefined || f.deleted !== undefined)
     counts.textContent = `+${f.added ?? 0} −${f.deleted ?? 0}`;
+  head.addEventListener("click", (e) => {
+    if (e.target.closest("button")) return;
+    if (section.classList.toggle("collapsed")) collapsedPaths.add(f.path);
+    else collapsedPaths.delete(f.path);
+  });
   section.appendChild(head);
 
   const body = document.createElement("div");
   body.className = "file-body";
   section.appendChild(body);
 
-  const entry = { section, body, fd: null, patch: f.patch ?? "" };
+  const entry = {
+    section, body, fd: null, patch: f.patch ?? "",
+    beforeLines: typeof f.before === "string" ? f.before.split("\n") : null,
+    afterLines: typeof f.after === "string" ? f.after.split("\n") : null,
+  };
   rendered.set(f.path, entry);
 
-  if (!f.patch && !f.binary) {
-      const info = document.createElement("div");
+  if (f.binary) {
+    const info = document.createElement("div");
+    info.className = "plain-note";
+    info.textContent = "Archivo binario — sin diff de texto.";
+    body.appendChild(info);
+    return;
+  }
+
+  const fd = new FileDiff({
+    themeType: theme,
+    diffStyle: "unified",
+    enableGutterUtility: true,
+    lineHoverHighlight: "both",
+    // 10 líneas de contexto alrededor de cada cambio; los tramos más largos
+    // quedan como separador expandible (click = ver más código, read-only).
+    hunkSeparators: "line-info",
+    collapsedContextThreshold: 10,
+    onGutterUtilityClick: (range) => openComposer(entry, f.path, range),
+  });
+  entry.fd = fd;
+  // <diffs-container> carries the shadow-DOM shell + core styles the
+  // FileDiff renders into — a plain div renders unstyled.
+  const container = document.createElement("diffs-container");
+  body.appendChild(container);
+
+  if (typeof f.before === "string" || typeof f.after === "string") {
+    // Contenido completo: diff local expandible (los números de línea del
+    // gutter son los del archivo real, la cita sale de acá directo).
+    fd.render({
+      fileContainer: container,
+      oldFile:
+        f.before !== undefined && f.before !== null
+          ? { name: f.oldPath ?? f.path, contents: f.before, cacheKey: `da-old:${f.path}:${f.before.length}` }
+          : null,
+      newFile:
+        f.after !== undefined && f.after !== null
+          ? { name: f.path, contents: f.after, cacheKey: `da-new:${f.path}:${f.after.length}` }
+          : null,
+    });
+    fd.setThemeType(theme);
+    return;
+  }
+
+  if (!f.patch) {
+    const info = document.createElement("div");
     info.className = "plain-note";
     info.textContent =
-      status === "R" ? "Renombre sin cambios de contenido." : "Sin parche (binario o sin cambios de texto).";
+      status === "R" ? "Renombre sin cambios de contenido." : "Sin parche (archivo grande o sin cambios de texto).";
     body.appendChild(info);
     return;
   }
@@ -209,19 +327,6 @@ function renderFileInner(f) {
     body.appendChild(info);
     return;
   }
-
-  const fd = new FileDiff({
-    themeType: theme,
-    diffStyle: "unified",
-    enableGutterUtility: true,
-    lineHoverHighlight: "both",
-    onGutterUtilityClick: (range) => openComposer(entry, f.path, range),
-  });
-  entry.fd = fd;
-  // <diffs-container> carries the shadow-DOM shell + core styles the
-  // FileDiff renders into — a plain div renders unstyled.
-  const container = document.createElement("diffs-container");
-  body.appendChild(container);
   fd.render({ fileContainer: container, fileDiff: meta });
   fd.setThemeType(theme);
 }
@@ -243,15 +348,25 @@ function renderAll() {
   header.className = "header";
   header.innerHTML = `
     <div class="meta"></div>
+    <button class="ghost fold" title="Colapsar todos los archivos">⊟</button>
+    <button class="ghost unfold" title="Expandir todos los archivos">⊞</button>
     <button class="ghost refresh" title="Refrescar el diff ahora">⟳</button>`;
   header.querySelector(".meta").textContent =
     `${diffData.branch} @ ${diffData.head} · ${diffData.fileCount} archivo${diffData.fileCount === 1 ? "" : "s"}`;
   header.querySelector(".refresh").onclick = () => refresh(true);
+  header.querySelector(".fold").onclick = () => {
+    for (const f of diffData.files) collapsedPaths.add(f.path);
+    for (const [p, e] of rendered) e.section.classList.toggle("collapsed", collapsedPaths.has(p));
+  };
+  header.querySelector(".unfold").onclick = () => {
+    collapsedPaths.clear();
+    for (const e of rendered.values()) e.section.classList.remove("collapsed");
+  };
   root.appendChild(header);
 
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Pasá el mouse por una línea del diff y apretá + para preguntar sobre esa línea exacta.";
+  hint.textContent = "Hover en una línea → + → acumulá preguntas → Enviar todo (⌘↵). Click en el encabezado colapsa el archivo; los separadores expanden contexto.";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
@@ -281,6 +396,7 @@ async function refresh(explicit = false) {
     diffData = JSON.parse(text);
     document.documentElement.dataset.repo = diffData?.error ? "no" : "yes";
     renderAll();
+    renderInbox();
   } catch (e) {
     const err = document.createElement("div");
     err.className = "state error";
@@ -350,6 +466,7 @@ if (window.__DA_TEST__) {
   diffData = window.__DA_TEST__;
   applyTheme({ theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light" });
   renderAll();
+  renderInbox();
   // Fake send so the composer flow can be exercised outside the app too.
   app.sendMessage = async () => ({ mode: "sent", ok: true });
 } else {

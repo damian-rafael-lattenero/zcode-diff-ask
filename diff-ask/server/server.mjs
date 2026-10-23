@@ -22,6 +22,9 @@ const PANEL_URI = "ui://diff-ask/panel.html";
 const DIFF_URI = "diff://workspace";
 const WORKSPACE = process.env.ZCODE_WORKSPACE_ROOT || process.cwd();
 const MAX_PATCH_BYTES = 1_500_000;
+// Archivos con before+after <= esto viajan con contenido COMPLETO en el JSON
+// (el panel diffea local y expande contexto sin red); más grandes → parche -U10.
+const CONTENT_LIMIT = 300_000;
 
 let serverInfo = { name: "diff-ask", version: "0.1.0" };
 try {
@@ -121,20 +124,55 @@ async function buildDiff({ includePatches = true } = {}) {
   }
 
   let truncated = false;
-  if (includePatches && files.length) {
-    const tracked = await runGit(["diff", "HEAD", "--no-color", "-U3"]);
-    let patchMap = splitPatch(tracked.out);
-    // Untracked files: synthesize a new-file diff with --no-index.
-    for (const f of files) {
-      if (f.status === "?") {
-        const r = await runGit(["diff", "--no-index", "--no-color", "-U3", "--", "/dev/null", f.path], {
-          expectDiffExit: true,
-        });
-        for (const [k, v] of splitPatch(r.out)) patchMap.set(k, v);
+  let budget = MAX_PATCH_BYTES;
+  // Primero intento contenido completo (before/after): el panel diffea local
+  // con 10 líneas de contexto y separadores expandibles. Parche sólo fallback.
+  for (const f of files) {
+    if (f.binary) continue;
+    let before = null;
+    let after = null;
+    try {
+      if (f.status !== "D") {
+        const abs = path.join(WORKSPACE, f.path);
+        if (fs.statSync(abs).size <= CONTENT_LIMIT) after = fs.readFileSync(abs, "utf8");
+      }
+      if (f.status !== "?" && f.status !== "A") {
+        const r = await runGit(["show", `HEAD:${f.oldPath ?? f.path}`]);
+        if (r.ok && r.out.length <= CONTENT_LIMIT) before = r.out;
+      }
+    } catch {
+      /* ilegible → cae a parche */
+    }
+    if (before !== null || after !== null) {
+      const cost = (before?.length ?? 0) + (after?.length ?? 0);
+      if (cost <= budget) {
+        f.before = before ?? "";
+        f.after = after ?? "";
+        budget -= cost;
+        continue;
+      }
+      truncated = true;
+    }
+  }
+  if (includePatches) {
+    const needPatch = files.some(
+      (f) => f.before === undefined && !f.binary && f.status !== "R",
+    );
+    let patchMap = new Map();
+    if (needPatch) {
+      const tracked = await runGit(["diff", "HEAD", "--no-color", "-U10"]);
+      patchMap = splitPatch(tracked.out);
+      for (const f of files) {
+        if (f.status === "?") {
+          const r = await runGit(["diff", "--no-index", "--no-color", "-U10", "--", "/dev/null", f.path], {
+            expectDiffExit: true,
+          });
+          for (const [k, v] of splitPatch(r.out)) patchMap.set(k, v);
+        }
       }
     }
-    let budget = MAX_PATCH_BYTES;
     for (const f of files) {
+      if (f.before !== undefined) continue; // ya viaja con contenido completo
       const chunk = patchMap.get(f.path);
       if (!chunk) continue;
       if (chunk.length <= budget) {
@@ -151,8 +189,9 @@ async function buildDiff({ includePatches = true } = {}) {
     if (n) {
       f.added = n.added;
       f.deleted = n.deleted;
+      if (n.added === "-") f.binary = true;
     }
-    f.binary = f.patch ? /^Binary files /m.test(f.patch) : undefined;
+    if (f.patch && /^Binary files /m.test(f.patch)) f.binary = true;
   }
 
   return {
@@ -277,8 +316,16 @@ async function handleRequest(msg) {
       const data = await buildDiff({
         includePatches: params.arguments?.include_patches !== false,
       });
+      // El modelo no necesita el contenido completo de los archivos (before/
+      // after son para el panel): respuesta liviana con paths + parches.
+      const slim = data.error
+        ? data
+        : {
+            ...data,
+            files: data.files.map(({ before: _b, after: _a, ...f }) => f),
+          };
       return {
-        structuredContent: data,
+        structuredContent: slim,
         content: [
           {
             type: "text",
