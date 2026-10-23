@@ -177,6 +177,15 @@ button.ghost { background: transparent; }
   background: var(--card);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
 }
+/* Anclado bajo la línea seleccionada: flotante dentro del body del archivo. */
+.composer.anchored {
+  position: absolute;
+  z-index: 14;
+  left: 8px;
+  right: 8px;
+  margin: 0;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+}
 .composer-head {
   display: flex;
   align-items: center;
