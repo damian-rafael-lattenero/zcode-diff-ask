@@ -318,15 +318,128 @@ button.ghost { background: transparent; }
   min-width: 200px;
 }
 
-/* Chip flotante de la selección de texto (aparece sobre lo subrayado). */
-.sel-chip {
-  position: fixed;
-  z-index: 20;
-  padding: 4px 14px;
+
+/* Botón peligroso (Borrar todo / 🗑). */
+button.danger:hover { border-color: var(--err); color: var(--err); }
+
+/* Anclajes inline: la pregunta vive colapsada sobre su línea. */
+.file-body.has-anchors { position: relative; }
+.anchor-layer, .sel-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.anchor-layer > *, .sel-layer > .big-plus { pointer-events: auto; }
+.line-marker {
+  position: absolute;
+  right: 10px;
+  z-index: 6;
+  width: 24px;
+  height: 20px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
   border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+.line-marker:hover { background: var(--accent); color: var(--accent-contrast); }
+.head-marker {
+  flex: none;
+  width: 26px;
+  height: 20px;
+  padding: 0;
+  font-size: 12px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+.head-marker:hover { background: var(--accent); color: var(--accent-contrast); }
+
+/* Selección: ＋ chiquitos por línea mientras arrastrás, ＋ grande al final. */
+.mini-plus {
+  position: absolute;
+  right: 44px;
+  z-index: 5;
+  width: 16px;
+  height: 14px;
+  font-size: 10px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  background: var(--card);
+  opacity: 0.75;
+}
+.big-plus {
+  position: absolute;
+  right: 8px;
+  z-index: 7;
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  border-radius: 8px;
   background: var(--accent);
   color: var(--accent-contrast);
   border: none;
-  font-weight: 600;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+/* Editor in-place de un anclaje (editar / borrar ahí mismo). */
+.inline-editor {
+  position: fixed;
+  z-index: 30;
+  width: 320px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.inline-editor .ie-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.inline-editor .ie-head .anchor {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inline-editor textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+.inline-editor .ie-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.inline-editor .ie-actions .hint {
+  flex: 1;
+  color: var(--muted);
+  font-size: 11px;
 }
