@@ -534,6 +534,30 @@ function endDragSel() {
 document.addEventListener("pointerup", endDragSel, true);
 document.addEventListener("pointercancel", () => { dragSel = null; clearSelectionUI(); }, true);
 
+// Re-posicionado de anclajes REACTIVO: un solo rAF coalesce cualquier
+// cantidad de disparadores (onHunkExpand, observer estructural, colapso) —
+// cero "esperar N ms a ver si asentó".
+let anchorsScheduled = false;
+function scheduleAnchors() {
+  if (anchorsScheduled) return;
+  anchorsScheduled = true;
+  requestAnimationFrame(() => {
+    anchorsScheduled = false;
+    renderAnchors();
+  });
+}
+
+// La lib re-acomoda filas al expandir separadores / re-render de tema: el
+// observer del shadowRoot reacciona a esos cambios estructurales.
+function attachStructureObserver(entry) {
+  if (entry.structureObserver) return;
+  const sr = entry.body.querySelector("diffs-container")?.shadowRoot;
+  if (!sr) return;
+  const mo = new MutationObserver(() => scheduleAnchors());
+  mo.observe(sr, { childList: true, subtree: true });
+  entry.structureObserver = mo;
+}
+
 // ------------------------------------------------- anclajes inline (0.2.1)
 // Cada pregunta ANCLADA vive colapsada sobre su línea: un 💬 en el borde
 // derecho de la fila (chip en el file-head para archivo/línea oculta).
@@ -636,21 +660,9 @@ function openInlineEditor(i, at) {
   ta.focus();
 }
 
-// Los separadores expandidos / colapsos desplazan filas: reposicionar.
-// OJO: los clicks en NUESTRA UI (💬, editor, composer, ＋) no cuentan —
-// re-renderizar anclajes BORRARÍA el editor abierto (el flash de 0.2.3).
-const isOwnUI = (e) =>
-  e.target.closest?.(".inline-editor, .line-marker, .head-marker, .composer, .big-plus, .sel-layer, .pile, #askbar");
-document.addEventListener("click", (e) => {
-  if (isOwnUI(e)) return;
-  const body = e.target.closest?.(".file-body");
-  if (body) setTimeout(renderAnchors, 250);
-});
-document.addEventListener("click", (e) => {
-  if (isOwnUI(e)) return;
-  const head = e.target.closest?.(".file-head");
-  if (head) setTimeout(renderAnchors, 30);
-});
+// Nota: los clicks en NUESTRA UI (💬, editor, composer, ＋) no disparan
+// nada — el reposicionado llega por eventos (onHunkExpand, observer), no
+// por clicks adivinados con timers (los setTimeout de 0.2.4, fuera).
 // El editor flotante se cierra al scrollear (queda lejos de su línea).
 document.getElementById("root").addEventListener("scroll", () => {
   document.querySelectorAll(".inline-editor").forEach((n) => n.remove());
@@ -662,6 +674,7 @@ function clearRendered() {
   dragSel = null;
   for (const entry of rendered.values()) {
     try { entry.fd?.cleanUp(); } catch { /* already gone */ }
+    entry.structureObserver?.disconnect();
     entry.section.remove();
   }
   rendered.clear();
@@ -697,6 +710,7 @@ function renderFileInner(f) {
     if (e.target.closest("button")) return;
     if (section.classList.toggle("collapsed")) collapsedPaths.add(f.path);
     else collapsedPaths.delete(f.path);
+    scheduleAnchors(); // rAF: reposicionar cuando el layout ya cambió
   });
   section.appendChild(head);
 
@@ -737,6 +751,9 @@ function renderFileInner(f) {
     // quedan como separador expandible (click = ver más código, read-only).
     hunkSeparators: "line-info",
     collapsedContextThreshold: 10,
+    // Reactivo: pierre avisa cuando se expande un separador (antes: esperar
+    // 250ms a ver si movió las filas). rAF coalesce múltiples eventos.
+    onHunkExpand: () => scheduleAnchors(),
   });
   entry.fd = fd;
   // <diffs-container> carries the shadow-DOM shell + core styles the
@@ -759,6 +776,7 @@ function renderFileInner(f) {
           : null,
     });
     fd.setThemeType(theme);
+    attachStructureObserver(entry);
     return;
   }
 
@@ -782,6 +800,7 @@ function renderFileInner(f) {
   }
   fd.render({ fileContainer: container, fileDiff: meta });
   fd.setThemeType(theme);
+  attachStructureObserver(entry);
 }
 
 // Composer del ＋ por archivo: mismo look, sin setSelectedLines (no hay rango).
