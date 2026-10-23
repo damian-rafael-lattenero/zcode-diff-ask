@@ -49,6 +49,11 @@ let js = result.outputFiles[0].text;
 js = js.replace(/<\/script/gi, "<\\/script");
 const css = fs.readFileSync(path.join(HERE, "src", "panel.css"), "utf8");
 
+// Sello de build: la UI muestra qué versión corrés (vX.Y.Z en el askbar).
+const manifest = JSON.parse(
+  fs.readFileSync(path.join(HERE, "..", ".zcode-plugin", "plugin.json"), "utf8"),
+);
+
 function makeHtml(extraHead) {
   return `<!doctype html>
 <html>
@@ -56,6 +61,7 @@ function makeHtml(extraHead) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Diff Ask</title>
+    <script>window.__DA_BUILD=${JSON.stringify(manifest.version)};</script>
     <style>${css}</style>
     ${extraHead}
   </head>

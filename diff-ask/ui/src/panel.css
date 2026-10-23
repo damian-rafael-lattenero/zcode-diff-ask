@@ -443,3 +443,33 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   color: var(--muted);
   font-size: 11px;
 }
+
+/* Extensión de rango "hasta línea" en el composer (multi-línea sin drag). */
+.composer-head .range-ext {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  margin-right: 6px;
+}
+.composer-head .range-ext input {
+  width: 5.5ch;
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+}
+.composer-head .range-ext input:focus { outline: none; border-color: var(--accent); }
+/* Sello de versión. */
+#askbar .ver {
+  flex: none;
+  color: var(--muted);
+  font-size: 10px;
+  opacity: 0.7;
+  font-family: ui-monospace, Menlo, monospace;
+}

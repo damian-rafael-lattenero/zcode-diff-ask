@@ -106,6 +106,7 @@ function ensureShell() {
       <span class="hint">Enter agrega a la pila · Shift+Enter salto de línea · ⌘↵ envía todo</span>
       <button class="ghost danger" id="askbar-clear" title="Borrar todas las preguntas pendientes">🗑 Borrar todo</button>
       <button class="primary" id="askbar-send" disabled>Enviar todo (⌘↵)</button>
+      <span class="ver" title="Versión del panel — para saber qué build corrés"></span>
     </div>`;
   document.body.append(pile, askbar);
   const input = askbar.querySelector("#askbar-input");
@@ -122,6 +123,7 @@ function ensureShell() {
     }
   });
   send.onclick = () => sendAllPending();
+  askbar.querySelector(".ver").textContent = `v${window.__DA_BUILD ?? "?"}`;
   askbar.querySelector("#askbar-clear").onclick = () => {
     pendingAsks.length = 0;
     renderPile();
@@ -203,25 +205,42 @@ document.addEventListener("keydown", (e) => {
 // -------------------------------------------------------------- composer
 
 function openComposer(entry, path, range, opts = {}) {
-  if (range && entry.fd)
-    entry.fd?.setSelectedLines({ start: range.start, end: range.end, side: range.side, endSide: range.endSide });
+  // working: el rango se puede EXTENDER en el composer ("hasta línea") — así
+  // el multi-línea no depende del drag: click en una línea y tipeás hasta dónde.
+  const working = { ...range };
+  if (entry.fd)
+    entry.fd?.setSelectedLines({ start: working.start, end: working.end, side: working.side, endSide: working.endSide });
   closeComposer(entry);
-  const { label } = range ? rangeLabel(range) : { label: "archivo" };
+  const { label } = rangeLabel(working);
   const card = document.createElement("div");
   card.className = "composer";
   card.innerHTML = `
     <div class="composer-head">
       <span class="anchor"></span>
+      <span class="range-ext" title="Extendé la pregunta hasta esa línea">hasta <input type="number" min="${working.start}" step="1"></span>
       <button class="ghost close" title="Cancelar">✕</button>
     </div>
-    <textarea rows="3" placeholder="${range ? `Preguntá sobre ${label}…` : "Preguntá sobre este archivo…"}"></textarea>
+    <textarea rows="3" placeholder="Preguntá sobre ${label}…"></textarea>
     <div class="composer-actions">
       <span class="hint">⌘↵ envía</span>
       <button class="ghost cancel">Cancelar</button>
       <button class="primary ask">Preguntar</button>
     </div>`;
   const anchor = card.querySelector(".anchor");
-  anchor.textContent = range ? `${path}:${rangeLabel(range).lines}` : `${path} · archivo`;
+  const paint = () => {
+    anchor.textContent = `${path}:${rangeLabel(working).lines}`;
+    ta.placeholder = `Preguntá sobre ${rangeLabel(working).label}…`;
+  };
+  const ext = card.querySelector(".range-ext input");
+  ext.value = working.end;
+  ext.addEventListener("input", () => {
+    const v = parseInt(ext.value, 10);
+    if (!Number.isNaN(v) && v >= working.start) {
+      working.end = v;
+      paint();
+      entry.fd?.setSelectedLines({ start: working.start, end: working.end, side: working.side });
+    }
+  });
   const ta = card.querySelector("textarea");
   const ask = card.querySelector(".ask");
   const close = () => {
@@ -230,11 +249,14 @@ function openComposer(entry, path, range, opts = {}) {
   };
   card.querySelector(".close").onclick = close;
   card.querySelector(".cancel").onclick = close;
+  paint();
 
   function submit() {
     const q = ta.value.trim();
     if (!q) { ta.focus(); return; }
-    queueQuestion(path, range ?? null, quoteFor(entry, range, opts.verbatim), q);
+    // el verbatim vale sólo si no se extendió el rango a mano
+    const verbatim = working.end === range.end ? opts.verbatim : null;
+    queueQuestion(path, working, quoteFor(entry, working, verbatim), q);
     close();
   }
   ask.onclick = submit;
@@ -350,7 +372,14 @@ function onLibLineSelected(entry, path, range) {
 // (click, shift-click y drag, en vivo). Lo observamos con un
 // MutationObserver — reactivo, sin polling — y pintamos los ＋ chiquitos
 // por línea + el ＋ grande al final del rango marcado.
+// Idempotente: si ya tiene observer, no re-atachamos.
+function ensureSelectionObservers() {
+  for (const entry of rendered.values())
+    if (!entry.selObserver) attachSelectionObserver(entry, entry.path);
+}
+
 function attachSelectionObserver(entry, path) {
+  if (entry.selObserver) return;
   let tries = 0;
   const go = () => {
     // El shadowRoot es estable; el [data-content] interno puede ser
@@ -451,6 +480,20 @@ document.addEventListener("selectionchange", () => {
     if (info) updateSelectionUI(info);
     else clearSelectionUI();
   }, 150);
+});
+
+
+// Vía directa (no depende del observer): al soltar el botón dentro de un
+// diff, re-leemos las marcas data-selected-line de la lib y repintamos.
+// Idempotente con el observer — la que llega primero gana.
+document.addEventListener("pointerup", (e) => {
+  const body = e.target.closest?.(".file-body");
+  if (!body) return;
+  let entry = null;
+  for (const en of rendered.values()) if (en.body === body) { entry = en; break; }
+  if (!entry) return;
+  ensureSelectionObservers();
+  setTimeout(() => onLibSelectionChanged(entry, entry.path), 220);
 });
 
 // ------------------------------------------------- anclajes inline (0.2.1)
@@ -801,6 +844,9 @@ function renderAll() {
     root.appendChild(tr);
   }
   for (const f of diffData.files) renderFile(f);
+  // el render de pierre es async: asegurar observers cuando asiente
+  setTimeout(ensureSelectionObservers, 400);
+  setTimeout(ensureSelectionObservers, 1500);
 }
 
 // ------------------------------------------------------------ data flow
