@@ -516,13 +516,18 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
 /* Colores de líneas con pregunta (WCAG): variables que HEREDAN al shadow DOM
    de pierre — el tema las cambia solas. Ratios verificados: light 11-16:1,
    dark 6.5-8.3:1 (AA doblado / AAA). */
+/* Barra de acento al borde izquierdo de cada fila pintada (inset: no
+   desplaza el layout) — el golpe de vista extra. */
 :root {
-  --da-qa-add-bg: #0E4429; --da-qa-add-fg: #FFFFFF;
-  --da-qa-del-bg: #5A1E22; --da-qa-del-fg: #FFFFFF;
-  --da-qa-ctx-bg: #EBEBEF; --da-qa-ctx-fg: #101014;
+  --da-qa-add-bg: #0E4429; --da-qa-add-fg: #FFFFFF; --da-qa-add-bar: #3DD68C;
+  --da-qa-del-bg: #5A1E22; --da-qa-del-fg: #FFFFFF; --da-qa-del-bar: #F87171;
+  --da-qa-ctx-bg: #EBEBEF; --da-qa-ctx-fg: #101014; --da-qa-ctx-bar: #8B95A8;
 }
 :root[data-theme="dark"] {
-  --da-qa-add-bg: #1F6B45; --da-qa-add-fg: #FFFFFF;
-  --da-qa-del-bg: #8C3838; --da-qa-del-fg: #FFFFFF;
-  --da-qa-ctx-bg: #414855; --da-qa-ctx-fg: #F2F3F5;
+  /* +20% potencia: más saturación/brillo manteniendo ≥5:1 (AA doblado);
+     el verde no puede subir más de fondo sin rozar el límite — su golpe
+     extra lo lleva la barra de acento brillante. */
+  --da-qa-add-bg: #1B7F50; --da-qa-add-fg: #FFFFFF; --da-qa-add-bar: #3DD68C;
+  --da-qa-del-bg: #B23A3E; --da-qa-del-fg: #FFFFFF; --da-qa-del-bar: #F87171;
+  --da-qa-ctx-bg: #4C5568; --da-qa-ctx-fg: #F2F3F5; --da-qa-ctx-bar: #A5B4CC;
 }

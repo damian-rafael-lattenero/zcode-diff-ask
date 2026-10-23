@@ -44,11 +44,11 @@ const QA_STYLE = [
   // bg en la fila; color en la fila Y en todos sus spans (los tokens de
   // pierre traen color propio del tema y si no se pisan quedan ilegibles).
   // Vars CSS que heredan al shadow DOM → cambian solas con el tema.
-  '[data-qa="add"]{background:var(--da-qa-add-bg,#0E4429) !important;}',
+  '[data-qa="add"]{background:var(--da-qa-add-bg,#0E4429) !important;box-shadow:inset 3px 0 0 var(--da-qa-add-bar,#3DD68C) !important;}',
   '[data-qa="add"],[data-qa="add"] *{color:var(--da-qa-add-fg,#FFFFFF) !important;}',
-  '[data-qa="del"]{background:var(--da-qa-del-bg,#5A1E22) !important;}',
+  '[data-qa="del"]{background:var(--da-qa-del-bg,#5A1E22) !important;box-shadow:inset 3px 0 0 var(--da-qa-del-bar,#F87171) !important;}',
   '[data-qa="del"],[data-qa="del"] *{color:var(--da-qa-del-fg,#FFFFFF) !important;}',
-  '[data-qa="ctx"]{background:var(--da-qa-ctx-bg,#EBEBEF) !important;}',
+  '[data-qa="ctx"]{background:var(--da-qa-ctx-bg,#EBEBEF) !important;box-shadow:inset 3px 0 0 var(--da-qa-ctx-bar,#8B95A8) !important;}',
   '[data-qa="ctx"],[data-qa="ctx"] *{color:var(--da-qa-ctx-fg,#101014) !important;}',
 ].join("\n");
 
