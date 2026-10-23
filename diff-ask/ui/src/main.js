@@ -31,7 +31,10 @@ const rendered = new Map();
 /** @type {{kind:"line"|"file"|"free", path?:string, start?:number, lines?:string, label?:string, quoteLines?:string[], question:string}[]} */
 const pendingAsks = [];
 // Archivos colapsados por path — persiste durante la sesión entre re-renders.
+// Todo archivo NUEVO (incluido el arranque) nace COLAPSADO: el estado inicial
+// del panel es todo cerrado; lo que vos abrís queda abierto entre refresh.
 const collapsedPaths = new Set();
+const seenPaths = new Set();
 let theme = "light";
 
 // ------------------------------------------------------------- diff text
@@ -1061,6 +1064,12 @@ function renderAll() {
     tr.className = "state warn";
     tr.textContent = "Diff muy grande: algunos parches se omitieron (refrescá tras los edits grandes).";
     root.appendChild(tr);
+  }
+  for (const f of diffData.files) {
+    if (!seenPaths.has(f.path)) {
+      seenPaths.add(f.path);
+      collapsedPaths.add(f.path); // nace colapsado
+    }
   }
   for (const f of diffData.files) renderFile(f);
 }
