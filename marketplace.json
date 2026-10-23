@@ -4,7 +4,7 @@
     {
       "name": "diff-ask",
       "source": "./diff-ask",
-      "version": "0.2.13",
+      "version": "0.2.14",
       "description": "Live workspace diff panel with a '+' on every diff line: click it, write a question, and it reaches the conversation anchored to the exact file and line.",
       "displayName": "Diff Ask"
     }

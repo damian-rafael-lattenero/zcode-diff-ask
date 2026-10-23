@@ -1036,7 +1036,13 @@ function renderAll() {
   if (t.delFiles) bits.push(`<span class="tot-d">${t.delFiles} eliminado${t.delFiles === 1 ? "" : "s"}</span>`);
   if (t.renamed) bits.push(`${t.renamed} renombrado${t.renamed === 1 ? "" : "s"}`);
   header.querySelector(".meta").innerHTML = bits.join(` <span class="dot">·</span> `);
-  header.querySelector(".refresh").onclick = () => refresh(true);
+  header.querySelector(".refresh").onclick = (e) => {
+    const btn = e.currentTarget;
+    btn.classList.remove("spinning");
+    requestAnimationFrame(() => btn.classList.add("spinning"));
+    btn.addEventListener("animationend", () => btn.classList.remove("spinning"), { once: true });
+    refresh(true);
+  };
   header.querySelector(".fold").onclick = () => {
     for (const f of diffData.files) collapsedPaths.add(f.path);
     for (const [p, e] of rendered) e.section.classList.toggle("collapsed", collapsedPaths.has(p));
