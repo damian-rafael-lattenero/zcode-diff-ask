@@ -1,12 +1,14 @@
 {
   "name": "diff-ask",
   "version": "0.2.14",
-  "description": "Live workspace diff panel with a '+' on every diff line: click it, write a question, and it reaches the conversation anchored to the exact file and line.",
+  "description": "Ask questions about your workspace diff, anchored to exact lines: hover + to question a line, drag line numbers for ranges, free-form questions from the ask bar, one message with everything.",
   "description_i18n": {
     "en": "Live workspace diff panel with a '+' on every diff line: click it, write a question, and it reaches the conversation anchored to the exact file and line.",
     "zh-CN": "实时工作区差异面板：每行差异都有“+”，点击后写下问题，问题会以精确的文件与行号发进对话。"
   },
-  "author": { "name": "Damian Lattenero" },
+  "author": {
+    "name": "Damian Lattenero"
+  },
   "license": "Apache-2.0",
   "skills": "skills",
   "mcpServers": {
@@ -30,12 +32,24 @@
     "surfaces": [
       {
         "id": "diff-ask",
-        "title": { "en": "Diff Ask", "zh-CN": "Diff 问答" },
+        "title": {
+          "en": "Diff Ask",
+          "zh-CN": "Diff 问答"
+        },
         "icon": "git-compare",
         "server": "diff-ask",
         "resourceUri": "ui://diff-ask/panel.html",
         "availability": "session"
       }
     ]
-  }
+  },
+  "homepage": "https://github.com/damian-rafael-lattenero/zcode-diff-ask",
+  "repository": "https://github.com/damian-rafael-lattenero/zcode-diff-ask",
+  "keywords": [
+    "diff",
+    "review",
+    "code-review",
+    "questions",
+    "annotations"
+  ]
 }

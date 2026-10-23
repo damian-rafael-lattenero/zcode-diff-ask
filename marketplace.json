@@ -5,7 +5,7 @@
       "name": "diff-ask",
       "source": "./diff-ask",
       "version": "0.2.14",
-      "description": "Live workspace diff panel with a '+' on every diff line: click it, write a question, and it reaches the conversation anchored to the exact file and line.",
+      "description": "Ask questions about your workspace diff, anchored to exact lines: hover + to question a line, drag line numbers for ranges, free-form questions from the ask bar, one message with everything.",
       "displayName": "Diff Ask"
     }
   ]
