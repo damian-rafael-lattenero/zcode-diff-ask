@@ -53,7 +53,7 @@ const QA_STYLE = [
 ].join("\n");
 
 function applyQuestionMarks() {
-  for (const entry of rendered.values()) {
+  for (const [entryPath, entry] of rendered.entries()) {
     (entry.qaRows ?? []).forEach((el) => el.removeAttribute("data-qa"));
     entry.qaRows = [];
     const sr = entry.body.querySelector("diffs-container")?.shadowRoot;
@@ -71,17 +71,32 @@ function applyQuestionMarks() {
       r.hasAttribute("data-line-index"),
     );
     for (const a of pendingAsks) {
-      if (a.kind !== "line") continue;
+      // el span/los números son de ESTE archivo — en los demás no aplica
+      if (a.kind !== "line" || a.path !== entryPath) continue;
       const side = a.side ?? "additions";
       const end = a.end ?? a.start;
-      for (const r of crows) {
-        const n = parseInt(r.dataset.line, 10);
+      // El span del GESTO manda: se pintan exactamente las filas cubiertas.
+      // Fallback (asks sin span): anclas por número DEL LADO (sin cruces).
+      let first = a.span?.first ?? -1;
+      let last = a.span?.last ?? -1;
+      if (first === -1 || last === -1) {
+        crows.forEach((r, i) => {
+          const t = r.dataset.lineType;
+          const num =
+            t === "context" && side === "deletions"
+              ? parseInt(r.dataset.altLine ?? r.dataset.line, 10)
+              : parseInt(r.dataset.line, 10);
+          const belongs = t === "change-deletion" ? side === "deletions" : side === "additions";
+          if (belongs && num >= a.start && num <= end) {
+            if (first === -1) first = i;
+            last = i;
+          }
+        });
+      }
+      if (first === -1 || last === -1) continue;
+      for (let i = first; i <= last; i++) {
+        const r = crows[i];
         const t = r.dataset.lineType;
-        const inSide = t === "change-deletion" ? side === "deletions" : side !== "deletions" || t === "context";
-        if (!inSide || n < a.start || n > end) continue;
-        // contexto en side deletions numera por data-alt-line
-        const num = t === "context" && side === "deletions" ? parseInt(r.dataset.altLine ?? n, 10) : n;
-        if (num < a.start || num > end) continue;
         const qa = t === "change-deletion" ? "del" : t === "change-addition" ? "add" : "ctx";
         r.setAttribute("data-qa", qa);
         entry.qaRows.push(r);
@@ -137,13 +152,15 @@ async function sendAllPending() {
   renderAnchors();
 }
 
-function queueQuestion(path, range, quoteLines, question) {
+// span = {first, last} índices DOM de las filas EXACTAS que cubrió el gesto
+// (drag/hover/selección) — se pintan esas y ninguna más.
+function queueQuestion(path, range, quoteLines, question, span) {
   if (!range) {
     // Pregunta anclada al archivo entero: la "cita" es su mini-resumen.
     pendingAsks.push({ kind: "file", path, label: "archivo", quoteLines, question });
   } else {
     const { side, lines, label } = rangeLabel(range);
-    pendingAsks.push({ kind: "line", path, start: range.start, end: range.end, lines, label, side, quoteLines, question });
+    pendingAsks.push({ kind: "line", path, start: range.start, end: range.end, lines, label, side, quoteLines, question, span });
   }
   renderPile();
   renderAnchors();
@@ -262,6 +279,30 @@ document.addEventListener("keydown", (e) => {
 });
 
 // -------------------------------------------------------------- composer
+// Span DOM de un rango: el del gesto si "hasta" no se tocó; si se extendió
+// a mano, se re-ancla first/last por número DEL LADO (la extensión es
+// numérica por definición).
+function spanForRange(entry, range, baseSpan, origEnd) {
+  if (baseSpan && range.end === origEnd) return baseSpan;
+  const crows = contentRowsOf(entry);
+  const side = range.side ?? "additions";
+  const num = (r) => {
+    const t = r.dataset.lineType;
+    if (t === "context" && side === "deletions") return parseInt(r.dataset.altLine ?? r.dataset.line, 10);
+    return parseInt(r.dataset.line, 10);
+  };
+  let first = -1;
+  let last = -1;
+  crows.forEach((r, i) => {
+    const v = num(r);
+    if (v >= range.start && v <= range.end) {
+      if (first === -1) first = i;
+      last = i;
+    }
+  });
+  return first === -1 ? undefined : { first, last };
+}
+
 // El composer aparece JUSTO DEBAJO de la línea seleccionada (contexto a la
 // vista), no al pie del archivo. Fila oculta → fallback al pie del body.
 function positionComposerAtRow(entry, card, row) {
@@ -329,7 +370,7 @@ function openComposer(entry, path, range, opts = {}) {
     if (!q) { ta.focus(); return; }
     // el verbatim vale sólo si no se extendió el rango a mano
     const verbatim = working.end === range.end ? opts.verbatim : null;
-    queueQuestion(path, working, quoteFor(entry, working, verbatim), q);
+    queueQuestion(path, working, quoteFor(entry, working, verbatim), q, spanForRange(entry, working, opts.span, range.end));
     close();
   }
   ask.onclick = submit;
@@ -399,7 +440,11 @@ function selectionAsk() {
   for (const e of rendered.values()) {
     if (!e.body.contains(host)) continue;
     const endRow = selRows.find((r) => r.contains(range.endContainer)) ?? selRows[selRows.length - 1];
-    return { entry: e, path: e.path, range: askRange, text, rows: selRows, endRow };
+    const crows = contentRowsOf(e);
+    return {
+      entry: e, path: e.path, range: askRange, text, rows: selRows, endRow,
+      span: { first: crows.indexOf(selRows[0]), last: crows.indexOf(selRows[selRows.length - 1]) },
+    };
   }
   return null;
 }
@@ -455,7 +500,7 @@ function paintSelectionUI(entry, rows, endRow, info) {
     big.title = `Preguntar sobre ${info.path}:${lines}`;
     big.onclick = () => {
       clearSelectionUI();
-      openComposer(info.entry, info.path, info.range, { verbatim: info.text ?? null, row: endRow });
+      openComposer(info.entry, info.path, info.range, { verbatim: info.text ?? null, row: endRow, span: info.span });
     };
     layer.appendChild(big);
     const r = endRow.getBoundingClientRect();
@@ -515,7 +560,8 @@ function showHoverPlus(entry, row) {
   hoverPlus.title = "Preguntar sobre esta línea";
   hoverPlus.onclick = () => {
     hideHoverPlus();
-    openComposer(entry, entry.path, rangeOfRow(row), { row });
+    const idx = contentRowsOf(entry).indexOf(row);
+    openComposer(entry, entry.path, rangeOfRow(row), { row, span: { first: idx, last: idx } });
   };
   entry.body.appendChild(hoverPlus);
   const bodyRect = entry.body.getBoundingClientRect();
@@ -635,9 +681,11 @@ function endDragSel() {
     clearSelectionUI(); // click sin arrastre: nada pegado (hover-＋ = una línea)
     return;
   }
+  const crows = contentRowsOf(d.entry);
+  const span = { first: crows.indexOf(rows[0]), last: crows.indexOf(rows[rows.length - 1]) };
   updateSelectionUI({
     entry: d.entry, path: d.entry.path, range,
-    rows, endRow: d.lastRow,
+    rows, endRow: d.lastRow, span,
     text: quoteFor(d.entry, range).join("\n"),
   });
 }
