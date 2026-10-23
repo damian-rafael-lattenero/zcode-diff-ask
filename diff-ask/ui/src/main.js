@@ -41,9 +41,15 @@ let theme = "light";
 // en el shadow DOM de pierre) según su naturaleza — verde muy oscuro/blanco
 // (adiciones), rojo muy oscuro/blanco (borrados), gris clarito/negro (contexto).
 const QA_STYLE = [
-  '[data-qa="add"]{background:#0E4429 !important;color:#FFFFFF !important;}',
-  '[data-qa="del"]{background:#5A1E22 !important;color:#FFFFFF !important;}',
-  '[data-qa="ctx"]{background:#EBEBEF !important;color:#101014 !important;}',
+  // bg en la fila; color en la fila Y en todos sus spans (los tokens de
+  // pierre traen color propio del tema y si no se pisan quedan ilegibles).
+  // Vars CSS que heredan al shadow DOM → cambian solas con el tema.
+  '[data-qa="add"]{background:var(--da-qa-add-bg,#0E4429) !important;}',
+  '[data-qa="add"],[data-qa="add"] *{color:var(--da-qa-add-fg,#FFFFFF) !important;}',
+  '[data-qa="del"]{background:var(--da-qa-del-bg,#5A1E22) !important;}',
+  '[data-qa="del"],[data-qa="del"] *{color:var(--da-qa-del-fg,#FFFFFF) !important;}',
+  '[data-qa="ctx"]{background:var(--da-qa-ctx-bg,#EBEBEF) !important;}',
+  '[data-qa="ctx"],[data-qa="ctx"] *{color:var(--da-qa-ctx-fg,#101014) !important;}',
 ].join("\n");
 
 function applyQuestionMarks() {
