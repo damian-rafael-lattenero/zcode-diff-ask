@@ -403,6 +403,22 @@ function updateSelectionUI(info) {
   paintSelectionUI(info.entry, info.rows, info.endRow, info);
 }
 
+// Dueño de la UI de selección: "drag" (números) o "text". El path de texto
+// no puede borrar la UI del drag: el click que colapsa una selección vieja
+// no se lleva puesto el ＋ que estás por tocar.
+let selOwner = "drag";
+let selTimer = null;
+document.addEventListener("selectionchange", () => {
+  clearTimeout(selTimer);
+  selTimer = setTimeout(() => {
+    const info = selectionAsk();
+    if (info) {
+      selOwner = "text";
+      updateSelectionUI(info);
+    } else if (selOwner !== "drag") clearSelectionUI();
+  }, 150);
+});
+
 // --------------------------------------------- drag propio del gutter
 // La selección de líneas de pierre no arranca en el webview de la app, así
 // que el drag lo implementamos NOSOTROS sobre la columna de números: el
@@ -475,6 +491,7 @@ document.addEventListener("pointerdown", (e) => {
   const row = rowFromPoint(e.clientX, e.clientY, entry);
   if (!row) return;
   e.stopPropagation(); // la sesión es nuestra: la lib no arranca la suya
+  e.preventDefault(); // sin selección de texto nativa colgante tras el drag
   dragSel = { entry, startRow: row, lastRow: row, moved: false, x0: e.clientX, y0: e.clientY };
 }, true);
 
@@ -490,6 +507,7 @@ document.addEventListener("pointermove", (e) => {
 
 function endDragSel() {
   if (!dragSel) return;
+  selOwner = "drag";
   const d = dragSel;
   dragSel = null;
   const rows = rowsBetween(d.entry, d.startRow, d.lastRow);
@@ -561,7 +579,6 @@ function addHeadChip(entry, i, note) {
 function renderAnchors() {
   document.querySelectorAll(".inline-editor").forEach((n) => n.remove());
   document.querySelectorAll(".head-marker").forEach((n) => n.remove());
-  document.querySelectorAll(".sel-layer").forEach((n) => n.remove());
   for (const entry of rendered.values()) ensureLayer(entry);
   pendingAsks.forEach((a, i) => {
     if (a.kind === "free") return;
