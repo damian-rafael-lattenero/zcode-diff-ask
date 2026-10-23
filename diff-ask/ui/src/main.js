@@ -36,6 +36,59 @@ let theme = "light";
 
 // ------------------------------------------------------------- diff text
 
+
+// Colores de líneas con pregunta pendiente: la fila SE pinta (estilo inyectado
+// en el shadow DOM de pierre) según su naturaleza — verde muy oscuro/blanco
+// (adiciones), rojo muy oscuro/blanco (borrados), gris clarito/negro (contexto).
+const QA_STYLE = [
+  '[data-qa="add"]{background:#0E4429 !important;color:#FFFFFF !important;}',
+  '[data-qa="del"]{background:#5A1E22 !important;color:#FFFFFF !important;}',
+  '[data-qa="ctx"]{background:#EBEBEF !important;color:#101014 !important;}',
+].join("\n");
+
+function applyQuestionMarks() {
+  for (const entry of rendered.values()) {
+    (entry.qaRows ?? []).forEach((el) => el.removeAttribute("data-qa"));
+    entry.qaRows = [];
+    const sr = entry.body.querySelector("diffs-container")?.shadowRoot;
+    if (!sr) continue;
+    if (!sr.querySelector("style.da-qa")) {
+      const st = document.createElement("style");
+      st.className = "da-qa";
+      st.textContent = QA_STYLE;
+      sr.appendChild(st);
+    }
+    const content = sr.querySelector("[data-content]");
+    if (!content) continue;
+    const crows = [...content.children].filter((r) => r.hasAttribute("data-line"));
+    const grows = [...(sr.querySelector("[data-gutter]")?.children ?? [])].filter((r) =>
+      r.hasAttribute("data-line-index"),
+    );
+    for (const a of pendingAsks) {
+      if (a.kind !== "line") continue;
+      const side = a.side ?? "additions";
+      const end = a.end ?? a.start;
+      for (const r of crows) {
+        const n = parseInt(r.dataset.line, 10);
+        const t = r.dataset.lineType;
+        const inSide = t === "change-deletion" ? side === "deletions" : side !== "deletions" || t === "context";
+        if (!inSide || n < a.start || n > end) continue;
+        // contexto en side deletions numera por data-alt-line
+        const num = t === "context" && side === "deletions" ? parseInt(r.dataset.altLine ?? n, 10) : n;
+        if (num < a.start || num > end) continue;
+        const qa = t === "change-deletion" ? "del" : t === "change-addition" ? "add" : "ctx";
+        r.setAttribute("data-qa", qa);
+        entry.qaRows.push(r);
+        const g = grows.find((x) => x.getAttribute("data-line-index") === r.getAttribute("data-line-index"));
+        if (g) {
+          g.setAttribute("data-qa", qa);
+          entry.qaRows.push(g);
+        }
+      }
+    }
+  }
+}
+
 // ------------------------------------------------------------------ ask
 
 function chip(text) {
@@ -84,7 +137,7 @@ function queueQuestion(path, range, quoteLines, question) {
     pendingAsks.push({ kind: "file", path, label: "archivo", quoteLines, question });
   } else {
     const { side, lines, label } = rangeLabel(range);
-    pendingAsks.push({ kind: "line", path, start: range.start, lines, label, side, quoteLines, question });
+    pendingAsks.push({ kind: "line", path, start: range.start, end: range.end, lines, label, side, quoteLines, question });
   }
   renderPile();
   renderAnchors();
@@ -676,6 +729,7 @@ function renderAnchors() {
     layer.appendChild(mk);
     mk.style.top = `${r.top - bodyRect.top + (r.height - mk.offsetHeight) / 2}px`;
   });
+  applyQuestionMarks();
 }
 
 // Editor in-place del anclaje: editar la pregunta o borrarla, ahí mismo.
