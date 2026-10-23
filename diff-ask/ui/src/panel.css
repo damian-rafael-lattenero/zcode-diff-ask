@@ -358,13 +358,21 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
 }
 .head-marker:hover { background: var(--accent); color: var(--accent-contrast); }
 
-/* Selección: ＋ chiquitos por línea mientras arrastrás, ＋ grande al final. */
+/* Selección propia del gutter: franja pintada por línea, ＋ chiquitos
+   por fila y ＋ grande al final — todos pegados a la derecha de los números. */
+.drag-stripe {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 4;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  pointer-events: none;
+}
 .mini-plus {
   position: absolute;
-  right: 44px;
   z-index: 5;
   width: 16px;
-  height: 14px;
+  height: 15px;
   font-size: 10px;
   line-height: 1;
   display: flex;
@@ -374,25 +382,24 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   color: var(--accent);
   border: 1px solid var(--accent);
   background: var(--card);
-  opacity: 0.75;
+  opacity: 0.8;
+  pointer-events: none;
 }
 .big-plus {
   position: absolute;
-  right: 8px;
   z-index: 7;
-  width: 30px;
-  height: 24px;
+  width: 26px;
+  height: 21px;
   padding: 0;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
   line-height: 1;
-  border-radius: 8px;
+  border-radius: 7px;
   background: var(--accent);
   color: var(--accent-contrast);
   border: none;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
 }
-
 /* Editor in-place de un anclaje (editar / borrar ahí mismo). */
 .inline-editor {
   position: fixed;
