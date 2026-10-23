@@ -58,8 +58,38 @@ const QA_STYLE = [
   '[data-qa="ctx"],[data-qa="ctx"] *{color:var(--da-qa-ctx-fg,#101014) !important;}',
 ].join("\n");
 
-function applyQuestionMarks() {
-  for (const [entryPath, entry] of rendered.entries()) {
+// El NÚMERO es la cajita (0.2.16): click en el gutter suma/quita la línea;
+// seleccionada = celda rellena con el número visible en contraste (seguís
+// contando líneas). Números +20% (1.2em) para que se lean como contadores.
+const SEL_STYLE = [
+  "[data-gutter] > [data-line-index]{font-size:1.2em !important;}",
+  "[data-gutter] > [data-line-index][data-da-sel]{background:var(--accent,#4268d8) !important;color:var(--accent-contrast,#ffffff) !important;font-weight:700 !important;border-radius:4px !important;}",
+  "[data-gutter] > [data-line-index][data-da-sel] span{color:var(--accent-contrast,#ffffff) !important;}",
+].join("\n");
+
+function ensureShadowSelStyle(entry) {
+  const sr = entry.body.querySelector("diffs-container")?.shadowRoot;
+  if (!sr || sr.querySelector("style.da-sel")) return;
+  const st = document.createElement("style");
+  st.className = "da-sel";
+  st.textContent = SEL_STYLE;
+  sr.appendChild(st);
+}
+
+function gutterCellsOf(entry) {
+  const g = entry.body.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-gutter]");
+  return g ? [...g.children].filter((c) => c.hasAttribute("data-line-index")) : [];
+}
+
+function gutterCellOf(entry, row) {
+  return (
+    gutterCellsOf(entry).find(
+      (c) => c.getAttribute("data-line-index") === row.getAttribute("data-line-index"),
+    ) ?? null
+  );
+}
+
+function applyQuestionMarks() {  for (const [entryPath, entry] of rendered.entries()) {
     (entry.qaRows ?? []).forEach((el) => el.removeAttribute("data-qa"));
     entry.qaRows = [];
     const sr = entry.body.querySelector("diffs-container")?.shadowRoot;
@@ -464,8 +494,8 @@ function selectedRowsOf(entry) {
   return contentRowsOf(entry).filter((r) => keys.has(keyOfRow(r)));
 }
 
-// Pinta el riel de un archivo: cajitas (una por fila), franja tintada por
-// fila seleccionada y el ＋ grande debajo de la última seleccionada.
+// Pinta la selección de un archivo: franja tintada por fila + NÚMERO relleno
+// (la cajita ES el número) + ＋ grande debajo de la última seleccionada.
 function renderSelUI(entry) {
   let layer = entry.body.querySelector(".sel-layer");
   if (!layer) {
@@ -474,6 +504,9 @@ function renderSelUI(entry) {
     entry.body.appendChild(layer);
   }
   layer.textContent = "";
+  ensureShadowSelStyle(entry);
+  // fill de números: limpiar los viejos, marcar los seleccionados
+  for (const cell of gutterCellsOf(entry)) cell.removeAttribute("data-da-sel");
   if (entry.section.classList.contains("collapsed")) return;
   const rows = contentRowsOf(entry);
   if (!rows.length) return;
@@ -483,24 +516,16 @@ function renderSelUI(entry) {
   const frag = document.createDocumentFragment();
   for (const row of rows) {
     const k = keyOfRow(row);
-    const on = keys.has(k);
+    if (!keys.has(k)) continue;
     const r = row.getBoundingClientRect();
-    if (on) {
-      const stripe = document.createElement("div");
-      stripe.className = "drag-stripe";
-      stripe.dataset.k = k;
-      stripe.style.top = `${r.top - bodyRect.top}px`;
-      stripe.style.height = `${r.height}px`;
-      frag.appendChild(stripe);
-      last = row;
-    }
-    const box = document.createElement("button");
-    box.type = "button";
-    box.className = `sel-box${on ? " on" : ""}`;
-    box.dataset.k = k;
-    box.title = on ? "Quitar de la selección" : "Sumar a la selección";
-    box.style.top = `${r.top - bodyRect.top + (r.height - 13) / 2}px`;
-    frag.appendChild(box);
+    const stripe = document.createElement("div");
+    stripe.className = "drag-stripe";
+    stripe.dataset.k = k;
+    stripe.style.top = `${r.top - bodyRect.top}px`;
+    stripe.style.height = `${r.height}px`;
+    frag.appendChild(stripe);
+    gutterCellOf(entry, row)?.setAttribute("data-da-sel", "");
+    last = row;
   }
   layer.appendChild(frag);
   if (!last) return;
@@ -510,25 +535,25 @@ function renderSelUI(entry) {
   big.title = "Preguntar sobre la selección";
   const br = last.getBoundingClientRect();
   big.style.top = `${br.bottom - bodyRect.top + 3}px`;
-  big.style.left = "22px"; // misma columna que las cajitas
+  big.style.left = "2px"; // riel izquierdo (el número ya no ocupa cajita propia)
   big.onclick = () => openComposerMulti(entry);
   layer.appendChild(big);
 }
 
-// Cambio in-place del estado de una cajita (sin rebuild: el drag va fluido).
+// Cambio in-place de una línea seleccionada (sin rebuild: el drag va fluido).
 function applyBoxState(entry, key, on, row) {
   const keys = selKeysOf(entry);
   if (on) keys.add(key);
   else keys.delete(key);
   if (keys.size) boxSel.set(entry.path, keys);
   else boxSel.delete(entry.path);
-  entry.selVerbatim = null; // tocó una cajita: la cita sale de las líneas
-  const layer = entry.body.querySelector(".sel-layer");
-  const box = layer?.querySelector(`.sel-box[data-k="${CSS.escape(key)}"]`);
-  if (box) {
-    box.classList.toggle("on", on);
-    box.title = on ? "Quitar de la selección" : "Sumar a la selección";
+  entry.selVerbatim = null; // tocó un número: la cita sale de las líneas
+  if (row) {
+    const cell = gutterCellOf(entry, row);
+    if (on) cell?.setAttribute("data-da-sel", "");
+    else cell?.removeAttribute("data-da-sel");
   }
+  const layer = entry.body.querySelector(".sel-layer");
   const stripe = layer?.querySelector(`.drag-stripe[data-k="${CSS.escape(key)}"]`);
   if (on && row && !stripe) {
     const st = document.createElement("div");
@@ -542,23 +567,32 @@ function applyBoxState(entry, key, on, row) {
   } else if (!on && stripe) stripe.remove();
 }
 
-// Gestura de las cajitas: click = toggle; arrastre = pintar (o despintar,
-// según el estado ORIGINAL de la cajita donde arrancó) todo lo traversado.
+// Gestura sobre el GUTTER: click en un número = seleccionar/deseleccionar
+// esa línea; arrastre = modo pintura (pinta o despinta, según el estado del
+// número donde arrancó) todo lo traversado.
 let boxDrag = null;
 document.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
-  const box = e.target.closest?.(".sel-box");
-  if (!box) return;
-  e.preventDefault();
-  e.stopPropagation();
-  const body = box.closest(".file-body");
+  const body = e.target.closest?.(".file-body");
+  if (!body) return;
+  // no intervenir sobre nuestra propia UI
+  if (e.target.closest?.(".inline-editor, .line-marker, .head-marker, .composer, .big-plus, .hover-plus, .sel-layer")) return;
   let entry = null;
   for (const en of rendered.values()) if (en.body === body) { entry = en; break; }
   if (!entry) return;
+  const g = entry.body.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-gutter]");
+  if (!g) return;
+  const gr = g.getBoundingClientRect();
+  if (e.clientX < gr.left - 4 || e.clientX > gr.right + 14) return; // sólo la zona de números
+  const row = rowFromPoint(e.clientX, e.clientY, entry);
+  if (!row) return;
   hideHoverPlus();
-  const mode = !box.classList.contains("on");
+  e.stopPropagation(); // la sesión es nuestra: la lib no arranca la suya
+  e.preventDefault(); // sin selección de texto nativa colgante tras el drag
+  const key = keyOfRow(row);
+  const mode = !selKeysOf(entry).has(key);
   boxDrag = { entry, mode, x0: e.clientX, y0: e.clientY, moved: false };
-  applyBoxState(entry, box.dataset.k, mode);
+  applyBoxState(entry, key, mode, row);
 }, true);
 
 document.addEventListener("pointermove", (e) => {
@@ -1116,7 +1150,7 @@ function renderAll() {
 
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Cajitas del riel: click = sumar/quitar línea, arrastrás y pintás varias (salteadas también) → ＋ grande debajo de la última abre la pregunta · hover en una línea → ＋ = preguntar por esa línea · ＋ del encabezado = archivo (andá colapsado, igual aparece). Abajo: libres; ⌘↵ manda todo junto.";
+  hint.textContent = "Click en un NÚMERO = seleccionarlo (se rellena; arrastrás y pintás varios, salteados también) → ＋ grande debajo del último abre la pregunta · hover en una línea → ＋ = preguntar por esa línea · ＋ del encabezado = archivo (colapsado, igual aparece). Abajo: libres; ⌘↵ manda todo junto.";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
