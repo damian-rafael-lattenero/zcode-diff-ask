@@ -332,83 +332,118 @@ function selectionAsk() {
 }
 
 
-// Selección multi-línea NATIVA de pierre (enableLineSelection — la misma vía
-// que usa la app para sus code comments): arrastrar sobre las líneas las
-// resalta de línea a línea; al soltar, onLineSelected trae el rango y
-// mostramos los ＋ chiquitos + el ＋ grande al final. Reemplaza en la
-// práctica a la selección nativa de texto (pierre controla el pointer).
-function onLibLineSelected(entry, path, range) {
-  if (!range || range.start == null || range.end == null) {
-    clearSelectionUI();
-    return;
+
+function clearSelectionUI() {
+  document.querySelectorAll(".mini-plus, .big-plus, .drag-stripe").forEach((n) => n.remove());
+}
+
+function ensureSelLayer(entry) {
+  let layer = entry.body.querySelector(".sel-layer");
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.className = "sel-layer";
+    entry.body.appendChild(layer);
   }
-  const host = entry.body.querySelector("diffs-container");
-  const content = host?.shadowRoot?.querySelector("[data-content]");
-  if (!content) return;
-  const side = range.side ?? "additions";
-  const covered = [];
-  for (const r of content.children) {
-    if (!r.hasAttribute("data-line")) continue;
-    const t = r.dataset.lineType;
-    let num = null;
-    if (t === "change-deletion") num = side === "deletions" ? parseInt(r.dataset.line, 10) : null;
-    else if (t === "change-addition") num = side === "deletions" ? null : parseInt(r.dataset.line, 10);
-    else num = parseInt((side === "deletions" ? r.dataset.altLine : r.dataset.line) ?? r.dataset.line, 10);
-    if (num != null && num >= range.start && num <= range.end) covered.push(r);
+  return layer;
+}
+
+// El borde derecho de la columna de números: ahí (a su derecha, pegado)
+// viven los ＋ — donde el ojo ya está mirando, no en el borde lejano.
+function gutterRightOf(entry) {
+  const g = entry.body.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-gutter]");
+  const r = g?.getBoundingClientRect();
+  return r ? r.right - entry.body.getBoundingClientRect().left : 46;
+}
+
+// Painter unificado: franja pintada por cada línea cubierta + ＋ chiquitos
+// por fila + (con info) el ＋ grande al final, listo para abrir el composer.
+function paintSelectionUI(entry, rows, endRow, info) {
+  clearSelectionUI();
+  if (!rows.length) return;
+  const layer = ensureSelLayer(entry);
+  const bodyRect = entry.body.getBoundingClientRect();
+  const gx = gutterRightOf(entry) + 6;
+  for (const row of rows) {
+    const stripe = document.createElement("div");
+    stripe.className = "drag-stripe";
+    layer.appendChild(stripe);
+    const r = row.getBoundingClientRect();
+    stripe.style.top = `${r.top - bodyRect.top}px`;
+    stripe.style.height = `${r.height}px`;
   }
-  if (!covered.length) return;
-  updateSelectionUI({
-    entry,
-    path,
-    range,
-    rows: covered,
-    endRow: covered[covered.length - 1],
-    text: quoteFor(entry, range).join("\n"),
-  });
+  for (const row of rows) {
+    if (row === endRow) continue;
+    const mini = document.createElement("div");
+    mini.className = "mini-plus";
+    mini.textContent = "＋";
+    layer.appendChild(mini);
+    const r = row.getBoundingClientRect();
+    mini.style.top = `${r.top - bodyRect.top + (r.height - mini.offsetHeight) / 2}px`;
+    mini.style.left = `${gx}px`;
+  }
+  if (info) {
+    const big = document.createElement("button");
+    big.className = "big-plus";
+    big.textContent = "＋";
+    const { lines } = rangeLabel(info.range);
+    big.title = `Preguntar sobre ${info.path}:${lines}`;
+    big.onclick = () => {
+      clearSelectionUI();
+      openComposer(info.entry, info.path, info.range, { verbatim: info.text ?? null });
+    };
+    layer.appendChild(big);
+    const r = endRow.getBoundingClientRect();
+    big.style.top = `${r.top - bodyRect.top + (r.height - big.offsetHeight) / 2}px`;
+    big.style.left = `${gx}px`;
+  }
 }
 
-
-// La selección de líneas de la lib marca las filas con data-selected-line
-// (click, shift-click y drag, en vivo). Lo observamos con un
-// MutationObserver — reactivo, sin polling — y pintamos los ＋ chiquitos
-// por línea + el ＋ grande al final del rango marcado.
-// Idempotente: si ya tiene observer, no re-atachamos.
-function ensureSelectionObservers() {
-  for (const entry of rendered.values())
-    if (!entry.selObserver) attachSelectionObserver(entry, entry.path);
+// info = {entry, path, range, rows, endRow, text?} → franjas + minis + ＋ grande
+function updateSelectionUI(info) {
+  paintSelectionUI(info.entry, info.rows, info.endRow, info);
 }
 
-function attachSelectionObserver(entry, path) {
-  if (entry.selObserver) return;
-  let tries = 0;
-  const go = () => {
-    // El shadowRoot es estable; el [data-content] interno puede ser
-    // REEMPLAZADO por la lib (re-render/theme) — observar el root con
-    // subtree cubre atributos y reemplazos en un solo observer.
-    const sr = entry.body.querySelector("diffs-container")?.shadowRoot;
-    if (!sr) {
-      if (++tries < 40) setTimeout(go, 100); // render async de pierre
-      return;
-    }
-    let t = null;
-    const mo = new MutationObserver(() => {
-      clearTimeout(t);
-      t = setTimeout(() => onLibSelectionChanged(entry, path), 180);
-    });
-    mo.observe(sr, { childList: true, subtree: true, attributeFilter: ["data-selected-line"] });
-    entry.selObserver = mo;
-  };
-  go();
-}
+// --------------------------------------------- drag propio del gutter
+// La selección de líneas de pierre no arranca en el webview de la app, así
+// que el drag lo implementamos NOSOTROS sobre la columna de números: el
+// comportamiento es idéntico en la app y en Chrome. Click en un número =
+// seleccionar esa línea; arrastrar = rango; el ＋ grande abre el composer.
+let dragSel = null;
 
-function onLibSelectionChanged(entry, path) {
+function contentRowsOf(entry) {
   const content = entry.body.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-content]");
-  if (!content) return;
-  const rows = [...content.querySelectorAll("[data-selected-line]")].filter((r) => r.hasAttribute("data-line"));
-  if (!rows.length) {
-    clearSelectionUI();
-    return;
+  return content ? [...content.children].filter((r) => r.hasAttribute("data-line")) : [];
+}
+
+// Fila bajo un punto: si cae en el contenido, su fila; si cae en el gutter,
+// la fila con el mismo data-line-index (las celdas de números comparten el
+// índice con las filas de contenido).
+function rowFromPoint(x, y, entry) {
+  // document.elementFromPoint NO atraviesa el shadow DOM (devuelve el host):
+  // preguntarle directo al shadowRoot del container sí llega a la celda/fila.
+  const host = entry.body.querySelector("diffs-container");
+  const el = host?.shadowRoot?.elementFromPoint?.(x, y) ?? document.elementFromPoint(x, y);
+  if (!el) return null;
+  let n = el;
+  let idx = null;
+  while (n && n !== document.body) {
+    if (n.hasAttribute?.("data-line")) return n;
+    if (idx === null && n.hasAttribute?.("data-line-index")) idx = n.getAttribute("data-line-index");
+    n = n.parentElement;
   }
+  if (idx === null) return null;
+  return contentRowsOf(entry).find((r) => r.getAttribute("data-line-index") === idx) ?? null;
+}
+
+function rowsBetween(entry, a, b) {
+  const rows = contentRowsOf(entry);
+  const i = rows.indexOf(a);
+  const j = rows.indexOf(b);
+  if (i === -1 || j === -1) return [];
+  return i <= j ? rows.slice(i, j + 1) : rows.slice(j, i + 1);
+}
+
+function rangeFromRows(rows) {
   const news = [];
   const olds = [];
   for (const r of rows) {
@@ -420,81 +455,66 @@ function onLibSelectionChanged(entry, path) {
   }
   const byNew = news.length > 0;
   const nums = byNew ? news : olds;
-  const range = {
-    start: Math.min(...nums),
-    end: Math.max(...nums),
-    side: byNew ? "additions" : "deletions",
-  };
-  updateSelectionUI({
-    entry, path, range, rows,
-    endRow: rows[rows.length - 1],
-    text: quoteFor(entry, range).join("\n"),
-  });
+  if (!nums.length) return null;
+  return { start: Math.min(...nums), end: Math.max(...nums), side: byNew ? "additions" : "deletions" };
 }
 
-function clearSelectionUI() {
-  document.querySelectorAll(".mini-plus, .big-plus").forEach((n) => n.remove());
-}
-
-// Mientras seleccionás: un ＋ chiquito al costado de CADA línea cubierta;
-// al terminar, UN ＋ grande al final de la selección (el que se clickea).
-function updateSelectionUI(info) {
-  clearSelectionUI();
-  const bodyRect = info.entry.body.getBoundingClientRect();
-  let layer = info.entry.body.querySelector(".sel-layer");
-  if (!layer) {
-    layer = document.createElement("div");
-    layer.className = "sel-layer";
-    info.entry.body.appendChild(layer);
-  }
-  layer.textContent = "";
-  for (const row of info.rows) {
-    if (row === info.endRow) continue;
-    const mini = document.createElement("div");
-    mini.className = "mini-plus";
-    mini.textContent = "＋";
-    layer.appendChild(mini);
-    const r = row.getBoundingClientRect();
-    mini.style.top = `${r.top - bodyRect.top + (r.height - mini.offsetHeight) / 2}px`;
-  }
-  const big = document.createElement("button");
-  big.className = "big-plus";
-  big.textContent = "＋";
-  const { lines } = rangeLabel(info.range);
-  big.title = `Preguntar sobre ${info.path}:${lines}`;
-  big.onclick = () => {
-    clearSelectionUI();
-    document.getSelection()?.removeAllRanges();
-    openComposer(info.entry, info.path, info.range, { verbatim: info.text });
-  };
-  layer.appendChild(big);
-  const r = info.endRow.getBoundingClientRect();
-  big.style.top = `${r.top - bodyRect.top + (r.height - big.offsetHeight) / 2}px`;
-}
-
-let selTimer = null;
-document.addEventListener("selectionchange", () => {
-  clearTimeout(selTimer);
-  selTimer = setTimeout(() => {
-    const info = selectionAsk();
-    if (info) updateSelectionUI(info);
-    else clearSelectionUI();
-  }, 150);
-});
-
-
-// Vía directa (no depende del observer): al soltar el botón dentro de un
-// diff, re-leemos las marcas data-selected-line de la lib y repintamos.
-// Idempotente con el observer — la que llega primero gana.
-document.addEventListener("pointerup", (e) => {
+document.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
   const body = e.target.closest?.(".file-body");
   if (!body) return;
+  // no intervenir sobre nuestra propia UI
+  if (e.target.closest?.(".inline-editor, .line-marker, .head-marker, .composer, .big-plus")) return;
   let entry = null;
   for (const en of rendered.values()) if (en.body === body) { entry = en; break; }
   if (!entry) return;
-  ensureSelectionObservers();
-  setTimeout(() => onLibSelectionChanged(entry, entry.path), 220);
+  const g = entry.body.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-gutter]");
+  if (!g) return;
+  const gr = g.getBoundingClientRect();
+  if (e.clientX < gr.left - 4 || e.clientX > gr.right + 14) return; // sólo la zona de números
+  const row = rowFromPoint(e.clientX, e.clientY, entry);
+  if (!row) return;
+  e.stopPropagation(); // la sesión es nuestra: la lib no arranca la suya
+  dragSel = { entry, startRow: row, lastRow: row, moved: false, x0: e.clientX, y0: e.clientY };
+}, true);
+
+document.addEventListener("pointermove", (e) => {
+  if (!dragSel) return;
+  if (Math.hypot(e.clientX - dragSel.x0, e.clientY - dragSel.y0) > 5) dragSel.moved = true;
+  const row = rowFromPoint(e.clientX, e.clientY, dragSel.entry);
+  if (!row) return;
+  dragSel.lastRow = row;
+  const rows = rowsBetween(dragSel.entry, dragSel.startRow, row);
+  if (rows.length) paintSelectionUI(dragSel.entry, rows, row, null); // pintado en vivo, sin ＋ aún
 });
+
+function endDragSel() {
+  if (!dragSel) return;
+  const d = dragSel;
+  dragSel = null;
+  const rows = rowsBetween(d.entry, d.startRow, d.lastRow);
+  const range = rangeFromRows(rows);
+  if (!range || !d.moved) {
+    // click simple en un número: selección de UNA línea con su ＋
+    if (!d.moved && d.startRow) {
+      const r1 = rangeFromRows([d.startRow]);
+      if (r1)
+        updateSelectionUI({
+          entry: d.entry, path: d.entry.path, range: r1,
+          rows: [d.startRow], endRow: d.startRow,
+          text: quoteFor(d.entry, r1).join("\n"),
+        });
+    } else clearSelectionUI();
+    return;
+  }
+  updateSelectionUI({
+    entry: d.entry, path: d.entry.path, range,
+    rows, endRow: d.lastRow,
+    text: quoteFor(d.entry, range).join("\n"),
+  });
+}
+document.addEventListener("pointerup", endDragSel, true);
+document.addEventListener("pointercancel", () => { dragSel = null; clearSelectionUI(); }, true);
 
 // ------------------------------------------------- anclajes inline (0.2.1)
 // Cada pregunta ANCLADA vive colapsada sobre su línea: un 💬 en el borde
@@ -600,11 +620,17 @@ function openInlineEditor(i, at) {
 }
 
 // Los separadores expandidos / colapsos desplazan filas: reposicionar.
+// OJO: los clicks en NUESTRA UI (💬, editor, composer, ＋) no cuentan —
+// re-renderizar anclajes BORRARÍA el editor abierto (el flash de 0.2.3).
+const isOwnUI = (e) =>
+  e.target.closest?.(".inline-editor, .line-marker, .head-marker, .composer, .big-plus, .sel-layer, .pile, #askbar");
 document.addEventListener("click", (e) => {
+  if (isOwnUI(e)) return;
   const body = e.target.closest?.(".file-body");
   if (body) setTimeout(renderAnchors, 250);
 });
 document.addEventListener("click", (e) => {
+  if (isOwnUI(e)) return;
   const head = e.target.closest?.(".file-head");
   if (head) setTimeout(renderAnchors, 30);
 });
@@ -616,9 +642,9 @@ document.getElementById("root").addEventListener("scroll", () => {
 // --------------------------------------------------------------- render
 
 function clearRendered() {
+  dragSel = null;
   for (const entry of rendered.values()) {
     try { entry.fd?.cleanUp(); } catch { /* already gone */ }
-    entry.selObserver?.disconnect();
     entry.section.remove();
   }
   rendered.clear();
@@ -686,15 +712,14 @@ function renderFileInner(f) {
   const fd = new FileDiff({
     themeType: theme,
     diffStyle: "unified",
-    enableGutterUtility: true,
-    enableLineSelection: true,
-    onLineSelected: (range) => onLibLineSelected(entry, f.path, range),
+    // El gutter es NUESTRO (drag propio abajo): el ＋ nativo y la selección
+    // de la lib no arrancan en el webview de la app, y su hover tapaba la
+    // zona de agarre. Click/drag sobre los números = nuestro sistema.
     lineHoverHighlight: "both",
     // 10 líneas de contexto alrededor de cada cambio; los tramos más largos
     // quedan como separador expandible (click = ver más código, read-only).
     hunkSeparators: "line-info",
     collapsedContextThreshold: 10,
-    onGutterUtilityClick: (range) => openComposer(entry, f.path, range),
   });
   entry.fd = fd;
   // <diffs-container> carries the shadow-DOM shell + core styles the
@@ -717,7 +742,6 @@ function renderFileInner(f) {
           : null,
     });
     fd.setThemeType(theme);
-    attachSelectionObserver(entry, f.path);
     return;
   }
 
@@ -741,7 +765,6 @@ function renderFileInner(f) {
   }
   fd.render({ fileContainer: container, fileDiff: meta });
   fd.setThemeType(theme);
-  attachSelectionObserver(entry, f.path);
 }
 
 // Composer del ＋ por archivo: mismo look, sin setSelectedLines (no hay rango).
@@ -827,7 +850,7 @@ function renderAll() {
 
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Hover en una línea → + · arrastra desde los NÚMEROS de línea (o click + shift-click) para preguntar de línea a línea · ＋ en el encabezado pregunta por el archivo. Abajo: preguntas libres; ⌘↵ manda todo junto.";
+  hint.textContent = "Click en un NÚMERO selecciona esa línea; arrastrá sobre los números para varias → ＋ pregunta de línea a línea. ＋ en el encabezado = archivo entero. Abajo: preguntas libres; ⌘↵ manda todo junto.";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
@@ -844,9 +867,6 @@ function renderAll() {
     root.appendChild(tr);
   }
   for (const f of diffData.files) renderFile(f);
-  // el render de pierre es async: asegurar observers cuando asiente
-  setTimeout(ensureSelectionObservers, 400);
-  setTimeout(ensureSelectionObservers, 1500);
 }
 
 // ------------------------------------------------------------ data flow
