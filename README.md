@@ -47,14 +47,23 @@ diff-ask/
 ├── .zcode-plugin/plugin.json   # manifest: mcpServers (stdio vía ZCode Helper) + ui.surfaces
 ├── server/server.mjs           # MCP server (Node stdlib, cero deps)
 │   · ui://diff-ask/panel.html  # sirve el panel (mimeType text/html;profile=mcp-app)
-│   · diff://workspace          # JSON del diff: git diff HEAD + untracked (por --no-index)
-│   · resources/subscribe       # reactivo: fs.watch(worktree + .git) → firma git →
-│   │                           #   notifications/resources/updated (cero polling)
-│   └── tool get_diff           # para el modelo (abre el panel vía _meta.ui)
+│   · diff://workspace          # JSON del diff — 4 modos (barra arriba en el panel):
+│   │     working (default)       git diff HEAD + untracked
+│   │     ?mode=unpushed          git diff @{upstream} + untracked, con ↑ahead ↓behind
+│   │     ?mode=last-turn         working tree vs 📸 (snapshot de turno del server)
+│   · log://commits?skip=&q=    # commits: página de 10 con hasMore ("…" carga más)
+│   │                           #   y búsqueda por hash/prefijo o texto del título
+│   · diff://commit/<hash>      # diff de un commit vs su primer padre (raíz: árbol vacío)
+│   · resources/subscribe       # reactivo: fs.watch(worktree + .git) → firma git
+│   │                           #   (status + numstat + HEAD + upstream) → updated
+│   └── tools                   # get_diff(mode) · list_commits · get_commit_diff
+│                               #   · mark_turn_snapshot (📸)
 ├── ui/
 │   ├── src/main.js             # panel: App (ext-apps SDK) + FileDiff (@pierre/diffs 1.6.1)
-│   │                           #   enableGutterUtility → composer → app.sendMessage
-│   │                           #   (fallback: updateModelContext) — tema del host, refresh
+│   │                           #   barra de modos + vista Commits + 📸 manual;
+│   │                           #   "Enviar todo" marca 📸 ANTES de mandar (línea de
+│   │                           #   base del turno) y el header del mensaje nombra el
+│   │                           #   scope ("sin pushear…", "commit …", "último turno")
 │   ├── src/panel.css           # estilos light/dark
 │   ├── vendor/stub-*.mjs       # stubs del highlighter (shiki ~14MB → plain diff, ver abajo)
 │   └── build.mjs               # esbuild iife → dist/panel.html autocontenido (<4MiB)
@@ -62,6 +71,25 @@ diff-ask/
 │                               #   responder con "# Code comments:" (tarjetas nativas)
 └── dist/                       # panel.html (build) + dev.html (harness visual)
 ```
+
+### Modos y "último turno 📸"
+
+- **Trabajo**: el clásico `git diff HEAD` + untracked.
+- **Sin pushear**: todo lo que subiría un `git push` más los cambios locales
+  (base `@{upstream}`), con cuenta `↑ahead ↓behind`. Sin upstream → mensaje
+  con el `git push -u` para salir.
+- **Último turno**: el server no ve los turnos de la sesión (la SDK de MCP
+  Apps no expone eventos), así que la línea de base es un **marcador 📸**:
+  el panel lo pone SOLO antes de mandar cada tanda de preguntas (base =
+  arranque del turno) y hay 📸 manual. El diff muestra working tree vs ese
+  snapshot — incluye lo que el agente commiteó durante el turno, y los
+  archivos restaurados (cambiaron respecto del marcador). In-memory: vive
+  mientras viva el proceso del server de la sesión.
+- **Commits**: últimos 10 con `hash · título · autor · fecha`, "…" trae 10
+  más, y buscador por hash (exacto o prefijo) o texto del título. Un click
+  abre el diff del commit (vs primer padre; merge anotado) y las preguntas
+  se anclan igual que en cualquier modo, con el commit nombrado en el
+  encabezado del mensaje.
 
 - **El "+" y el composer**: `FileDiff` de `@pierre/diffs` — la MISMA librería
   que usa el diff nativo de la app — con `enableGutterUtility: true` y

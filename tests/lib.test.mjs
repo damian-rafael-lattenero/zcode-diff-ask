@@ -60,9 +60,9 @@ test("diffTotals: strings de numstat, untracked como nuevo, sin counts no suma",
     { status: "?", added: "2", deleted: "0" },
     { status: "D", added: "0", deleted: "219" },
     { status: "R" },           // sin counts (numstat de rename no matchea)
-    { added: "-" },            // binario
+    { added: "-" },            // binario SIN status → default M cuenta como modificado
   ]);
-  assert.deepEqual(t, { added: 13, deleted: 225, newFiles: 1, delFiles: 1, renamed: 1 });
+  assert.deepEqual(t, { added: 13, deleted: 225, newFiles: 1, delFiles: 1, modFiles: 2, renamed: 1 });
 });
 
 test("buildAskMessage: bloques línea + archivo + libre, cita y encabezado", () => {
@@ -85,6 +85,20 @@ test("buildAskMessage: solo libres, plural/singular", () => {
     buildAskMessage([{ kind: "free", question: "x" }, { kind: "free", question: "y" }]).label,
     "2 preguntas ancladas",
   );
+});
+
+test("buildAskMessage: scope del modo en el encabezado (sin pushear / commit)", () => {
+  const asks = [{ kind: "free", question: "x" }];
+  assert.ok(
+    buildAskMessage(asks, "sin pushear, vs origin/damian").text.startsWith(
+      "Diff Ask — 1 pregunta anclada al diff (sin pushear, vs origin/damian):",
+    ),
+  );
+  assert.ok(
+    buildAskMessage(asks, "commit abc1234 fix: algo").text.includes("(commit abc1234 fix: algo):"),
+  );
+  // Sin scope: encabezado idéntico al de siempre.
+  assert.ok(buildAskMessage(asks).text.startsWith("Diff Ask — 1 pregunta anclada al diff:"));
 });
 
 test("esc: caracteres HTML", () => {

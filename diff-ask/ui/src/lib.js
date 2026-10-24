@@ -102,7 +102,7 @@ export function quoteFor(entry, range, verbatim) {
 // Los counts llegan como STRINGS (git numstat) y pueden faltar (binarios,
 // truncados) — NaN no suma.
 export function diffTotals(files) {
-  const t = { added: 0, deleted: 0, newFiles: 0, delFiles: 0, renamed: 0 };
+  const t = { added: 0, deleted: 0, newFiles: 0, delFiles: 0, modFiles: 0, renamed: 0 };
   for (const f of files) {
     const a = parseInt(f.added, 10);
     const d = parseInt(f.deleted, 10);
@@ -111,6 +111,7 @@ export function diffTotals(files) {
     const s = f.status ?? "M";
     if (s === "A" || s === "?") t.newFiles++;
     else if (s === "D") t.delFiles++;
+    else if (s === "M" || s === "T") t.modFiles++;
     else if (s === "R" || s === "C") t.renamed++;
   }
   return t;
@@ -118,7 +119,9 @@ export function diffTotals(files) {
 
 // Ensambla el mensaje único de "Enviar todo": bloques anclados (línea o
 // archivo, con cita) y libres (texto plano), con el encabezado que cuenta.
-export function buildAskMessage(asks) {
+// scope (opcional) aclara QUÉ diff se está preguntando — "Sin pushear",
+// "commit a1b2c3d", "último turno 📸" — para que el agente sepa qué mirar.
+export function buildAskMessage(asks, scope = "") {
   const n = asks.length;
   const blocks = asks.map((a) => {
     if (a.kind === "free") return a.question;
@@ -135,5 +138,6 @@ export function buildAskMessage(asks) {
     anchored && libres
       ? `${anchored} anclada${anchored === 1 ? "" : "s"} + ${libres} libre${libres === 1 ? "" : "s"}`
       : `${n} pregunta${n === 1 ? "" : "s"} anclada${n === 1 ? "" : "s"}`;
-  return { n, label, text: `Diff Ask — ${label} al diff:\n\n${blocks.join("\n\n")}` };
+  const scopeTxt = scope ? ` (${scope})` : "";
+  return { n, label, text: `Diff Ask — ${label} al diff${scopeTxt}:\n\n${blocks.join("\n\n")}` };
 }
