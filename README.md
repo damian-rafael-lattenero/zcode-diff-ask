@@ -90,6 +90,18 @@ diff-ask/
   abre el diff del commit (vs primer padre; merge anotado) y las preguntas
   se anclan igual que en cualquier modo, con el commit nombrado en el
   encabezado del mensaje.
+- **⌘F** (0.3.1): búsqueda propia del panel — el webview no tiene find
+  nativo (y el shadow DOM lo rompería). Barra con contador, Enter/⇧Enter
+  cicla y centra la fila actual, Esc cierra y limpia. Coincidencia = fila
+  cuyo texto contiene el query (case-insensitive); respeta los filtros de
+  visibilidad y re-marca al refrescar el diff o expandir un separador (sin
+  mover el scroll). Si el match vive en un archivo colapsado, lo expande al
+  saltar.
+- **Filtros ＋/−/≡** (0.3.1): toggles de visibilidad por tipo de línea —
+  agregadas, borradas, contexto. La celda del gutter de pierre lleva el
+  MISMO `data-line-type` que su fila, así que se ocultan simétrico por CSS
+  (`:host(.da-hide-*)`) y las columnas quedan alineadas; con el contexto
+  oculto los separadores de hunk se van también (existen para él).
 
 - **El "+" y el composer**: `FileDiff` de `@pierre/diffs` — la MISMA librería
   que usa el diff nativo de la app — con `enableGutterUtility: true` y

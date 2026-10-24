@@ -616,3 +616,49 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   font-weight: 700;
   padding: 4px 18px;
 }
+
+/* ---- ⌘F + filtros de visibilidad (0.3.1) ---- */
+#findbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+}
+#findbar[hidden] { display: none; }
+#findbar input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: var(--bg);
+  color: var(--text);
+}
+#findbar input:focus { outline: none; border-color: var(--accent); }
+#findbar .count {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  min-width: 3.2em;
+  text-align: right;
+}
+#findbar button { padding: 3px 8px; }
+
+/* Chips ＋/−/≡: activo (categoría VISIBLE) = punto de acento */
+button.filt { position: relative; padding: 4px 10px; }
+button.filt.on { border-color: var(--accent); color: var(--accent); }
+button.filt.on::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+:root { --da-find-hit: #e9c46a4d; --da-find-cur: #e9c46aaa; }
+:root[data-theme="dark"] { --da-find-hit: #e9c46a3d; --da-find-cur: #e9c46acc; }

@@ -109,6 +109,191 @@ function ensureShadowSelStyle(entry) {
   sr.appendChild(st);
 }
 
+// ------------------------------------------- filtros de visibilidad + ⌘F
+// Toggles por tipo de línea: la celda del gutter lleva el MISMO
+// data-line-type que su fila, así que ocultar por selector esconde fila y
+// número juntos (columnas alineadas). Los separadores de hunk existen para
+// el contexto colapsado: con el contexto oculto se van también.
+// [data-da-find]: resaltado de la búsqueda ⌘F (hit = fila con coincidencia,
+// cur = coincidencia actual).
+const lineFilter = { add: true, del: true, ctx: true };
+const EXTRA_STYLE = [
+  ':host(.da-hide-add) [data-line-type="change-addition"]{display:none !important;}',
+  ':host(.da-hide-del) [data-line-type="change-deletion"]{display:none !important;}',
+  ':host(.da-hide-ctx) [data-line-type="context"]{display:none !important;}',
+  ':host(.da-hide-ctx) [data-separator]{display:none !important;}',
+  '[data-da-find="hit"]{background:var(--da-find-hit,#E9C46A4D) !important;}',
+  '[data-da-find="cur"]{background:var(--da-find-cur,#E9C46AAA) !important;box-shadow:inset 3px 0 0 var(--accent,#4268d8) !important;}',
+].join("\n");
+
+function shadowHostOf(entry) {
+  return entry.body.querySelector("diffs-container") ?? null;
+}
+
+function ensureShadowExtraStyle(entry) {
+  const sr = shadowHostOf(entry)?.shadowRoot;
+  if (!sr || sr.querySelector("style.da-extra")) return;
+  const st = document.createElement("style");
+  st.className = "da-extra";
+  st.textContent = EXTRA_STYLE;
+  sr.appendChild(st);
+}
+
+// Aplica los filtros corrientes a un archivo (o a todos) y refresca los
+// botones del header. Las clases viven en el HOST (light DOM nuestro): la
+// sombra las ve vía :host() y sobreviven sus re-renders internos.
+function applyLineFilter(entry = null) {
+  const targets = entry ? [entry] : [...rendered.values()];
+  for (const e of targets) {
+    ensureShadowExtraStyle(e);
+    const host = shadowHostOf(e);
+    if (!host) continue;
+    host.classList.toggle("da-hide-add", !lineFilter.add);
+    host.classList.toggle("da-hide-del", !lineFilter.del);
+    host.classList.toggle("da-hide-ctx", !lineFilter.ctx);
+  }
+  if (!entry) {
+    document.querySelectorAll(".filt").forEach((b) => {
+      const on = lineFilter[b.dataset.filt];
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", String(on));
+    });
+  }
+}
+
+// ¿El tipo de línea de esta fila está oculto por el filtro? (para que ⌘F no
+// "encuentre" coincidencias invisibles)
+function rowHiddenByFilter(row) {
+  const t = row.dataset.lineType;
+  if (t === "change-addition") return !lineFilter.add;
+  if (t === "change-deletion") return !lineFilter.del;
+  if (t === "context") return !lineFilter.ctx;
+  return false;
+}
+
+// ------------------------------------------------------------ búsqueda ⌘F
+// El webview no tiene find nativo (y el shadow DOM lo rompería igual):
+// barra propia. Coincidencia = fila cuyo texto contiene el query
+// (case-insensitive); se resalta la FILA (hit) y la actual (cur, con barra
+// de acento), Enter/⇧Enter ciclan y hacen scrollIntoView. Si la fila está en
+// un archivo colapsado, lo expande al saltar.
+const find = { q: "", hits: [], cur: -1, timer: null };
+
+function ensureFindbar() {
+  if (document.getElementById("findbar")) return;
+  const bar = document.createElement("div");
+  bar.id = "findbar";
+  bar.hidden = true;
+  bar.innerHTML = `
+    <input id="findbar-input" type="search" placeholder="Buscar en el diff…">
+    <span id="findbar-count" class="count"></span>
+    <button class="ghost" id="findbar-prev" title="Coincidencia anterior (⇧Enter)">↑</button>
+    <button class="ghost" id="findbar-next" title="Coincidencia siguiente (Enter)">↓</button>
+    <button class="ghost" id="findbar-close" title="Cerrar (Esc)">✕</button>`;
+  document.body.prepend(bar);
+  const input = bar.querySelector("#findbar-input");
+  input.addEventListener("input", () => {
+    clearTimeout(find.timer);
+    find.timer = setTimeout(() => runFind(input.value), 120);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      findGo(e.shiftKey ? -1 : 1);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeFindbar();
+    }
+  });
+  bar.querySelector("#findbar-prev").onclick = () => findGo(-1);
+  bar.querySelector("#findbar-next").onclick = () => findGo(1);
+  bar.querySelector("#findbar-close").onclick = closeFindbar;
+}
+
+function clearFindMarks() {
+  for (const entry of rendered.values()) {
+    const sr = shadowHostOf(entry)?.shadowRoot;
+    sr?.querySelectorAll("[data-da-find]").forEach((r) => r.removeAttribute("data-da-find"));
+  }
+}
+
+function runFind(q, jump = true) {
+  find.q = (q ?? "").trim();
+  clearFindMarks();
+  find.hits = [];
+  find.cur = -1;
+  const needle = find.q.toLowerCase();
+  if (needle) {
+    for (const entry of rendered.values()) {
+      for (const row of contentRowsOf(entry)) {
+        if (rowHiddenByFilter(row)) continue;
+        if (row.textContent.toLowerCase().includes(needle)) find.hits.push({ entry, row });
+      }
+    }
+  }
+  const count = document.getElementById("findbar-count");
+  if (count)
+    count.textContent = find.q
+      ? jump
+        ? find.hits.length
+          ? `1/${find.hits.length}`
+          : "0/0"
+        : `${find.hits.length}`
+      : "";
+  if (jump && find.hits.length) findGo(1, true);
+  else if (!jump)
+    find.hits.forEach(({ row }) => row.isConnected && row.setAttribute("data-da-find", "hit"));
+}
+
+function findGo(dir, first = false) {
+  if (!find.hits.length) return;
+  if (first) find.cur = 0;
+  else find.cur = (find.cur + dir + find.hits.length) % find.hits.length;
+  find.hits.forEach(({ row }) => {
+    if (row.isConnected) row.setAttribute("data-da-find", "hit");
+  });
+  const cur = find.hits[find.cur];
+  if (cur.row.isConnected) {
+    cur.row.setAttribute("data-da-find", "cur");
+    // la coincidencia puede vivir en un archivo colapsado: expandirlo
+    if (cur.entry.section.classList.contains("collapsed")) {
+      cur.entry.section.classList.remove("collapsed");
+      collapsedPaths.delete(cur.entry.path);
+      scheduleAnchors();
+    }
+    cur.row.scrollIntoView({ block: "center" });
+  }
+  const count = document.getElementById("findbar-count");
+  if (count) count.textContent = `${find.cur + 1}/${find.hits.length}`;
+}
+
+function openFindbar() {
+  ensureFindbar();
+  const bar = document.getElementById("findbar");
+  bar.hidden = false;
+  const input = document.getElementById("findbar-input");
+  input.focus();
+  input.select();
+}
+
+function closeFindbar() {
+  const bar = document.getElementById("findbar");
+  if (bar) bar.hidden = true;
+  find.q = "";
+  clearFindMarks();
+}
+
+// ⌘F/ctrl+F abre la barra (aunque el foco esté en el askbar); Esc cierra.
+// Nota: llega como key "f" y en el webview de la app sí llega el evento.
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && (e.key === "f" || e.key === "F")) {
+    e.preventDefault();
+    openFindbar();
+    return;
+  }
+  if (e.key === "Escape" && !document.getElementById("findbar")?.hidden) closeFindbar();
+});
+
 function gutterCellsOf(entry) {
   const g = entry.body.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-gutter]");
   return g ? [...g.children].filter((c) => c.hasAttribute("data-line-index")) : [];
@@ -836,6 +1021,10 @@ function scheduleAnchors() {
   requestAnimationFrame(() => {
     anchorsScheduled = false;
     renderAnchors();
+    // Al expandir un separador aparecen filas NUEVAS: re-marcar la búsqueda
+    // activa sin mover el scroll (el match podía estar en el contexto
+    // colapsado y hasta ahora era invisible para ⌘F).
+    if (find.q && !document.getElementById("findbar")?.hidden) runFind(find.q, false);
   });
 }
 
@@ -1057,6 +1246,7 @@ function renderFileInner(f) {
   // FileDiff renders into — a plain div renders unstyled.
   const container = document.createElement("diffs-container");
   body.appendChild(container);
+  applyLineFilter(entry); // el archivo nuevo nace con los filtros corrientes
 
   if (typeof f.before === "string" || typeof f.after === "string") {
     // Contenido completo: diff local expandible (los números de línea del
@@ -1196,6 +1386,9 @@ function renderAll() {
   header.innerHTML = `
     <div class="meta"></div>
     ${mode === "commits" ? '<button class="ghost back" title="Volver a la lista de commits">← Commits</button>' : ""}
+    <button class="ghost filt" data-filt="add" title="Mostrar/ocultar líneas agregadas">＋</button>
+    <button class="ghost filt" data-filt="del" title="Mostrar/ocultar líneas borradas">−</button>
+    <button class="ghost filt" data-filt="ctx" title="Mostrar/ocultar líneas de contexto (sin cambio)">≡</button>
     <button class="ghost fold" title="Colapsar todos los archivos">⊟</button>
     <button class="ghost unfold" title="Expandir todos los archivos">⊞</button>
     <button class="ghost refresh" title="Refrescar el diff ahora">⟳</button>`;
@@ -1246,6 +1439,12 @@ function renderAll() {
     collapsedPaths.clear();
     for (const e of rendered.values()) e.section.classList.remove("collapsed");
   };
+  header.querySelectorAll(".filt").forEach((b) => {
+    b.onclick = () => {
+      lineFilter[b.dataset.filt] = !lineFilter[b.dataset.filt];
+      applyLineFilter();
+    };
+  });
   root.appendChild(header);
 
   // 📸 manual: re-marca el AHORA (útil si el último turno lo disparaste
@@ -1264,7 +1463,7 @@ function renderAll() {
 
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Modos arriba: Trabajo (vs HEAD) · Sin pushear (upstream) · Último turno 📸 · Commits. Click en un NÚMERO = seleccionarlo (se rellena; arrastrás y pintás varios, salteados también) → ＋ grande debajo del último abre la pregunta · hover en una línea → ＋ = preguntar por esa línea · ＋ del encabezado = archivo (colapsado, igual aparece). Abajo: libres; ⌘↵ manda todo junto (y marca 📸 del turno).";
+  hint.textContent = "Modos arriba: Trabajo (vs HEAD) · Sin pushear (upstream) · Último turno 📸 · Commits. ⌘F busca en el diff (Enter cicla) · ＋/−/≡ filtran líneas agregadas/borradas/contexto. Click en un NÚMERO = seleccionarlo (arrastrás y pintás varios, salteados también) → ＋ grande abre la pregunta · hover en una línea → ＋ · ＋ del encabezado = archivo. Abajo: libres; ⌘↵ manda todo junto (y marca 📸 del turno).";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
@@ -1287,6 +1486,10 @@ function renderAll() {
     }
   }
   for (const f of diffData.files) renderFile(f);
+  applyLineFilter();
+  // Si hay búsqueda activa, re-marcar sobre las filas nuevas SIN saltar el
+  // scroll (el refresh reactivo no debe moverle la lectura a nadie).
+  if (find.q && !document.getElementById("findbar")?.hidden) runFind(find.q, false);
 }
 
 // --------------------------------------------------------------- commits
