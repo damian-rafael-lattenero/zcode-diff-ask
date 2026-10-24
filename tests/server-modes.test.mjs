@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   buildDiff, buildLastTurnDiff, markTurnSnapshot, listCommits, buildCommitDiff,
-  parseNameStatusZ, parseLogLine,
+  parseNameStatusZ, parseLogLine, setActiveWorkspace,
 } from "../diff-ask/server/server.mjs";
 
 function git(cwd, ...args) {
@@ -193,4 +193,32 @@ test("buildCommitDiff: statuses, before/after y commit raíz (árbol vacío)", a
 
   const bad = await buildCommitDiff("noexiste", { workspace: dir });
   assert.equal(bad.error, "unknown_commit");
+});
+
+test("setActiveWorkspace: cambia el workspace por defecto del server y valida", async () => {
+  const a = makeRepo();
+  const b = makeRepo();
+  commitFile(a, "a.py", "de A\n", "repo a");
+  commitFile(b, "b.py", "de B\n", "repo b");
+
+  // rutas inválidas primero
+  assert.equal((await setActiveWorkspace("/no/existe")).error, "invalid_path");
+  const archivo = path.join(b, "b.py");
+  assert.equal((await setActiveWorkspace(archivo)).error, "invalid_path"); // archivo, no carpeta
+  const noRepo = fs.mkdtempSync(path.join(os.tmpdir(), "da-nogit-"));
+  assert.equal((await setActiveWorkspace(noRepo)).error, "not_a_repo");
+
+  // cambio válido: los builds SIN workspace explícito ahora diffean B —
+  // edito DESPUÉS del switch para probar que lee el activo en vivo.
+  const ok = await setActiveWorkspace(b);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.workspace, b);
+  fs.writeFileSync(path.join(b, "b.py"), "de B editado\n");
+  const d = await buildDiff({ mode: "working" });
+  assert.equal(d.workspace, b);
+  assert.deepEqual(d.files.map((f) => f.path), ["b.py"]);
+
+  // vuelvo a A para no contaminar otros tests (los demás pasan workspace
+  // explícito, pero por higiene)
+  await setActiveWorkspace(a);
 });

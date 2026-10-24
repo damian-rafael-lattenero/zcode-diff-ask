@@ -28,6 +28,10 @@ const PLUGIN_ROOT = path.join(HERE, "..");
 const PANEL_URI = "ui://diff-ask/panel.html";
 const DIFF_URI = "diff://workspace";
 const WORKSPACE = process.env.ZCODE_WORKSPACE_ROOT || process.cwd();
+// Workspace ACTIVO: arranca en el de la sesión, pero el panel puede cambiarlo
+// (set_workspace) para diffejar otra carpeta del disco. Todo el server lee de
+// acá — builders, firma reactiva y watchers incluidos.
+let activeWorkspace = WORKSPACE;
 const MAX_PATCH_BYTES = 1_500_000;
 // Archivos con before+after <= esto viajan con contenido COMPLETO en el JSON
 // (el panel diffea local y expande contexto sin red); más grandes → parche -U10.
@@ -52,7 +56,7 @@ const log = (...a) => process.stderr.write(`[diff-ask] ${a.join(" ")}\n`);
 
 // ---------------------------------------------------------------- git
 
-function runGit(args, { cwd = WORKSPACE, expectDiffExit = false } = {}) {
+function runGit(args, { cwd = activeWorkspace, expectDiffExit = false } = {}) {
   return new Promise((resolve) => {
     const p = spawn("git", ["-C", cwd, ...args], {
       stdio: ["ignore", "pipe", "pipe"],
@@ -248,11 +252,39 @@ async function resolveUpstream(cwd) {
   return r.ok && r.out.trim() ? r.out.trim() : null;
 }
 
+// Cambia el workspace ACTIVO (chip 📁 del panel): valida que exista y sea un
+// repo git, re-arma los watchers y resetea la firma para que el próximo
+// evento notifique y el panel refresque solo.
+export async function setActiveWorkspace(input) {
+  const raw = String(input ?? "").trim();
+  if (!raw) return { error: "invalid_path", message: "Pasame la ruta de una carpeta." };
+  const p = path.resolve(raw.replace(/^~(?=\/|$)/, os.homedir()));
+  let stats;
+  try {
+    stats = fs.statSync(p);
+  } catch {
+    return { error: "invalid_path", message: `No existe: ${p}` };
+  }
+  if (!stats.isDirectory()) return { error: "invalid_path", message: `No es una carpeta: ${p}` };
+  const inside = await runGit(["rev-parse", "--is-inside-work-tree"], { cwd: p });
+  if (!inside.ok)
+    return { error: "not_a_repo", message: `${p} no es un repositorio git. Diff Ask necesita git.` };
+  activeWorkspace = p;
+  lastSig = null; // el próximo cálculo de firma difiere → notifica y refresca
+  worktreeWatcher?.close();
+  gitWatcher?.close();
+  worktreeWatcher = null;
+  gitWatcher = null;
+  if (subs.size) ensureWatchers();
+  log(`workspace activo → ${p}`);
+  return { ok: true, workspace: p };
+}
+
 // ------------------------------------------------------- diff vs una base
 // base = HEAD (working) o @{upstream} (unpushed). Los archivos salen de
 // `git diff --name-status -M base` (tracked, renames incluidos) + untracked
 // del porcelain — en unpushed los untracked también son "sin pushear".
-export async function buildDiff({ mode = "working", includePatches = true, workspace = WORKSPACE } = {}) {
+export async function buildDiff({ mode = "working", includePatches = true, workspace = activeWorkspace } = {}) {
   const ws = workspace;
   const meta = await repoMeta(ws);
   if (!meta.inside)
@@ -343,7 +375,7 @@ export async function buildDiff({ mode = "working", includePatches = true, works
 // el agente editó (commiteado o no) desde entonces.
 let turnSnapshot = null;
 
-export async function markTurnSnapshot({ workspace = WORKSPACE } = {}) {
+export async function markTurnSnapshot({ workspace = activeWorkspace } = {}) {
   const ws = workspace;
   const meta = await repoMeta(ws);
   if (!meta.inside)
@@ -386,7 +418,7 @@ async function numstatBetween(a, b) {
   }
 }
 
-export async function buildLastTurnDiff({ workspace = WORKSPACE } = {}) {
+export async function buildLastTurnDiff({ workspace = activeWorkspace } = {}) {
   const ws = workspace;
   const meta = await repoMeta(ws);
   if (!meta.inside)
@@ -459,7 +491,7 @@ export async function buildLastTurnDiff({ workspace = WORKSPACE } = {}) {
 
 // ------------------------------------------------------------ commits
 
-export async function listCommits({ skip = 0, limit = 10, query = "", workspace = WORKSPACE } = {}) {
+export async function listCommits({ skip = 0, limit = 10, query = "", workspace = activeWorkspace } = {}) {
   const ws = workspace;
   const meta = await repoMeta(ws);
   if (!meta.inside)
@@ -514,7 +546,7 @@ export async function listCommits({ skip = 0, limit = 10, query = "", workspace 
   return { workspace: ws, query: q, skip: 0, limit: 30, hasMore: false, commits, exactMatch: Boolean(exact) };
 }
 
-export async function buildCommitDiff(ref, { workspace = WORKSPACE } = {}) {
+export async function buildCommitDiff(ref, { workspace = activeWorkspace } = {}) {
   const ws = workspace;
   const meta = await repoMeta(ws);
   if (!meta.inside)
@@ -608,13 +640,13 @@ function onFsEvent(_evt, file) {
 function ensureWatchers() {
   if (worktreeWatcher) return;
   try {
-    worktreeWatcher = fs.watch(WORKSPACE, { recursive: true }, onFsEvent);
+    worktreeWatcher = fs.watch(activeWorkspace, { recursive: true }, onFsEvent);
     worktreeWatcher.on("error", () => {});
   } catch {
     /* recursive watch unsupported — panel still has its refresh button */
   }
   try {
-    gitWatcher = fs.watch(path.join(WORKSPACE, ".git"), { recursive: true }, onFsEvent);
+    gitWatcher = fs.watch(path.join(activeWorkspace, ".git"), { recursive: true }, onFsEvent);
     gitWatcher.on("error", () => {});
   } catch {
     /* .git missing or unwatchable */
@@ -688,6 +720,18 @@ const TOOLS = [
     description:
       "Mark the current workspace state as the 'last turn' baseline (📸). The Diff Ask panel does this automatically before sending each batch of questions; call this only when the user explicitly asks to mark/save the current state as the turn baseline.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "set_workspace",
+    description:
+      "Change the workspace the Diff Ask panel diffs (and its reactive watchers) to another local git repository path. Used by the panel's 📁 chip; the model may call it when the user asks to diff a different folder.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Path of a local git repository (~ allowed)." },
+      },
+      required: ["path"],
+    },
   },
 ];
 
@@ -766,6 +810,13 @@ async function handleRequest(msg) {
             structuredContent: data,
             content: [{ type: "text", text: data.ok ? `📸 Marcador de turno guardado (${data.at}).` : data.message }],
           };
+        case "set_workspace": {
+          data = await setActiveWorkspace(params.arguments?.path);
+          return {
+            structuredContent: data,
+            content: [{ type: "text", text: data.ok ? `📁 Workspace activo: ${data.workspace}` : data.message }],
+          };
+        }
         default:
           return { content: [{ type: "text", text: `Unknown tool: ${params.name}` }], isError: true };
       }
