@@ -25,6 +25,39 @@ import {
 const DIFF_URI = "diff://workspace";
 const app = new App({ name: "diff-ask", version: "0.1.0" }, {});
 
+// Modos del panel: qué diff se muestra y contra qué base.
+//   working   → git diff HEAD + untracked (el clásico)
+//   unpushed  → commits sin pushear + cambios locales, vs @{upstream}
+//   lastTurn  → working tree vs 📸 (marcador de turno; el panel marca solo
+//               antes de mandar cada tanda de preguntas, o con 📸 a mano)
+//   commits   → historial: últimos commits / búsqueda por hash o título;
+//               un click abre el diff de ese commit (vs primer padre)
+const MODES = [
+  { id: "working", label: "Trabajo", title: "Cambios sin commitear vs HEAD (+ untracked)" },
+  { id: "unpushed", label: "Sin pushear", title: "Commits sin pushear + cambios locales vs el upstream" },
+  { id: "lastTurn", label: "Último turno", title: "Qué cambió desde el último marcador 📸 (automático al enviar preguntas)" },
+  { id: "commits", label: "Commits", title: "Historial de commits: buscá por hash o título, abrí el diff de uno" },
+];
+let mode = "working";
+let commitSel = null; // hash en vista de diff de commit (null = lista)
+let commitsState = { query: "", skip: 0, list: [], hasMore: false };
+let subscribedUri = null;
+
+function diffUriFor() {
+  if (mode === "unpushed") return `${DIFF_URI}?mode=unpushed`;
+  if (mode === "lastTurn") return `${DIFF_URI}?mode=last-turn`;
+  if (mode === "commits" && commitSel) return `diff://commit/${encodeURIComponent(commitSel)}`;
+  return DIFF_URI;
+}
+
+// Scope del mensaje: que el agente sepa QUÉ diff se le pregunta.
+function scopeLabel() {
+  if (mode === "unpushed") return diffData?.upstream ? `sin pushear, vs ${diffData.upstream}` : "sin pushear";
+  if (mode === "lastTurn") return "último turno 📸";
+  if (mode === "commits" && diffData?.commit) return `commit ${diffData.commit.short} ${diffData.commit.subject ?? ""}`.trim();
+  return "";
+}
+
 /** @type {any} */ let diffData = null;
 /** @type {Map<string, {section: HTMLElement, body: HTMLElement, fd: import("@pierre/diffs").FileDiff|null, patch: string}>} */
 const rendered = new Map();
@@ -180,10 +213,25 @@ function flushFreeInput() {
   renderPile();
 }
 
+async function markTurnSnapshot() {
+  try {
+    const res = await app.callServerTool({ name: "mark_turn_snapshot", arguments: {} });
+    const at = res?.structuredContent?.at;
+    if (at) return at;
+    throw new Error(res?.structuredContent?.message ?? "sin respuesta");
+  } catch (e) {
+    chip(`⚠ no pude marcar 📸 (${e?.message ?? e})`);
+    return null;
+  }
+}
+
 async function sendAllPending() {
   flushFreeInput();
   if (!pendingAsks.length) return;
-  const { n, text } = buildAskMessage(pendingAsks);
+  // Marca ANTES de enviar: la línea de base del turno es el estado acá —
+  // así "Último turno" muestra exactamente lo que el agente cambió después.
+  await markTurnSnapshot();
+  const { n, text } = buildAskMessage(pendingAsks, scopeLabel());
   try {
     const res = await app.sendMessage({ role: "user", content: [{ type: "text", text }] });
     if (res && res.isError) throw new Error("host rejected sendMessage");
@@ -1098,39 +1146,91 @@ function openComposerFile(entry, path, summary) {
   ta.focus();
 }
 
+// La barra de modos vive SIEMPRE arriba (también en estados de error, para
+// poder salir de un modo sin upstream/marcador sin quedarse trabado).
+function renderModebar(root) {
+  const modebar = document.createElement("div");
+  modebar.className = "modebar";
+  for (const m of MODES) {
+    const b = document.createElement("button");
+    b.dataset.mode = m.id;
+    b.textContent = m.id === "lastTurn" ? "Último turno 📸" : m.label;
+    b.title = m.title;
+    if (m.id === mode) b.classList.add("active");
+    b.onclick = () => setMode(m.id);
+    modebar.appendChild(b);
+  }
+  root.appendChild(modebar);
+}
+
 function renderAll() {
   clearRendered();
   const root = document.getElementById("root");
   root.textContent = "";
 
   if (!diffData || diffData.error) {
+    renderModebar(root);
     const err = document.createElement("div");
     err.className = "state error";
     err.textContent = diffData?.message ?? "Sin datos del diff.";
     root.appendChild(err);
+    // Sin marcador todavía: CTA directa (📸) en vez de sólo texto.
+    if (diffData?.error === "no_snapshot") {
+      const cta = document.createElement("button");
+      cta.className = "primary err-cta";
+      cta.textContent = "📸 Marcar estado actual";
+      cta.onclick = async () => {
+        const at = await markTurnSnapshot();
+        if (at) refresh();
+      };
+      root.appendChild(cta);
+    }
     return;
   }
+
+  // Barra de modos: Trabajo · Sin pushear · Último turno · Commits.
+  renderModebar(root);
 
   const header = document.createElement("div");
   header.className = "header";
   header.innerHTML = `
     <div class="meta"></div>
+    ${mode === "commits" ? '<button class="ghost back" title="Volver a la lista de commits">← Commits</button>' : ""}
     <button class="ghost fold" title="Colapsar todos los archivos">⊟</button>
     <button class="ghost unfold" title="Expandir todos los archivos">⊞</button>
     <button class="ghost refresh" title="Refrescar el diff ahora">⟳</button>`;
   // Resumen REAL del diff (los números de la tarjeta Git de la app son
-  // cálculo propio de ella): líneas +/- y archivos nuevos/eliminados.
+  // cálculo propio de ella): líneas +/- y archivos nuevos/modificados/
+  // eliminados. Extras por modo: upstream/📸/commit.
   const t = diffTotals(diffData.files);
-  const bits = [
-    `${esc(diffData.branch)} @ ${esc(diffData.head)}`,
-    `${diffData.fileCount} archivo${diffData.fileCount === 1 ? "" : "s"}`,
-    `<span class="tot-a">+${t.added}</span>`,
-    `<span class="tot-d">−${t.deleted}</span>`,
-  ];
-  if (t.newFiles) bits.push(`<span class="tot-a">${t.newFiles} nuevo${t.newFiles === 1 ? "" : "s"}</span>`);
-  if (t.delFiles) bits.push(`<span class="tot-d">${t.delFiles} eliminado${t.delFiles === 1 ? "" : "s"}</span>`);
-  if (t.renamed) bits.push(`${t.renamed} renombrado${t.renamed === 1 ? "" : "s"}`);
+  const bits = [];
+  if (mode === "commits" && diffData.commit) {
+    const c = diffData.commit;
+    bits.push(`<b>${esc(c.short)}</b> ${esc(c.subject)}`);
+    if (c.author || c.date) bits.push(esc([c.author, c.date].filter(Boolean).join(" · ")));
+    if (diffData.isMerge) bits.push('<span class="tot-m">merge (vs primer padre)</span>');
+  } else {
+    bits.push(`${esc(diffData.branch)} @ ${esc(diffData.head)}`);
+    if (mode === "unpushed" && diffData.upstream) {
+      const ab = [];
+      if (diffData.ahead !== undefined) ab.push(`<span class="tot-a">↑${diffData.ahead}</span>`);
+      if (diffData.behind !== undefined) ab.push(`<span class="tot-d">↓${diffData.behind}</span>`);
+      bits.push(`${ab.join(" ")} vs ${esc(diffData.upstream)}`);
+    }
+    if (mode === "lastTurn") {
+      const hm = diffData.snapshotAt ? diffData.snapshotAt.slice(11, 16) : "?";
+      bits.push(`vs 📸 ${hm}`);
+    }
+    bits.push(`${diffData.fileCount} archivo${diffData.fileCount === 1 ? "" : "s"}`);
+    bits.push(`<span class="tot-a">+${t.added}</span>`, `<span class="tot-d">−${t.deleted}</span>`);
+    if (t.newFiles) bits.push(`<span class="tot-a">${t.newFiles} nuevo${t.newFiles === 1 ? "" : "s"}</span>`);
+    if (t.modFiles) bits.push(`<span class="tot-m">${t.modFiles} modificado${t.modFiles === 1 ? "" : "s"}</span>`);
+    if (t.delFiles) bits.push(`<span class="tot-d">${t.delFiles} eliminado${t.delFiles === 1 ? "" : "s"}</span>`);
+    if (t.renamed) bits.push(`${t.renamed} renombrado${t.renamed === 1 ? "" : "s"}`);
+  }
   header.querySelector(".meta").innerHTML = bits.join(` <span class="dot">·</span> `);
+  const backBtn = header.querySelector(".back");
+  if (backBtn) backBtn.onclick = () => { commitSel = null; refresh(); };
   header.querySelector(".refresh").onclick = (e) => {
     const btn = e.currentTarget;
     btn.classList.remove("spinning");
@@ -1148,15 +1248,29 @@ function renderAll() {
   };
   root.appendChild(header);
 
+  // 📸 manual: re-marca el AHORA (útil si el último turno lo disparaste
+  // desde el chat principal y querés una base fresca).
+  if (mode === "lastTurn") {
+    const snap = document.createElement("button");
+    snap.className = "ghost snap-btn";
+    snap.textContent = "📸 marcar ahora";
+    snap.title = "Guardar el estado actual como línea de base del último turno";
+    snap.onclick = async () => {
+      const at = await markTurnSnapshot();
+      if (at) refresh();
+    };
+    header.querySelector(".meta").after(snap);
+  }
+
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Click en un NÚMERO = seleccionarlo (se rellena; arrastrás y pintás varios, salteados también) → ＋ grande debajo del último abre la pregunta · hover en una línea → ＋ = preguntar por esa línea · ＋ del encabezado = archivo (colapsado, igual aparece). Abajo: libres; ⌘↵ manda todo junto.";
+  hint.textContent = "Modos arriba: Trabajo (vs HEAD) · Sin pushear (upstream) · Último turno 📸 · Commits. Click en un NÚMERO = seleccionarlo (se rellena; arrastrás y pintás varios, salteados también) → ＋ grande debajo del último abre la pregunta · hover en una línea → ＋ = preguntar por esa línea · ＋ del encabezado = archivo (colapsado, igual aparece). Abajo: libres; ⌘↵ manda todo junto (y marca 📸 del turno).";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
     const clean = document.createElement("div");
     clean.className = "state clean";
-    clean.textContent = "Árbol limpio — sin cambios contra HEAD.";
+    clean.textContent = `Árbol limpio — sin cambios contra ${diffData.baseLabel ?? "HEAD"}.`;
     root.appendChild(clean);
     return;
   }
@@ -1175,17 +1289,136 @@ function renderAll() {
   for (const f of diffData.files) renderFile(f);
 }
 
+// --------------------------------------------------------------- commits
+// Lista del modo Commits: buscador (hash o texto del título, Enter), filas
+// [hash · subject · autor · fecha] y "…" para traer 10 más. Un click abre
+// el diff de ese commit (commitSel → refresh renderiza archivos).
+
+async function loadCommits(reset = false) {
+  if (reset) commitsState = { query: commitsState.query, skip: 0, list: [], hasMore: false };
+  const uri = `log://commits?skip=${commitsState.skip}&limit=10&q=${encodeURIComponent(commitsState.query)}`;
+  const res = await app.readServerResource({ uri });
+  const data = JSON.parse(res?.contents?.[0]?.text ?? "{}");
+  document.documentElement.dataset.repo = data?.error ? "no" : "yes";
+  if (data.error) {
+    const root = document.getElementById("root");
+    root.textContent = "";
+    const err = document.createElement("div");
+    err.className = "state error";
+    err.textContent = data.message ?? "No pude leer el log.";
+    root.appendChild(err);
+    return;
+  }
+  const seen = new Set(commitsState.list.map((c) => c.hash));
+  for (const c of data.commits ?? []) if (!seen.has(c.hash)) commitsState.list.push(c);
+  commitsState.skip += (data.commits ?? []).length;
+  commitsState.hasMore = Boolean(data.hasMore);
+  diffData = null; // la vista activa es la lista, no un diff
+  renderCommits();
+  resubscribe("log://commits");
+}
+
+function renderCommits() {
+  const root = document.getElementById("root");
+  root.textContent = "";
+
+  renderModebar(root);
+
+  const bar = document.createElement("div");
+  bar.className = "commits-search";
+  bar.innerHTML = `<input type="search" placeholder="Hash o texto del título… (Enter busca)">`;
+  const input = bar.querySelector("input");
+  input.value = commitsState.query;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitsState.query = input.value.trim();
+      loadCommits(true);
+    }
+  });
+  root.appendChild(bar);
+
+  if (!commitsState.list.length) {
+    const st = document.createElement("div");
+    st.className = "state";
+    st.textContent = commitsState.query
+      ? `Nada para “${commitsState.query}”. Probá con un hash más corto o parte del título.`
+      : "Sin commits.";
+    root.appendChild(st);
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "commit-list";
+  for (const c of commitsState.list) {
+    const row = document.createElement("button");
+    row.className = "commit-row";
+    row.innerHTML = `<span class="hash-chip"></span><span class="commit-subject"></span><span class="commit-meta"></span>`;
+    row.querySelector(".hash-chip").textContent = c.short;
+    row.querySelector(".commit-subject").textContent = c.subject;
+    row.querySelector(".commit-meta").textContent = [c.author, c.date].filter(Boolean).join(" · ");
+    row.title = `${c.hash}\n${c.subject}`;
+    row.onclick = () => {
+      commitSel = c.hash;
+      refresh();
+    };
+    list.appendChild(row);
+  }
+  root.appendChild(list);
+  if (commitsState.hasMore) {
+    const more = document.createElement("button");
+    more.className = "more-btn";
+    more.textContent = "…";
+    more.title = "Cargar 10 commits más";
+    more.onclick = () => loadCommits();
+    root.appendChild(more);
+  }
+}
+
 // ------------------------------------------------------------ data flow
+
+// Suscripción reactiva al URI del modo ACTUAL: al cambiar de modo/vista se
+// baja el viejo y se sube el nuevo (la firma git del server notifica a los
+// suscriptos; el ⟳ manual sigue existiendo como fallback).
+async function resubscribe(uri) {
+  if (uri === subscribedUri) return;
+  try {
+    if (subscribedUri)
+      await app.request({ method: "resources/unsubscribe", params: { uri: subscribedUri } });
+    await app.request({ method: "resources/subscribe", params: { uri } });
+    subscribedUri = uri;
+  } catch {
+    /* sin updates reactivos — manual ⟳ still works */
+  }
+}
+
+// Cambio de modo: chips arriba. Sale de Commits limpia la selección y la
+// búsqueda (volver es barato; estado viejo confunde).
+async function setMode(m) {
+  if (m === mode) return;
+  mode = m;
+  commitSel = null;
+  commitsState = { query: "", skip: 0, list: [], hasMore: false };
+  document.querySelectorAll(".modebar button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.mode === m);
+  });
+  await refresh();
+}
 
 async function refresh(explicit = false) {
   const root = document.getElementById("root");
   if (explicit) root.classList.add("loading");
   try {
-    const res = await app.readServerResource({ uri: DIFF_URI });
-    const text = res?.contents?.[0]?.text ?? "{}";
-    diffData = JSON.parse(text);
-    document.documentElement.dataset.repo = diffData?.error ? "no" : "yes";
-    renderAll();
+    if (mode === "commits" && !commitSel) {
+      await loadCommits();
+    } else {
+      const uri = diffUriFor();
+      const res = await app.readServerResource({ uri });
+      const text = res?.contents?.[0]?.text ?? "{}";
+      diffData = JSON.parse(text);
+      document.documentElement.dataset.repo = diffData?.error ? "no" : "yes";
+      renderAll();
+      resubscribe(uri);
+    }
     renderPile();
     renderAnchors();
   } catch (e) {
@@ -1223,11 +1456,13 @@ async function boot() {
   applyTheme(app.getHostContext());
   try {
     app.setNotificationHandler(ResourceUpdatedNotificationSchema, (n) => {
-      if (n?.params?.uri === DIFF_URI) refresh();
+      // Estamos suscriptos al URI del modo activo (resubscribe): cualquier
+      // actualización de la firma git refresca la vista CORRIENTE.
+      if (n?.params?.uri) refresh();
     });
     const caps = app.getHostCapabilities?.();
     if (caps?.experimental?.["zcode/resourceSubscribe"])
-      await app.request({ method: "resources/subscribe", params: { uri: DIFF_URI } });
+      await resubscribe(diffUriFor());
   } catch {
     /* no reactive updates — manual ⟳ still works */
   }
@@ -1266,6 +1501,7 @@ if (window.__DA_TEST__) {
   renderPile();
   // Fake send so the composer flow can be exercised outside the app too.
   app.sendMessage = async () => ({ mode: "sent", ok: true });
+  app.callServerTool = async () => ({ structuredContent: { ok: true, at: new Date().toISOString() } });
 } else {
   boot();
 }

@@ -27,6 +27,19 @@ A Diff Ask message contains a block like:
 
 Call the `get_diff` tool (from this plugin) for structured JSON: branch, head, and per-file path/status/added-deleted counts/unified patch. It also opens the Diff Ask panel for the user.
 
+Diff modes (`mode` argument):
+
+- `working` (default) — uncommitted changes vs HEAD plus untracked files.
+- `unpushed` — everything a push would send plus local changes, vs `@{upstream}` (fails with `no_upstream` if the branch has no upstream).
+- `last-turn` — changes since the last turn marker 📸 (the panel marks automatically before sending each batch of questions).
+
+Commits:
+
+- `list_commits` — latest commits (title/author/date, paginate with `skip`) or search by hash/prefix/title (`query`).
+- `get_commit_diff` — full diff of one commit vs its first parent (root commits diff against the empty tree); opens the panel on that commit.
+
+The panel's question header names its scope, e.g. `Diff Ask — 2 preguntas al diff (sin pushear, vs origin/main):` or `(commit a1b2c3d fix: algo)` or `(último turno 📸)`. Answer about THAT diff: for unpushed/commit questions the quoted lines may differ from the current working tree — re-read the file at the right revision/line before concluding.
+
 ## Pinning an answer onto the file (optional, high value)
 
 If the answer is about a specific line and the user is looking at the file, END your message with a code-comments section and ZCode renders it as native cards pinned to those lines:

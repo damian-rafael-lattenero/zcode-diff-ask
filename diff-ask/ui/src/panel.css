@@ -536,3 +536,83 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+/* ---- modos (0.3.0): barra de modos, commits, 📸 ---- */
+.modebar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 2px 8px;
+}
+.modebar button {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.modebar button:hover { color: var(--text); }
+.modebar button.active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.header .meta .tot-m { color: var(--chip-mod); font-weight: 700; }
+.header .meta b { color: var(--text); }
+.snap-btn { flex: none; }
+.err-cta { margin-top: 8px; }
+.commits-search { display: flex; gap: 6px; padding: 0 2px 8px; }
+.commits-search input {
+  flex: 1;
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: var(--card);
+  color: var(--text);
+}
+.commits-search input:focus { outline: none; border-color: var(--accent); }
+.commit-list {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.commit-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+.commit-row:last-child { border-bottom: none; }
+.commit-row:hover { background: var(--bg); border-color: var(--border); }
+.hash-chip {
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--accent);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+.commit-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.commit-meta { flex: none; color: var(--muted); font-size: 12px; }
+.more-btn {
+  display: block;
+  margin: 8px auto 0;
+  font-weight: 700;
+  padding: 4px 18px;
+}
