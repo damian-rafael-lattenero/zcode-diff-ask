@@ -58,6 +58,67 @@ function scopeLabel() {
   return "";
 }
 
+// ------------------------------------------------- carpeta del diff (📁)
+// El server diffea su workspace ACTIVO (arranca en el de la sesión y se
+// cambia con la tool set_workspace). El chip muestra cuál es y permite
+// cambiar a cualquier repo local — al cambiar se limpia TODO el estado
+// anclado (archivos colapsados, pila, commits) porque era de la carpeta vieja.
+let currentWorkspace = null;
+
+function wsLabel() {
+  if (!currentWorkspace) return "…";
+  const parts = currentWorkspace.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? currentWorkspace;
+}
+
+function openWorkspaceEditor() {
+  document.querySelectorAll(".ws-editor").forEach((n) => n.remove());
+  const card = document.createElement("div");
+  card.className = "ws-editor";
+  card.innerHTML = `
+    <div class="ie-head"><span class="anchor">📁 Carpeta del diff</span><button class="ghost close" title="Cancelar">✕</button></div>
+    <input type="text" spellcheck="false">
+    <div class="ie-actions"><span class="hint">Ruta local de un repo git · Enter aplica · Esc cancela</span><button class="primary ok">Cambiar</button></div>`;
+  const input = card.querySelector("input");
+  input.value = currentWorkspace ?? "";
+  const close = () => card.remove();
+  card.querySelector(".close").onclick = close;
+  async function apply() {
+    const v = input.value.trim();
+    if (!v) { input.focus(); return; }
+    if (await applyWorkspace(v)) close();
+  }
+  card.querySelector(".ok").onclick = apply;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); apply(); }
+    if (e.key === "Escape") { e.preventDefault(); close(); }
+  });
+  document.body.appendChild(card);
+  input.focus();
+  input.select();
+}
+
+async function applyWorkspace(p) {
+  try {
+    const res = await app.callServerTool({ name: "set_workspace", arguments: { path: p } });
+    const sc = res?.structuredContent;
+    if (!sc?.ok) throw new Error(sc?.message ?? "no se pudo cambiar la carpeta");
+    currentWorkspace = sc.workspace;
+    collapsedPaths.clear();
+    seenPaths.clear();
+    pendingAsks.length = 0;
+    commitsState = { query: "", skip: 0, list: [], hasMore: false };
+    commitSel = null;
+    renderPile();
+    await refresh(true);
+    chip(`📁 ${wsLabel()}`);
+    return true;
+  } catch (e) {
+    chip(`⚠ ${e?.message ?? e}`);
+    return false;
+  }
+}
+
 /** @type {any} */ let diffData = null;
 /** @type {Map<string, {section: HTMLElement, body: HTMLElement, fd: import("@pierre/diffs").FileDiff|null, patch: string}>} */
 const rendered = new Map();
@@ -120,7 +181,11 @@ const lineFilter = { add: true, del: true, ctx: true };
 const EXTRA_STYLE = [
   ':host(.da-hide-add) [data-line-type="change-addition"]{display:none !important;}',
   ':host(.da-hide-del) [data-line-type="change-deletion"]{display:none !important;}',
+  // contexto: DOS clases — pierre marca "context" el umbral renderizado y
+  // "context-expanded" el que el usuario expandió de un separador. Ocultar
+  // ambas = cero líneas sin cambio (si no, quedan las expandidas colgadas).
   ':host(.da-hide-ctx) [data-line-type="context"]{display:none !important;}',
+  ':host(.da-hide-ctx) [data-line-type="context-expanded"]{display:none !important;}',
   ':host(.da-hide-ctx) [data-separator]{display:none !important;}',
   '[data-da-find="hit"]{background:var(--da-find-hit,#E9C46A4D) !important;}',
   '[data-da-find="cur"]{background:var(--da-find-cur,#E9C46AAA) !important;box-shadow:inset 3px 0 0 var(--accent,#4268d8) !important;}',
@@ -167,7 +232,7 @@ function rowHiddenByFilter(row) {
   const t = row.dataset.lineType;
   if (t === "change-addition") return !lineFilter.add;
   if (t === "change-deletion") return !lineFilter.del;
-  if (t === "context") return !lineFilter.ctx;
+  if (t === "context" || t === "context-expanded") return !lineFilter.ctx;
   return false;
 }
 
@@ -1350,6 +1415,15 @@ function renderModebar(root) {
     b.onclick = () => setMode(m.id);
     modebar.appendChild(b);
   }
+  // 📁: qué carpeta se está diffeando (título = ruta completa) y cambio.
+  const ws = document.createElement("button");
+  ws.className = "ghost ws";
+  ws.textContent = `📁 ${wsLabel()}`;
+  ws.title = currentWorkspace
+    ? `${currentWorkspace}\n(click para cambiar la carpeta del diff)`
+    : "Cambiar la carpeta del diff";
+  ws.onclick = openWorkspaceEditor;
+  modebar.appendChild(ws);
   root.appendChild(modebar);
 }
 
@@ -1378,8 +1452,10 @@ function renderAll() {
     return;
   }
 
-  // Barra de modos: Trabajo · Sin pushear · Último turno · Commits.
-  renderModebar(root);
+  // Toolbar STICKY: barra de modos + header siempre visibles al scrollear.
+  const toolbar = document.createElement("div");
+  toolbar.className = "toolbar";
+  renderModebar(toolbar);
 
   const header = document.createElement("div");
   header.className = "header";
@@ -1445,7 +1521,8 @@ function renderAll() {
       applyLineFilter();
     };
   });
-  root.appendChild(header);
+  toolbar.appendChild(header);
+  root.appendChild(toolbar);
 
   // 📸 manual: re-marca el AHORA (útil si el último turno lo disparaste
   // desde el chat principal y querés una base fresca).
@@ -1502,6 +1579,7 @@ async function loadCommits(reset = false) {
   const uri = `log://commits?skip=${commitsState.skip}&limit=10&q=${encodeURIComponent(commitsState.query)}`;
   const res = await app.readServerResource({ uri });
   const data = JSON.parse(res?.contents?.[0]?.text ?? "{}");
+  if (data.workspace) currentWorkspace = data.workspace;
   document.documentElement.dataset.repo = data?.error ? "no" : "yes";
   if (data.error) {
     const root = document.getElementById("root");
@@ -1525,7 +1603,9 @@ function renderCommits() {
   const root = document.getElementById("root");
   root.textContent = "";
 
-  renderModebar(root);
+  const toolbar = document.createElement("div");
+  toolbar.className = "toolbar";
+  renderModebar(toolbar);
 
   const bar = document.createElement("div");
   bar.className = "commits-search";
@@ -1539,7 +1619,8 @@ function renderCommits() {
       loadCommits(true);
     }
   });
-  root.appendChild(bar);
+  toolbar.appendChild(bar);
+  root.appendChild(toolbar);
 
   if (!commitsState.list.length) {
     const st = document.createElement("div");
@@ -1618,6 +1699,7 @@ async function refresh(explicit = false) {
       const res = await app.readServerResource({ uri });
       const text = res?.contents?.[0]?.text ?? "{}";
       diffData = JSON.parse(text);
+      if (diffData?.workspace) currentWorkspace = diffData.workspace;
       document.documentElement.dataset.repo = diffData?.error ? "no" : "yes";
       renderAll();
       resubscribe(uri);
@@ -1629,6 +1711,9 @@ async function refresh(explicit = false) {
     err.className = "state error";
     err.textContent = `No pude leer el diff: ${e?.message ?? e}`;
     root.textContent = "";
+    // Sin barra de modos un error de transporte dejaría al usuario trabado
+    // en el modo actual (sin chips para salir).
+    renderModebar(root);
     root.appendChild(err);
   } finally {
     root.classList.remove("loading");
@@ -1699,12 +1784,16 @@ if (window.__DA_TEST__) {
     },
   };
   diffData = window.__DA_TEST__;
+  currentWorkspace = window.__DA_TEST__.workspace ?? null;
   applyTheme({ theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light" });
   renderAll();
   renderPile();
   // Fake send so the composer flow can be exercised outside the app too.
   app.sendMessage = async () => ({ mode: "sent", ok: true });
-  app.callServerTool = async () => ({ structuredContent: { ok: true, at: new Date().toISOString() } });
+  app.callServerTool = async ({ name, arguments: a }) =>
+    name === "set_workspace"
+      ? { structuredContent: { ok: true, workspace: a?.path ?? currentWorkspace } }
+      : { structuredContent: { ok: true, at: new Date().toISOString() } };
 } else {
   boot();
 }

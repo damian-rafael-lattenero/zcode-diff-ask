@@ -102,6 +102,17 @@ diff-ask/
   MISMO `data-line-type` que su fila, así que se ocultan simétrico por CSS
   (`:host(.da-hide-*)`) y las columnas quedan alineadas; con el contexto
   oculto los separadores de hunk se van también (existen para él).
+- **≡ oculta TODO el contexto** (0.3.2): pierre marca `context` el umbral
+  renderizado y `context-expanded` el que el usuario expandió de un
+  separador — el filtro oculta AMBAS clases (si no, las expandidas quedaban
+  colgadas y parecía que "solo se ocultaban las cercanas").
+- **Toolbar sticky** (0.3.2): barra de modos + header siempre visibles al
+  scrollear (también en la vista Commits y en los estados de error).
+- **📁 carpeta del diff** (0.3.2): chip con la carpeta que se está diffeando
+  (título = ruta completa). Click → editor para cambiar a cualquier repo
+  local (tool `set_workspace`): el server valida que sea repo git, re-arma
+  los watchers reactivos y el panel limpia TODO el estado anclado (era de
+  la carpeta vieja) y refresca. Los payloads siempre traen `workspace`.
 
 - **El "+" y el composer**: `FileDiff` de `@pierre/diffs` — la MISMA librería
   que usa el diff nativo de la app — con `enableGutterUtility: true` y
