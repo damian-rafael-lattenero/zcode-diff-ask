@@ -292,6 +292,66 @@ export async function setActiveWorkspace(input) {
   return { ok: true, workspace: p };
 }
 
+// ------------------------------------------------- write_file (editor)
+// Autosave del editor del panel (estilo IntelliJ: siempre guarda). Política
+// de conflicto AGENTE GANA: si el archivo cambió en disco desde el contenido
+// que el panel tenía como base (expect_base = sha1), NO se pisa — la versión
+// del panel va a un shelve (contenido completo + .patch con la diferencia)
+// bajo ~/.zcode/diff-ask/shelved/<ws>/ y el panel cierra la edición.
+export async function writeFileGuarded({ path: rel, content, expect_base: expect, on_conflict: onConflict = "shelve", workspace = activeWorkspace } = {}) {
+  const ws = workspace;
+  const abs = path.resolve(ws, String(rel ?? ""));
+  if (abs !== ws && !abs.startsWith(ws + path.sep))
+    return { error: "invalid_path", message: `La ruta "${rel}" sale del workspace.` };
+  if (typeof content !== "string")
+    return { error: "invalid_content", message: "Falta el contenido a guardar." };
+  const hash = (buf) => createHash("sha1").update(buf).digest("hex");
+  let cur;
+  try {
+    cur = fs.readFileSync(abs);
+  } catch {
+    return {
+      conflict: true,
+      onConflict: "drop",
+      message: `El archivo ya no existe en disco (¿lo borraron mientras editabas?). Tu versión no se guardó.`,
+    };
+  }
+  const curHash = hash(cur);
+  if (String(expect ?? "") !== curHash) {
+    if (onConflict === "drop")
+      return { conflict: true, dropped: true, current_hash: curHash, message: "El archivo cambió en disco mientras editabas (gana el agente); tus ediciones no se guardaron." };
+    // shelve: contenido completo + patch con la diferencia (disco vs mío)
+    const stamp = new Date(); // hora local legible en el nombre
+    const p2 = (n) => String(n).padStart(2, "0");
+    const ts = `${p2(stamp.getHours())}${p2(stamp.getMinutes())}${p2(stamp.getSeconds())}`;
+    const base = path.basename(String(rel));
+    const dir = path.join(DA_STATE_DIR, "shelved", wsKey(ws), path.dirname(String(rel)) === "." ? "" : path.dirname(String(rel)));
+    fs.mkdirSync(dir, { recursive: true });
+    const minePath = path.join(dir, `${base}.${ts}.mine`);
+    fs.writeFileSync(minePath, content);
+    const patchPath = `${minePath}.patch`;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "da-shelve-"));
+    try {
+      fs.writeFileSync(path.join(tmp, "disk"), cur);
+      fs.writeFileSync(path.join(tmp, "mine"), content);
+      const r = await runGit(["diff", "--no-index", "--no-color", "--", "disk", "mine"], { cwd: tmp, expectDiffExit: true });
+      fs.writeFileSync(patchPath, r.out.replace(/^--- a\/disk/m, `--- a/${rel}`).replace(/^\+\+\+ b\/mine/m, `+++ b/${rel}`));
+    } catch {
+      /* sin patch: el .mine ya es suficiente */
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+    return {
+      conflict: true,
+      shelved: [minePath, patchPath],
+      current_hash: curHash,
+      message: `El archivo cambió en disco mientras editabas (gana el agente). Tu versión quedó en ${minePath} (+ .patch con la diferencia).`,
+    };
+  }
+  fs.writeFileSync(abs, content);
+  return { ok: true, hash: hash(Buffer.from(content, "utf8")) };
+}
+
 // ------------------------------------------------------- diff vs una base
 // base = HEAD (working) o @{upstream} (unpushed). Los archivos salen de
 // `git diff --name-status -M base` (tracked, renames incluidos) + untracked
@@ -992,6 +1052,21 @@ const TOOLS = [
     },
   },
   {
+    name: "write_file",
+    description:
+      "Autosave from the Diff Ask panel's inline editor (IntelliJ-style save-all). Conflict policy: THE AGENT WINS — if the file changed on disk since the panel's base (expect_base = sha1 of the base content), the write is refused; with on_conflict=shelve the panel's version is saved aside (full content + .patch) under ~/.zcode/diff-ask/shelved/. The model should NOT call this to edit files (use your own edit tools).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Workspace-relative path of the file." },
+        content: { type: "string", description: "Full new content (utf8)." },
+        expect_base: { type: "string", description: "sha1 of the content the panel believes is on disk (conflict check)." },
+        on_conflict: { type: "string", enum: ["shelve", "drop"], default: "shelve" },
+      },
+      required: ["path", "content", "expect_base"],
+    },
+  },
+  {
     name: "clear_turns",
     description: "Delete ALL recorded turns of the active workspace (the panel's 'Borrar todo').",
     inputSchema: { type: "object", properties: {} },
@@ -1101,6 +1176,18 @@ async function handleRequest(msg) {
           return {
             structuredContent: data,
             content: [{ type: "text", text: data.ok ? `Turno borrado (${data.remaining} restantes).` : data.message }],
+          };
+        }
+        case "write_file": {
+          data = await writeFileGuarded({
+            path: params.arguments?.path,
+            content: params.arguments?.content,
+            expect_base: params.arguments?.expect_base,
+            on_conflict: params.arguments?.on_conflict === "drop" ? "drop" : "shelve",
+          });
+          return {
+            structuredContent: data,
+            content: [{ type: "text", text: data.ok ? "Guardado." : data.message }],
           };
         }
         case "clear_turns": {
