@@ -716,3 +716,63 @@ button.filt.on::after {
 .ws-editor input:focus { outline: none; border-color: var(--accent); }
 .ws-editor .ie-actions { display: flex; align-items: center; gap: 8px; }
 .ws-editor .ie-actions .hint { flex: 1; color: var(--muted); font-size: 11px; }
+
+/* ---- modo Turnos (0.4.0) ---- */
+.turns-actions { align-items: center; }
+.turns-actions .turns-count { color: var(--muted); }
+.turn-row { cursor: pointer; }
+.turn-time {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.turn-prompt {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.turn-live {
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ok);
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 0 5px;
+}
+.turn-live:empty { display: none; }
+.turn-row button { flex: none; padding: 2px 7px; font-size: 12px; }
+.prompt-card {
+  position: fixed;
+  top: 44px;
+  right: 12px;
+  z-index: 31;
+  width: min(480px, calc(100vw - 24px));
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+}
+.prompt-card .ie-head { display: flex; align-items: center; gap: 8px; }
+.prompt-card .ie-head .anchor { flex: 1; font-weight: 600; color: var(--accent); }
+.prompt-card pre {
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+}

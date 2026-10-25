@@ -28,24 +28,30 @@ const app = new App({ name: "diff-ask", version: "0.1.0" }, {});
 // Modos del panel: qué diff se muestra y contra qué base.
 //   working   → git diff HEAD + untracked (el clásico)
 //   unpushed  → commits sin pushear + cambios locales, vs @{upstream}
-//   lastTurn  → working tree vs 📸 (marcador de turno; el panel marca solo
-//               antes de mandar cada tanda de preguntas, o con 📸 a mano)
+//   turns     → TURNOS: cada mensaje del usuario fotografía el workspace
+//               (HEAD + blobs de git); el diff de un turno = su foto vs la
+//               del prompt siguiente; el ÚLTIMO, contra el working tree VIVO
+//               (nace abierto por default). Señal: ~/.zcode/diff-ask/
+//               turn-events.jsonl (la escribe el bot para Telegram y el fork
+//               para desktop).
 //   commits   → historial: últimos commits / búsqueda por hash o título;
 //               un click abre el diff de ese commit (vs primer padre)
 const MODES = [
   { id: "working", label: "Trabajo", title: "Cambios sin commitear vs HEAD (+ untracked)" },
   { id: "unpushed", label: "Sin pushear", title: "Commits sin pushear + cambios locales vs el upstream" },
-  { id: "lastTurn", label: "Último turno", title: "Qué cambió desde el último marcador 📸 (automático al enviar preguntas)" },
+  { id: "turns", label: "Turnos", title: "Qué logró cada turno (de tu prompt al siguiente); el último, en vivo" },
   { id: "commits", label: "Commits", title: "Historial de commits: buscá por hash o título, abrí el diff de uno" },
 ];
 let mode = "working";
 let commitSel = null; // hash en vista de diff de commit (null = lista)
+let turnSel = null;   // id de turno en vista (null = lista; "latest" = último)
+let turnsState = { list: [] };
 let commitsState = { query: "", skip: 0, list: [], hasMore: false };
 let subscribedUri = null;
 
 function diffUriFor() {
   if (mode === "unpushed") return `${DIFF_URI}?mode=unpushed`;
-  if (mode === "lastTurn") return `${DIFF_URI}?mode=last-turn`;
+  if (mode === "turns" && turnSel) return `diff://turn/${encodeURIComponent(turnSel)}`;
   if (mode === "commits" && commitSel) return `diff://commit/${encodeURIComponent(commitSel)}`;
   return DIFF_URI;
 }
@@ -53,7 +59,8 @@ function diffUriFor() {
 // Scope del mensaje: que el agente sepa QUÉ diff se le pregunta.
 function scopeLabel() {
   if (mode === "unpushed") return diffData?.upstream ? `sin pushear, vs ${diffData.upstream}` : "sin pushear";
-  if (mode === "lastTurn") return "último turno 📸";
+  if (mode === "turns" && diffData?.turn)
+    return `turno ${diffData.turn.at?.slice(11, 16) ?? ""}${diffData.turn.isLatest ? " (en vivo)" : ""}`.trim();
   if (mode === "commits" && diffData?.commit) return `commit ${diffData.commit.short} ${diffData.commit.subject ?? ""}`.trim();
   return "";
 }
@@ -108,7 +115,9 @@ async function applyWorkspace(p) {
     seenPaths.clear();
     pendingAsks.length = 0;
     commitsState = { query: "", skip: 0, list: [], hasMore: false };
+    turnsState = { list: [] };
     commitSel = null;
+    turnSel = mode === "turns" ? "latest" : null;
     renderPile();
     await refresh(true);
     chip(`📁 ${wsLabel()}`);
@@ -463,24 +472,9 @@ function flushFreeInput() {
   renderPile();
 }
 
-async function markTurnSnapshot() {
-  try {
-    const res = await app.callServerTool({ name: "mark_turn_snapshot", arguments: {} });
-    const at = res?.structuredContent?.at;
-    if (at) return at;
-    throw new Error(res?.structuredContent?.message ?? "sin respuesta");
-  } catch (e) {
-    chip(`⚠ no pude marcar 📸 (${e?.message ?? e})`);
-    return null;
-  }
-}
-
 async function sendAllPending() {
   flushFreeInput();
   if (!pendingAsks.length) return;
-  // Marca ANTES de enviar: la línea de base del turno es el estado acá —
-  // así "Último turno" muestra exactamente lo que el agente cambió después.
-  await markTurnSnapshot();
   const { n, text } = buildAskMessage(pendingAsks, scopeLabel());
   try {
     const res = await app.sendMessage({ role: "user", content: [{ type: "text", text }] });
@@ -1409,7 +1403,7 @@ function renderModebar(root) {
   for (const m of MODES) {
     const b = document.createElement("button");
     b.dataset.mode = m.id;
-    b.textContent = m.id === "lastTurn" ? "Último turno 📸" : m.label;
+    b.textContent = m.label;
     b.title = m.title;
     if (m.id === mode) b.classList.add("active");
     b.onclick = () => setMode(m.id);
@@ -1438,17 +1432,6 @@ function renderAll() {
     err.className = "state error";
     err.textContent = diffData?.message ?? "Sin datos del diff.";
     root.appendChild(err);
-    // Sin marcador todavía: CTA directa (📸) en vez de sólo texto.
-    if (diffData?.error === "no_snapshot") {
-      const cta = document.createElement("button");
-      cta.className = "primary err-cta";
-      cta.textContent = "📸 Marcar estado actual";
-      cta.onclick = async () => {
-        const at = await markTurnSnapshot();
-        if (at) refresh();
-      };
-      root.appendChild(cta);
-    }
     return;
   }
 
@@ -1461,7 +1444,7 @@ function renderAll() {
   header.className = "header";
   header.innerHTML = `
     <div class="meta"></div>
-    ${mode === "commits" ? '<button class="ghost back" title="Volver a la lista de commits">← Commits</button>' : ""}
+    ${mode === "commits" || mode === "turns" ? `<button class="ghost back" title="Volver a la lista">${mode === "commits" ? "← Commits" : "← Turnos"}</button>` : ""}
     <button class="ghost filt" data-filt="add" title="Mostrar/ocultar líneas agregadas">＋</button>
     <button class="ghost filt" data-filt="del" title="Mostrar/ocultar líneas borradas">−</button>
     <button class="ghost filt" data-filt="ctx" title="Mostrar/ocultar líneas de contexto (sin cambio)">≡</button>
@@ -1486,9 +1469,9 @@ function renderAll() {
       if (diffData.behind !== undefined) ab.push(`<span class="tot-d">↓${diffData.behind}</span>`);
       bits.push(`${ab.join(" ")} vs ${esc(diffData.upstream)}`);
     }
-    if (mode === "lastTurn") {
-      const hm = diffData.snapshotAt ? diffData.snapshotAt.slice(11, 16) : "?";
-      bits.push(`vs 📸 ${hm}`);
+    if (mode === "turns" && diffData.turn) {
+      bits.push(`<b>turno ${esc(diffData.turn.at?.slice(11, 16) ?? "")}</b>`);
+      if (diffData.turn.isLatest) bits.push('<span class="tot-a">en vivo</span>');
     }
     bits.push(`${diffData.fileCount} archivo${diffData.fileCount === 1 ? "" : "s"}`);
     bits.push(`<span class="tot-a">+${t.added}</span>`, `<span class="tot-d">−${t.deleted}</span>`);
@@ -1499,7 +1482,12 @@ function renderAll() {
   }
   header.querySelector(".meta").innerHTML = bits.join(` <span class="dot">·</span> `);
   const backBtn = header.querySelector(".back");
-  if (backBtn) backBtn.onclick = () => { commitSel = null; refresh(); };
+  if (backBtn)
+    backBtn.onclick = () => {
+      commitSel = null;
+      turnSel = null;
+      refresh();
+    };
   header.querySelector(".refresh").onclick = (e) => {
     const btn = e.currentTarget;
     btn.classList.remove("spinning");
@@ -1524,23 +1512,10 @@ function renderAll() {
   toolbar.appendChild(header);
   root.appendChild(toolbar);
 
-  // 📸 manual: re-marca el AHORA (útil si el último turno lo disparaste
-  // desde el chat principal y querés una base fresca).
-  if (mode === "lastTurn") {
-    const snap = document.createElement("button");
-    snap.className = "ghost snap-btn";
-    snap.textContent = "📸 marcar ahora";
-    snap.title = "Guardar el estado actual como línea de base del último turno";
-    snap.onclick = async () => {
-      const at = await markTurnSnapshot();
-      if (at) refresh();
-    };
-    header.querySelector(".meta").after(snap);
-  }
 
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Modos arriba: Trabajo (vs HEAD) · Sin pushear (upstream) · Último turno 📸 · Commits. ⌘F busca en el diff (Enter cicla) · ＋/−/≡ filtran líneas agregadas/borradas/contexto. Click en un NÚMERO = seleccionarlo (arrastrás y pintás varios, salteados también) → ＋ grande abre la pregunta · hover en una línea → ＋ · ＋ del encabezado = archivo. Abajo: libres; ⌘↵ manda todo junto (y marca 📸 del turno).";
+  hint.textContent = "Modos arriba: Trabajo (vs HEAD) · Sin pushear (upstream) · Turnos (qué logró cada prompt; el último en vivo) · Commits. ⌘F busca en el diff (Enter cicla) · ＋/−/≡ filtran líneas agregadas/borradas/contexto. Click en un NÚMERO = seleccionarlo (arrastrás y pintás varios, salteados también) → ＋ grande abre la pregunta · hover en una línea → ＋ · ＋ del encabezado = archivo. Abajo: libres; ⌘↵ manda todo junto.";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
@@ -1658,6 +1633,137 @@ function renderCommits() {
   }
 }
 
+// ---------------------------------------------------------------- turnos
+// Lista del modo Turnos: una fila por mensaje del usuario — [hora] [prompt
+// recortado] [💬 prompt completo] [✕ borrar]. El de arriba con "en vivo" es
+// el último turno (contra el working tree actual). "Borrar todo" pide
+// confirmación inline (un click lo arma, el segundo confirma).
+
+async function loadTurns() {
+  const res = await app.readServerResource({ uri: "turn://list" });
+  const data = JSON.parse(res?.contents?.[0]?.text ?? "{}");
+  if (data.workspace) currentWorkspace = data.workspace;
+  document.documentElement.dataset.repo = data?.error ? "no" : "yes";
+  if (data.error) {
+    const root = document.getElementById("root");
+    root.textContent = "";
+    renderModebar(root);
+    const err = document.createElement("div");
+    err.className = "state error";
+    err.textContent = data.message ?? "No pude leer los turnos.";
+    root.appendChild(err);
+    return;
+  }
+  turnsState.list = data.turns ?? [];
+  diffData = null;
+  renderTurns();
+  resubscribe("turn://list");
+}
+
+function openPromptCard(turn) {
+  document.querySelectorAll(".prompt-card").forEach((n) => n.remove());
+  const card = document.createElement("div");
+  card.className = "prompt-card";
+  card.innerHTML = `
+    <div class="ie-head"><span class="anchor"></span><button class="ghost close" title="Cerrar (Esc)">✕</button></div>
+    <pre></pre>`;
+  card.querySelector(".anchor").textContent = `Turno ${turn.at?.slice(11, 16) ?? ""} — tu prompt completo`;
+  card.querySelector("pre").textContent = turn.prompt || "(sin texto)";
+  card.querySelector(".close").onclick = () => card.remove();
+  document.addEventListener("keydown", function esc(e) {
+    if (e.key === "Escape") { card.remove(); document.removeEventListener("keydown", esc); }
+  });
+  document.body.appendChild(card);
+}
+
+async function deleteTurnById(id) {
+  try {
+    const res = await app.callServerTool({ name: "delete_turn", arguments: { id } });
+    if (!res?.structuredContent?.ok) throw new Error(res?.structuredContent?.message ?? "no se pudo borrar");
+    loadTurns();
+  } catch (e) {
+    chip(`⚠ ${e?.message ?? e}`);
+  }
+}
+
+function renderTurns() {
+  const root = document.getElementById("root");
+  root.textContent = "";
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "toolbar";
+  renderModebar(toolbar);
+
+  const bar = document.createElement("div");
+  bar.className = "commits-search turns-actions";
+  const count = document.createElement("span");
+  count.className = "turns-count";
+  count.textContent = turnsState.list.length
+    ? `${turnsState.list.length} turno${turnsState.list.length === 1 ? "" : "s"}`
+    : "";
+  const clear = document.createElement("button");
+  clear.className = "ghost danger";
+  clear.textContent = "🗑 Borrar todo";
+  clear.title = "Borrar todos los turnos de esta carpeta";
+  clear.onclick = () => {
+    if (clear.dataset.armed) {
+      app.callServerTool({ name: "clear_turns", arguments: {} })
+        .then(() => loadTurns())
+        .catch((e) => chip(`⚠ ${e?.message ?? e}`));
+      return;
+    }
+    clear.dataset.armed = "1";
+    clear.textContent = "¿Seguro? BORRAR TODO";
+    setTimeout(() => {
+      delete clear.dataset.armed;
+      clear.textContent = "🗑 Borrar todo";
+    }, 4000);
+  };
+  bar.append(count, clear);
+  toolbar.appendChild(bar);
+  root.appendChild(toolbar);
+
+  if (!turnsState.list.length) {
+    const st = document.createElement("div");
+    st.className = "state";
+    st.textContent = "Todavía no hay turnos. Cada mensaje tuyo en la sesión (desktop o Telegram) registra uno automáticamente.";
+    root.appendChild(st);
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "commit-list turn-list";
+  for (const t of turnsState.list) {
+    const row = document.createElement("div");
+    row.className = "commit-row turn-row";
+    const time = t.at?.slice(11, 16) ?? "";
+    const day = t.at?.slice(0, 10) ?? "";
+    row.innerHTML = `
+      <span class="turn-time"></span>
+      <span class="turn-prompt"></span>
+      <span class="turn-live"></span>
+      <button class="ghost turn-prompt-btn" title="Ver el prompt completo">💬</button>
+      <button class="ghost danger turn-del" title="Borrar este turno">✕</button>`;
+    row.querySelector(".turn-time").textContent = `${day} ${time}`;
+    row.querySelector(".turn-prompt").textContent = (t.prompt || "(sin texto)").split("\n")[0];
+    row.querySelector(".turn-prompt").title = t.prompt || "";
+    if (t.isLatest) row.querySelector(".turn-live").textContent = "en vivo";
+    row.querySelector(".turn-prompt-btn").onclick = (e) => {
+      e.stopPropagation();
+      openPromptCard(t);
+    };
+    row.querySelector(".turn-del").onclick = (e) => {
+      e.stopPropagation();
+      deleteTurnById(t.id);
+    };
+    row.onclick = () => {
+      turnSel = t.id;
+      refresh();
+    };
+    list.appendChild(row);
+  }
+  root.appendChild(list);
+}
+
 // ------------------------------------------------------------ data flow
 
 // Suscripción reactiva al URI del modo ACTUAL: al cambiar de modo/vista se
@@ -1675,13 +1781,15 @@ async function resubscribe(uri) {
   }
 }
 
-// Cambio de modo: chips arriba. Sale de Commits limpia la selección y la
-// búsqueda (volver es barato; estado viejo confunde).
+// Cambio de modo: chips arriba. Sale de Commits/Turnos limpia la selección y
+// la búsqueda; entrar a Turnos abre el ÚLTIMO turno directo (en vivo).
 async function setMode(m) {
   if (m === mode) return;
   mode = m;
   commitSel = null;
+  turnSel = m === "turns" ? "latest" : null;
   commitsState = { query: "", skip: 0, list: [], hasMore: false };
+  turnsState = { list: [] };
   document.querySelectorAll(".modebar button").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === m);
   });
@@ -1694,6 +1802,8 @@ async function refresh(explicit = false) {
   try {
     if (mode === "commits" && !commitSel) {
       await loadCommits();
+    } else if (mode === "turns" && !turnSel) {
+      await loadTurns();
     } else {
       const uri = diffUriFor();
       const res = await app.readServerResource({ uri });
@@ -1790,6 +1900,14 @@ if (window.__DA_TEST__) {
   renderPile();
   // Fake send so the composer flow can be exercised outside the app too.
   app.sendMessage = async () => ({ mode: "sent", ok: true });
+  // Recursos mockeados (window.__DA_TEST__.mockResources[uri]) para ejercitar
+  // las vistas que leen recursos (turn://list, diff://turn/…) sin host.
+  app.readServerResource = async ({ uri }) => {
+    const mock = window.__DA_TEST__?.mockResources?.[uri];
+    if (mock !== undefined)
+      return { contents: [{ text: typeof mock === "string" ? mock : JSON.stringify(mock) }] };
+    throw new Error("Not connected");
+  };
   app.callServerTool = async ({ name, arguments: a }) =>
     name === "set_workspace"
       ? { structuredContent: { ok: true, workspace: a?.path ?? currentWorkspace } }

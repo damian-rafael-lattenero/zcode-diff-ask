@@ -31,7 +31,11 @@ Diff modes (`mode` argument):
 
 - `working` (default) — uncommitted changes vs HEAD plus untracked files.
 - `unpushed` — everything a push would send plus local changes, vs `@{upstream}` (fails with `no_upstream` if the branch has no upstream).
-- `last-turn` — changes since the last turn marker 📸 (the panel marks automatically before sending each batch of questions).
+
+Turns (what each user prompt achieved — commits included, workspace snapshots stored as git blobs):
+
+- `list_turns` — every recorded turn of the workspace (newest first): id, timestamp, full prompt, isLatest.
+- `get_turn_diff` — diff of one turn (its prompt's snapshot vs the next prompt's; `latest` diffs against the live working tree).
 
 Commits:
 
