@@ -51,6 +51,11 @@ diff-ask/
 │   │     working (default)       git diff HEAD + untracked
 │   │     ?mode=unpushed          git diff @{upstream} + untracked, con ↑ahead ↓behind
 │   │     ?mode=last-turn         working tree vs 📸 (snapshot de turno del server)
+│   · turn-events.jsonl         # INBOX de turnos: cada prompt del usuario
+│   │                           #   (hook user-scope del bot) → el server
+│   │                           #   fotografía (HEAD + blobs hash-object -w)
+│   · turn://list               # turnos registrados (índice persistente)
+│   · diff://turn/<id|latest>   # diff del turno; latest = contra el árbol VIVO
 │   · log://commits?skip=&q=    # commits: página de 10 con hasMore ("…" carga más)
 │   │                           #   y búsqueda por hash/prefijo o texto del título
 │   · diff://commit/<hash>      # diff de un commit vs su primer padre (raíz: árbol vacío)
@@ -78,13 +83,17 @@ diff-ask/
 - **Sin pushear**: todo lo que subiría un `git push` más los cambios locales
   (base `@{upstream}`), con cuenta `↑ahead ↓behind`. Sin upstream → mensaje
   con el `git push -u` para salir.
-- **Último turno**: el server no ve los turnos de la sesión (la SDK de MCP
-  Apps no expone eventos), así que la línea de base es un **marcador 📸**:
-  el panel lo pone SOLO antes de mandar cada tanda de preguntas (base =
-  arranque del turno) y hay 📸 manual. El diff muestra working tree vs ese
-  snapshot — incluye lo que el agente commiteó durante el turno, y los
-  archivos restaurados (cambiaron respecto del marcador). In-memory: vive
-  mientras viva el proceso del server de la sesión.
+- **Turnos**: cada mensaje del usuario en CUALQUIER sesión de la Mac
+  (desktop o Telegram — el hook user-scope del bot lo escribe todo) apendea
+  un evento a `~/.zcode/diff-ask/turn-events.jsonl`; el server del plugin lo
+  observa SIN debounce y fotografía el estado ANTES de que el agente edite:
+  HEAD + blobs de git (`hash-object -w`) por archivo sucio. El diff del
+  turno N = foto(prompt N) vs foto(prompt N+1) — el EFECTO NETO, haya
+  commiteado o no; el ÚLTIMO turno diffea contra el working tree VIVO y nace
+  abierto por default. La lista muestra `fecha hora · prompt recortado ·
+  💬 prompt completo · ✕ borrar` + "Borrar todo" con confirmación inline.
+  Persiste entre sesiones: índice en `~/.zcode/diff-ask/turns/<key>/` y
+  blobs en el propio `.git/objects` del repo (los recoge el gc).
 - **Commits**: últimos 10 con `hash · título · autor · fecha`, "…" trae 10
   más, y buscador por hash (exacto o prefijo) o texto del título. Un click
   abre el diff del commit (vs primer padre; merge anotado) y las preguntas

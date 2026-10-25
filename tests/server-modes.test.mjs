@@ -9,8 +9,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  buildDiff, buildLastTurnDiff, markTurnSnapshot, listCommits, buildCommitDiff,
-  parseNameStatusZ, parseLogLine, setActiveWorkspace,
+  buildDiff, recordTurn, buildTurnDiff, listTurns, deleteTurn, clearTurns,
+  listCommits, buildCommitDiff, parseNameStatusZ, parseLogLine, setActiveWorkspace,
 } from "../diff-ask/server/server.mjs";
 
 function git(cwd, ...args) {
@@ -94,45 +94,72 @@ test("unpushed sin upstream: error explícito con cómo salir", async () => {
   assert.match(d.message, /git push -u/);
 });
 
-test("last-turn: sólo lo que cambió desde 📸 (edits, nuevos y restaurados)", async () => {
+test("turnos: cada prompt fotografía el estado; el diff N es foto N vs foto N+1", async () => {
   const dir = makeRepo();
   commitFile(dir, "a.py", "línea 1\n", "base a");
-  commitFile(dir, "d.py", "d original\n", "base d");
-  // d.py sucio ANTES del marcador; después se restaura → CAMBIA respecto
-  // del 📸 (la línea de base era "d editado"): aparece como restaurado, no
-  // desaparece — el marcador es el estado, no HEAD.
-  fs.writeFileSync(path.join(dir, "d.py"), "d editado\n");
 
-  const mark = await markTurnSnapshot({ workspace: dir });
-  assert.equal(mark.ok, true);
-  assert.equal(mark.files, 1); // d.py
+  // Turno 1: el agente edita a.py y crea b.py (sin commitear nada)
+  await recordTurn("arreglá el bug de a", "2026-10-24T10:00:00.000Z", dir);
+  fs.writeFileSync(path.join(dir, "a.py"), "línea 1\nlínea 2\n");
+  fs.writeFileSync(path.join(dir, "b.py"), "nuevo\n");
 
-  fs.writeFileSync(path.join(dir, "a.py"), "línea 1\nlínea 2\n"); // el "turno"
-  fs.writeFileSync(path.join(dir, "nuevo.py"), "n\n");
-  git(dir, "checkout", "--", "d.py"); // restaurado: cambio vs 📸, va en el diff
+  // Turno 2: el usuario pide otra cosa; el agente commitea TODO (efecto neto)
+  await recordTurn("commiteá y seguí con c", "2026-10-24T10:05:00.000Z", dir);
+  git(dir, "add", "-A");
+  git(dir, "commit", "-qm", "turno 2 commitea");
+  fs.writeFileSync(path.join(dir, "c.py"), "tercer turno\n");
 
-  const d = await buildLastTurnDiff({ workspace: dir });
-  assert.equal(d.error, undefined);
-  assert.equal(d.mode, "last-turn");
-  assert.deepEqual(d.files.map((f) => f.path).sort(), ["a.py", "d.py", "nuevo.py"]);
-  const a = fileOf(d, "a.py");
-  assert.equal(a.before, "línea 1\n");
-  assert.equal(a.after, "línea 1\nlínea 2\n");
-  assert.equal(a.status, "M");
-  assert.equal(a.added, "1");
-  assert.equal(a.deleted, "0");
-  assert.equal(fileOf(d, "nuevo.py").status, "A");
-  // Restaurado: before = lo que decía el marcador, after = HEAD.
-  const dd = fileOf(d, "d.py");
-  assert.equal(dd.before, "d editado\n");
-  assert.equal(dd.after, "d original\n");
+  const list = listTurns({ workspace: dir });
+  assert.equal(list.count, 2);
+  assert.equal(list.turns[0].prompt, "commiteá y seguí con c"); // newest first
+  assert.equal(list.turns[0].isLatest, true);
+
+  // Turno 1: a.py M (1 línea nueva) + b.py A — TODO sin commit en su momento
+  const t1 = await buildTurnDiff(list.turns[1].id, { workspace: dir });
+  assert.equal(t1.mode, "turn");
+  assert.equal(t1.turn.prompt, "arreglá el bug de a");
+  assert.deepEqual(t1.files.map((f) => f.path).sort(), ["a.py", "b.py"]);
+  const a1 = t1.files.find((f) => f.path === "a.py");
+  assert.equal(a1.before, "línea 1\n");
+  assert.equal(a1.after, "línea 1\nlínea 2\n");
+  assert.equal(a1.status, "M");
+  assert.equal(t1.files.find((f) => f.path === "b.py").status, "A");
+
+  // Turno 2 (latest, VIVO): el commit de a/b NO aparece (mismo contenido que
+  // la foto 2) — sólo c.py nuevo sin commitear.
+  const t2 = await buildTurnDiff("latest", { workspace: dir });
+  assert.deepEqual(t2.files.map((f) => f.path), ["c.py"]);
+  assert.equal(t2.turn.isLatest, true);
+
+  // Los blobs persisten en el repo: el diff del turno 1 sobrevive sin estado
+  // en memoria (recordTurn no guarda nada en el server).
+  const t1b = await buildTurnDiff(list.turns[1].id, { workspace: dir });
+  assert.equal(t1b.files.length, 2);
 });
 
-test("last-turn sin marcador: error con las dos formas de marcarlo", async () => {
+test("turnos: delete y clear; sin turnos → error amigable", async () => {
   const dir = makeRepo();
-  const d = await buildLastTurnDiff({ workspace: dir });
-  assert.equal(d.error, "no_snapshot");
-  assert.match(d.message, /📸/);
+  commitFile(dir, "a.py", "v1\n", "base");
+  const empty = await buildTurnDiff("latest", { workspace: dir });
+  assert.equal(empty.error, "no_turns");
+
+  await recordTurn("turno uno", "2026-10-24T11:00:00.000Z", dir);
+  fs.writeFileSync(path.join(dir, "a.py"), "v2\n");
+  await recordTurn("turno dos", "2026-10-24T11:05:00.000Z", dir);
+  fs.writeFileSync(path.join(dir, "a.py"), "v3\n");
+  assert.equal(listTurns({ workspace: dir }).count, 2);
+
+  // borrar el turno 1: queda 1; el que queda pasa a ser latest (vivo)
+  const id1 = listTurns({ workspace: dir }).turns[1].id;
+  const del = deleteTurn(id1, { workspace: dir });
+  assert.equal(del.ok, true);
+  assert.equal(del.remaining, 1);
+  assert.equal(listTurns({ workspace: dir }).turns[0].isLatest, true);
+  assert.equal(deleteTurn("no-existe", { workspace: dir }).error, "unknown_turn");
+
+  clearTurns({ workspace: dir });
+  assert.equal(listTurns({ workspace: dir }).count, 0);
+  assert.equal((await buildTurnDiff("latest", { workspace: dir })).error, "no_turns");
 });
 
 test("listCommits: página de 10 con hasMore, skip, hash y título", async () => {
