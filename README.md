@@ -117,6 +117,18 @@ diff-ask/
   colgadas y parecía que "solo se ocultaban las cercanas").
 - **Toolbar sticky** (0.3.2): barra de modos + header siempre visibles al
   scrollear (también en la vista Commits y en los estados de error).
+- **✏️ edición en vivo** (0.5.0): el panel ES un editor — ✏️ en el head del
+  archivo (sólo vistas del working tree: Trabajo, Sin pushear, turno EN VIVO)
+  engancha el `Editor` de pierre al diff y cada tecla re-difiera en vivo
+  (verde/rojo al instante, sesión de edición hunk-por-hunk). Guardado estilo
+  IntelliJ (save-all-always): autosave con debounce 900ms vía `write_file`,
+  ⌘Z/⌘⇧Z nativos, y ↩ Descartar (N) restaura el contenido de antes del ✏️.
+  Mientras editás, el refresh reactivo queda en pausa (chip honesto) y se
+  aplica solo al terminar. Conflicto = GANA EL AGENTE: si el archivo cambió
+  en disco desde tu base (sha1), no se pisa — tu versión va a un shelve
+  (`~/.zcode/diff-ask/shelved/<ws>/` con el contenido completo + `.patch`
+  con la diferencia) y la edición se cierra. Mandar preguntas desde el panel
+  hace save-all antes de enviar.
 - **📁 carpeta del diff** (0.3.2): chip con la carpeta que se está diffeando
   (título = ruta completa). Click → editor para cambiar a cualquier repo
   local (tool `set_workspace`): el server valida que sea repo git, re-arma

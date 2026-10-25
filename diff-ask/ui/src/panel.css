@@ -776,3 +776,37 @@ button.filt.on::after {
   border-radius: 6px;
   padding: 8px;
 }
+
+/* ---- edición en vivo (✏️, 0.5.0) ---- */
+.file-head .fedit { padding: 2px 8px; }
+.file.editing > .file-head { border-bottom-color: var(--accent); }
+.editing-chip {
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+#editbanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--warn);
+  background: var(--card);
+  color: var(--text);
+  font-size: 12px;
+}
+#editbanner[hidden] { display: none; }
+#editbanner .msg { flex: 1; min-width: 0; }
+#pausedchip {
+  padding: 3px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted);
+  font-size: 11px;
+}
+#pausedchip[hidden] { display: none; }

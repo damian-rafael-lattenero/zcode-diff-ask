@@ -17,6 +17,7 @@
 import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
 import { ResourceUpdatedNotificationSchema } from "@modelcontextprotocol/core";
 import { FileDiff, parsePatchFiles, isHighlighterLoaded, isHighlighterLoading, isHighlighterNull } from "@pierre/diffs";
+import { Editor } from "@pierre/diffs/edit";
 import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
   compressRuns, linesLabel, quoteForRanges,
@@ -118,6 +119,7 @@ async function applyWorkspace(p) {
     turnsState = { list: [] };
     commitSel = null;
     turnSel = mode === "turns" ? "latest" : null;
+    await endAllEdits();
     renderPile();
     await refresh(true);
     chip(`📁 ${wsLabel()}`);
@@ -243,6 +245,196 @@ function rowHiddenByFilter(row) {
   if (t === "change-deletion") return !lineFilter.del;
   if (t === "context" || t === "context-expanded") return !lineFilter.ctx;
   return false;
+}
+
+// ------------------------------------------------- edición en vivo (✏️)
+// El panel ES un editor: ✏️ engancha el Editor de pierre al diff de ese
+// archivo y cada tecla re-difiera EN VIVO (verde/rojo al instante — la
+// sesión de edición de la librería re-renderiza hunk por hunk). Guardado
+// estilo IntelliJ (save-all-always): autosave con debounce 900ms vía la
+// tool write_file del server, ⌘Z nativo del editor, y "↩ Descartar"
+// restaura el contenido del momento del ✏️. Conflicto = GANA EL AGENTE:
+// si el archivo cambió en disco, no se pisa — la versión del panel va a un
+// shelve y la edición se cierra. Mientras haya edición, el refresh
+// reactivo queda EN PAUSA (el editor no puede sobrevivir un re-render);
+// al terminar, se refresca solo.
+function editingCount() {
+  let n = 0;
+  for (const e of rendered.values()) if (e.edit) n++;
+  return n;
+}
+
+async function sha1Hex(str) {
+  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// ¿este archivo se puede editar en la vista ACTUAL? Sólo vistas del working
+// tree (Trabajo, Sin pushear, turno EN VIVO) y con contenido completo.
+function editableNow(f) {
+  if (typeof f.after !== "string" || f.binary || f.status === "D") return false;
+  if (mode === "working" || mode === "unpushed") return true;
+  if (mode === "turns" && diffData?.turn?.isLatest) return true;
+  return false;
+}
+
+function ensureEditBanner() {
+  if (document.getElementById("editbanner")) return;
+  const b = document.createElement("div");
+  b.id = "editbanner";
+  b.hidden = true;
+  b.innerHTML = `<span class="msg"></span><button class="ghost close" title="Cerrar">✕</button>`;
+  b.querySelector(".close").onclick = () => (b.hidden = true);
+  document.body.prepend(b);
+}
+
+function showEditBanner(msg, sticky = false) {
+  ensureEditBanner();
+  const b = document.getElementById("editbanner");
+  b.querySelector(".msg").textContent = msg;
+  b.hidden = false;
+  clearTimeout(b._t);
+  if (!sticky) b._t = setTimeout(() => (b.hidden = true), 8000);
+}
+
+function ensurePausedChip() {
+  if (document.getElementById("pausedchip")) return;
+  const c = document.createElement("div");
+  c.id = "pausedchip";
+  c.hidden = true;
+  c.textContent = "✏️ editando — el refresco automático sigue en pausa; al terminar se actualiza solo";
+  document.body.prepend(c);
+}
+
+function updateEditUI() {
+  ensurePausedChip();
+  const paused = editingCount() === 0 && pendingRefresh;
+  document.getElementById("pausedchip").hidden = editingCount() === 0;
+  // última edición cerrada → aplicar el refresh diferido
+  if (paused && pendingRefresh) {
+    pendingRefresh = false;
+    refresh();
+  }
+  const header = document.querySelector(".header");
+  if (!header) return;
+  let btn = header.querySelector(".discard-btn");
+  const n = editingCount();
+  if (n > 0) {
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.className = "ghost danger discard-btn";
+      header.querySelector(".filt")?.before(btn);
+    }
+    btn.textContent = `↩ Descartar (${n})`;
+    btn.title = "Descartar TODAS mis ediciones (vuelve al contenido de antes de cada ✏️)";
+    btn.onclick = discardAllEdits;
+  } else if (btn) btn.remove();
+}
+
+async function startEditing(entry) {
+  if (entry.edit || !entry.fd) return;
+  try {
+    if (typeof entry.fd.prepareForEditing === "function") await entry.fd.prepareForEditing();
+  } catch { /* diff completo de entrada — no necesita hidratar */ }
+  const origin = entry.fileData.after;
+  const editor = new Editor("file-diff", {
+    onChange: () => scheduleSave(entry),
+  });
+  const detach = editor.edit(entry.fd);
+  entry.edit = { editor, detach, origin, lastSaved: origin, baseHash: await sha1Hex(origin), timer: null };
+  const chip = document.createElement("span");
+  chip.className = "editing-chip";
+  chip.textContent = "✏️ editando";
+  entry.section.querySelector(".file-head .fplus")?.after(chip);
+  entry.section.classList.add("editing");
+  editor.focus();
+  updateEditUI();
+}
+
+function scheduleSave(entry) {
+  const e = entry.edit;
+  if (!e) return;
+  clearTimeout(e.timer);
+  e.timer = setTimeout(() => saveEntry(entry), 900);
+}
+
+async function saveEntry(entry) {
+  const e = entry.edit;
+  if (!e) return;
+  const content = e.editor.getText();
+  if (content === e.lastSaved) return;
+  try {
+    const res = await app.callServerTool({
+      name: "write_file",
+      arguments: { path: entry.path, content, expect_base: e.baseHash },
+    });
+    const sc = res?.structuredContent;
+    if (sc?.ok) {
+      e.lastSaved = content;
+      e.baseHash = sc.hash;
+      return;
+    }
+    if (sc?.conflict) return handleConflict(entry, sc);
+    throw new Error(sc?.message ?? "write_file sin respuesta");
+  } catch (err) {
+    showEditBanner(`⚠ No pude guardar ${entry.path}: ${err?.message ?? err}`);
+  }
+}
+
+// GANA EL AGENTE: cierro la edición (descarto la sesión local) y aviso dónde
+// quedó mi versión (el server ya la shelfó con su .patch).
+function handleConflict(entry, sc) {
+  endEdit(entry, "discard");
+  showEditBanner(sc.message ?? "El archivo cambió en disco mientras editabas (gana el agente).", true);
+  if (editingCount() === 0) refresh();
+}
+
+function endEdit(entry, cleanUpMode = "complete") {
+  const e = entry.edit;
+  if (!e) return;
+  clearTimeout(e.timer);
+  try { e.detach(); } catch { /* ya desmontado */ }
+  try { e.editor.cleanUp(cleanUpMode); } catch { /* idem */ }
+  entry.edit = null;
+  entry.section.classList.remove("editing");
+  entry.section.querySelector(".editing-chip")?.remove();
+  updateEditUI();
+}
+
+async function saveAllEditing() {
+  await Promise.all([...rendered.values()].filter((e) => e.edit).map((e) => saveEntry(e)));
+}
+
+// Termina TODAS las sesiones (tras guardar) y aplica el refresh diferido.
+async function endAllEdits() {
+  await saveAllEditing();
+  for (const e of [...rendered.values()]) endEdit(e, "complete");
+}
+
+// "↩ Descartar (N)": vuelve cada archivo al contenido del momento de su ✏️.
+// Si el agente lo cambió mientras tanto, gana el agente (drop, sin shelve —
+// mis ediciones ya no están en disco, no hay nada que descartar).
+async function discardAllEdits() {
+  for (const entry of [...rendered.values()]) {
+    if (!entry.edit) continue;
+    try {
+      const res = await app.callServerTool({
+        name: "write_file",
+        arguments: {
+          path: entry.path,
+          content: entry.edit.origin,
+          expect_base: entry.edit.baseHash,
+          on_conflict: "drop",
+        },
+      });
+      if (res?.structuredContent?.conflict)
+        showEditBanner(`${entry.path}: ${res.structuredContent.message}`);
+    } catch (err) {
+      showEditBanner(`⚠ descartar ${entry.path}: ${err?.message ?? err}`);
+    }
+    endEdit(entry, "discard");
+  }
+  refresh(true);
 }
 
 // ------------------------------------------------------------ búsqueda ⌘F
@@ -475,6 +667,7 @@ function flushFreeInput() {
 async function sendAllPending() {
   flushFreeInput();
   if (!pendingAsks.length) return;
+  await saveAllEditing(); // save-all-always: nada mío queda sin guardar
   const { n, text } = buildAskMessage(pendingAsks, scopeLabel());
   try {
     const res = await app.sendMessage({ role: "user", content: [{ type: "text", text }] });
@@ -1217,6 +1410,7 @@ document.getElementById("root").addEventListener("scroll", () => {
 function clearRendered() {
   boxDrag = null;
   hideHoverPlus();
+  for (const entry of rendered.values()) endEdit(entry, "complete");
   for (const entry of rendered.values()) {
     try { entry.fd?.cleanUp(); } catch { /* already gone */ }
     entry.structureObserver?.disconnect();
@@ -1264,11 +1458,23 @@ function renderFileInner(f) {
   section.appendChild(body);
 
   const entry = {
-    section, body, fd: null, path: f.path, patch: f.patch ?? "",
+    section, body, fd: null, path: f.path, patch: f.patch ?? "", fileData: f,
     beforeLines: typeof f.before === "string" ? f.before.split("\n") : null,
     afterLines: typeof f.after === "string" ? f.after.split("\n") : null,
   };
   rendered.set(f.path, entry);
+  // ✏️ edición en vivo (sólo vistas del working tree con contenido completo)
+  if (editableNow(f)) {
+    const editBtn = document.createElement("button");
+    editBtn.className = "ghost fedit";
+    editBtn.textContent = "✏️";
+    editBtn.title = "Editar este archivo acá mismo (autosave, ⌘Z, ↩ descartar)";
+    editBtn.onclick = (e) => {
+      e.stopPropagation();
+      startEditing(entry);
+    };
+    head.querySelector(".fplus").after(editBtn);
+  }
 
   // ＋ a nivel archivo: ancla al archivo entero, cita = mini-resumen.
   head.querySelector(".fplus").onclick = (e) => {
@@ -1484,16 +1690,18 @@ function renderAll() {
   const backBtn = header.querySelector(".back");
   if (backBtn)
     backBtn.onclick = () => {
-      commitSel = null;
-      turnSel = null;
-      refresh();
+      endAllEdits().finally(() => {
+        commitSel = null;
+        turnSel = null;
+        refresh(true);
+      });
     };
   header.querySelector(".refresh").onclick = (e) => {
     const btn = e.currentTarget;
     btn.classList.remove("spinning");
     requestAnimationFrame(() => btn.classList.add("spinning"));
     btn.addEventListener("animationend", () => btn.classList.remove("spinning"), { once: true });
-    refresh(true);
+    endAllEdits().finally(() => refresh(true));
   };
   header.querySelector(".fold").onclick = () => {
     for (const f of diffData.files) collapsedPaths.add(f.path);
@@ -1785,6 +1993,7 @@ async function resubscribe(uri) {
 // la búsqueda; entrar a Turnos abre el ÚLTIMO turno directo (en vivo).
 async function setMode(m) {
   if (m === mode) return;
+  await endAllEdits();
   mode = m;
   commitSel = null;
   turnSel = m === "turns" ? "latest" : null;
@@ -1796,7 +2005,15 @@ async function setMode(m) {
   await refresh();
 }
 
+let pendingRefresh = false;
 async function refresh(explicit = false) {
+  // El editor no sobrevive un re-render: mientras haya edición, el refresh
+  // REACTIVO se difiere (al terminar la edición se aplica solo). El
+  // explícito (⟳, cambio de modo) guarda todo, cierra sesiones y sigue.
+  if (!explicit && editingCount() > 0) {
+    pendingRefresh = true;
+    return;
+  }
   const root = document.getElementById("root");
   if (explicit) root.classList.add("loading");
   try {
@@ -1882,6 +2099,8 @@ if (window.__DA_TEST__) {
     get pendingAsks() { return pendingAsks; },
     get boxSel() { return boxSel; },
     renderSelUI,
+    edit: (path) => startEditing(window.__DA.rendered.get(path)),
+    get editingCount() { return editingCount(); },
     re: (path) => {
       const e = rendered.get(path);
       const fd = new FileDiff({
@@ -1908,10 +2127,13 @@ if (window.__DA_TEST__) {
       return { contents: [{ text: typeof mock === "string" ? mock : JSON.stringify(mock) }] };
     throw new Error("Not connected");
   };
-  app.callServerTool = async ({ name, arguments: a }) =>
-    name === "set_workspace"
-      ? { structuredContent: { ok: true, workspace: a?.path ?? currentWorkspace } }
-      : { structuredContent: { ok: true, at: new Date().toISOString() } };
+  app.callServerTool = async ({ name, arguments: a }) => {
+    if (name === "set_workspace")
+      return { structuredContent: { ok: true, workspace: a?.path ?? currentWorkspace } };
+    if (name === "write_file")
+      return { structuredContent: { ok: true, hash: "stub-hash" } };
+    return { structuredContent: { ok: true, at: new Date().toISOString() } };
+  };
 } else {
   boot();
 }
