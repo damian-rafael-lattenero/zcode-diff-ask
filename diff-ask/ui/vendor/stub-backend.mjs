@@ -65,6 +65,30 @@ class PlainHighlighter {
   dispose() {
     this.disposed = true;
   }
+
+  // Editor en vivo (✏️): el editor de pierre le pide al highlighter un
+  // tokenizer POR TECLA. Sin shiki no hay syntax highlight — devolvemos el
+  // tokenizer PLANO: Map vacío = el renderer dibuja cada línea como texto
+  // heredado (exactamente el look que ya tiene el diff no-editado acá).
+  // Sin este método el editor explota al ATACHARSE:
+  // "TypeError: t.createEditorTokenizer is not a function" (visto en la app
+  // 0.5.0; el harness de Chrome caía por otro camino y no lo delató).
+  createEditorTokenizer(_options) {
+    return {
+      tokenize() {
+        return new Map();
+      },
+      prebuildStateStack() {},
+      getStringCommentRegexpRangesInLine() {
+        return null;
+      },
+      setTheme() {},
+      stopBackgroundTokenize() {},
+      pauseBackgroundTokenize() {},
+      resumeBackgroundTokenize() {},
+      dispose() {},
+    };
+  }
 }
 
 export const ShikiHighlighter = PlainHighlighter;
