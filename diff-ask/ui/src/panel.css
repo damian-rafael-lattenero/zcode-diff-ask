@@ -810,3 +810,10 @@ button.filt.on::after {
   font-size: 11px;
 }
 #pausedchip[hidden] { display: none; }
+
+/* ✏️ como toggle (0.5.2): activo = editando este archivo */
+button.fedit.on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+}

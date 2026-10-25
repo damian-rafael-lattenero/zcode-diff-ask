@@ -347,6 +347,8 @@ async function startEditing(entry) {
   chip.textContent = "✏️ editando";
   entry.section.querySelector(".file-head .fplus")?.after(chip);
   entry.section.classList.add("editing");
+  entry.editBtn?.classList.add("on");
+  if (entry.editBtn) entry.editBtn.title = "Salir del modo edición (guarda)";
   editor.focus();
   updateEditUI();
 }
@@ -398,6 +400,8 @@ function endEdit(entry, cleanUpMode = "complete") {
   entry.edit = null;
   entry.section.classList.remove("editing");
   entry.section.querySelector(".editing-chip")?.remove();
+  entry.editBtn?.classList.remove("on");
+  if (entry.editBtn) entry.editBtn.title = "Editar este archivo acá mismo (autosave, ⌘Z, ↩ descartar)";
   updateEditUI();
 }
 
@@ -1463,7 +1467,9 @@ function renderFileInner(f) {
     afterLines: typeof f.after === "string" ? f.after.split("\n") : null,
   };
   rendered.set(f.path, entry);
-  // ✏️ edición en vivo (sólo vistas del working tree con contenido completo)
+  // ✏️ edición en vivo (sólo vistas del working tree con contenido completo).
+  // TOGGLE: entra al modo edición; si ya está editando ESTE archivo, guarda
+  // (autosave final, estilo IntelliJ) y sale.
   if (editableNow(f)) {
     const editBtn = document.createElement("button");
     editBtn.className = "ghost fedit";
@@ -1471,8 +1477,10 @@ function renderFileInner(f) {
     editBtn.title = "Editar este archivo acá mismo (autosave, ⌘Z, ↩ descartar)";
     editBtn.onclick = (e) => {
       e.stopPropagation();
-      startEditing(entry);
+      if (entry.edit) saveEntry(entry).finally(() => endEdit(entry, "complete"));
+      else startEditing(entry);
     };
+    entry.editBtn = editBtn;
     head.querySelector(".fplus").after(editBtn);
   }
 
