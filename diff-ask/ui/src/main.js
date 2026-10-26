@@ -1090,23 +1090,70 @@ const diagSel = (() => {
 
 function selectionAsk() {
   const sel = document.getSelection();
-  if (!sel || sel.isCollapsed || !sel.rangeCount) return diagNull("colapsada/sin rangos");
-  const range = sel.getRangeAt(0);
-  const host = containerOf(range.startContainer);
-  if (!host || containerOf(range.endContainer) !== host) return diagNull("fuera de un diff");
-  const content = host.shadowRoot?.querySelector("[data-content]");
-  if (!content) return diagNull("sin [data-content]");
-  const rows = [...content.children].filter((r) => r.hasAttribute("data-line"));
-  const selRows = rows.filter((r) => range.intersectsNode(r));
-  const text = sel.toString();
-  if (!selRows.length || !text.trim()) return diagNull("0 filas/texto vacío");
-  for (const e of rendered.values()) {
-    if (e.body.contains(host)) {
-      diagSel(`selchg → ${selRows.length} filas en ${e.path}`);
-      return { entry: e, rows: selRows, text };
+  // OJO: Chromium RETARGETEA selecciones dentro de shadow roots — isCollapsed
+  // da true y el rango queda en light DOM con rects 0×0, PERO el texto sobrevive
+  // (String(sel) completo). isCollapsed ya NO puede decidir solo: hay texto, hay selección.
+  const text = sel?.toString() ?? "";
+  if (!sel || !text.trim()) return diagNull("colapsada/texto vacío");
+  if (sel.rangeCount) {
+    const range = sel.getRangeAt(0);
+    const host = containerOf(range.startContainer);
+    if (host && containerOf(range.endContainer) === host) {
+      const content = host.shadowRoot?.querySelector("[data-content]");
+      if (content) {
+        const rows = [...content.children].filter((r) => r.hasAttribute("data-line"));
+        const selRows = rows.filter((r) => range.intersectsNode(r));
+        if (selRows.length) {
+          for (const e of rendered.values()) {
+            if (e.body.contains(host)) {
+              diagSel(`selchg → ${selRows.length} filas en ${e.path}`);
+              return { entry: e, rows: selRows, text };
+            }
+          }
+        }
+      }
     }
   }
-  return diagNull("host sin entry");
+  // Camino B (Chromium real): sin rango usable — match del TEXTO contra las
+  // filas. El anchorNode retargeteado sigue en el light DOM del archivo: nos
+  // dice cuál entry buscar primero.
+  return selectionFromText(sel, text);
+}
+
+// Match línea a línea: cada línea del texto seleccionado corresponde a UNA
+// fila del diff (el orden se respeta, corrida contigua desde alguna fila).
+// Las líneas parciales (media primera/media última) matchean por inclusión
+// mutua de texto; las líneas vacías matchean cualquier fila (no discriminan).
+function matchRowsToLines(rows, lines) {
+  if (!lines.length || lines.length > rows.length) return null;
+  for (let start = 0; start + lines.length <= rows.length; start++) {
+    let ok = true;
+    for (let li = 0; li < lines.length; li++) {
+      const rowText = (rows[start + li].textContent ?? "").trim();
+      const line = lines[li].trim();
+      if (line && rowText !== line && !rowText.includes(line) && !line.includes(rowText)) { ok = false; break; }
+    }
+    if (ok) return rows.slice(start, start + lines.length);
+  }
+  return null;
+}
+
+function selectionFromText(sel, text) {
+  const lines = text.split("\n");
+  const candidates = [...rendered.values()];
+  // anchorNode retargeteado (light DOM): si cae en un entry, ése es el archivo
+  const an = sel.anchorNode;
+  const byAnchor = an ? candidates.filter((e) => e.body === an || e.body.contains?.(an) || an.contains?.(e.body)) : [];
+  for (const e of [...new Set([...byAnchor, ...candidates])]) {
+    if (e.edit) continue;
+    const rows = contentRowsOf(e);
+    const matched = matchRowsToLines(rows, lines);
+    if (matched) {
+      diagSel(`selchg → ${matched.length} filas por TEXTO (retarget) en ${e.path}`);
+      return { entry: e, rows: matched, text };
+    }
+  }
+  return diagNull("texto sin match contiguo en filas");
 }
 
 function diagNull(gate) {
@@ -1305,10 +1352,15 @@ document.addEventListener("selectionchange", () => {
     // en edición la selección de texto es DEL EDITOR — no se convierte en cajitas
     if (info && !info.entry.edit) {
       setBoxSel(info.entry, new Set(info.rows.map(keyOfRow)), info.text);
-      showSelPop(info.entry);
+      // ancla: el FIN de la selección (última fila, su borde derecho) — el
+      // popup flota en el área de texto, pegado a la última palabra (spec Damian)
+      showSelPop(info.entry, { row: info.rows[info.rows.length - 1] });
     } else {
       if (info?.entry?.edit) diagSel("selchg → archivo en edición, ignorada");
-      hideSelPop("seleccionó nada");
+      // colapsada: si hay cajitas activas (gutter), el popup sobrevive —
+      // un selectionchange rezagado no debe matar el popup que endBoxDrag
+      // acaba de crear (los grandes también siguen).
+      if (!boxSel.size) hideSelPop("seleccionó nada");
     }
   }, 150);
 });
@@ -1322,12 +1374,12 @@ document.addEventListener("pointerup", (e) => {
   setTimeout(() => {
     if (selPop) return;
     const sel = document.getSelection();
-    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    if (!sel || !String(sel).trim()) return; // retarget: no confiar en isCollapsed
     const info = selectionAsk();
     if (info && !info.entry.edit) {
       diagSel("respaldo pointerup → mostrando popup");
       setBoxSel(info.entry, new Set(info.rows.map(keyOfRow)), info.text);
-      showSelPop(info.entry);
+      showSelPop(info.entry, { row: info.rows[info.rows.length - 1] });
     }
   }, 180);
 }, true);
@@ -1358,7 +1410,15 @@ document.addEventListener("pointerup", (e) => {
 function showSelPop(entry, anchor = null) {
   let rect;
   let p;
-  if (anchor) {
+  if (anchor?.row) {
+    // ancla FIN DE SELECCIÓN (spec Damian): la última fila seleccionada, pegado
+    // al borde derecho de SU TEXTO (el span de contenido; el row es todo el
+    // ancho del archivo y mandaría el popup al margen derecho) — flota EN el
+    // área del texto, no en rieles.
+    const rr = anchor.row.querySelector("span")?.getBoundingClientRect() ?? anchor.row.getBoundingClientRect();
+    rect = { top: rr.top, bottom: rr.bottom, left: rr.left, right: rr.right, width: rr.width, height: rr.height };
+    p = null;
+  } else if (anchor) {
     rect = { top: anchor.top, bottom: anchor.bottom, left: anchor.x, right: anchor.x, width: 1, height: 1 };
     p = { x: anchor.x, y: anchor.y };
   } else {
@@ -1391,13 +1451,15 @@ function showSelPop(entry, anchor = null) {
   pop.addEventListener("pointerdown", (e) => e.preventDefault());
   document.body.appendChild(pop);
   selPop = pop;
-  // ancla: el punto donde soltaste el mouse (si cayó sobre la selección);
-  // selección de teclado → esquina superior derecha del rectángulo
   const w = pop.offsetWidth;
   const h = pop.offsetHeight;
   let x;
   let y;
-  if (p && p.y >= rect.top - 60 && p.y <= rect.bottom + 60) {
+  if (anchor?.row) {
+    // al final de la última línea: pegado al borde derecho del texto, arriba
+    x = rect.right - w + 10;
+    y = rect.top - h - 6;
+  } else if (p && p.y >= rect.top - 60 && p.y <= rect.bottom + 60) {
     x = p.x - w / 2;
     y = p.y - h - 10;
   } else {
@@ -1408,7 +1470,7 @@ function showSelPop(entry, anchor = null) {
   if (y < 6) y = Math.min(rect.bottom + 8, Math.max(6, window.innerHeight - h - 6));
   pop.style.left = `${Math.round(x)}px`;
   pop.style.top = `${Math.round(y)}px`;
-  diagSel(`popup ＋${pop.children.length > 1 ? "↩" : ""} @${Math.round(x)},${Math.round(y)} (${anchor ? "gutter" : "texto"})`);
+  diagSel(`popup ＋${pop.children.length > 1 ? "↩" : ""} @${Math.round(x)},${Math.round(y)} (${anchor?.row ? "fin de selección" : anchor ? "gutter" : "texto"})`);
 }
 
 // el popup queda desanclado al scrollear: se va (los grandes siguen)
