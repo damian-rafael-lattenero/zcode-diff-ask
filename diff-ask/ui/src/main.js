@@ -1108,7 +1108,10 @@ function selKeysOf(entry) {
 
 function setBoxSel(entry, keys, verbatim = null) {
   if (keys.size) boxSel.set(entry.path, keys);
-  else boxSel.delete(entry.path);
+  else {
+    boxSel.delete(entry.path);
+    hideSelPop(); // selección vaciada por cualquier vía → sin popup colgado
+  }
   entry.selVerbatim = verbatim;
   renderSelUI(entry);
 }
@@ -1246,11 +1249,25 @@ document.addEventListener("pointermove", (e) => {
   if (row) applyBoxState(boxDrag.entry, keyOfRow(row), boxDrag.mode, row);
 });
 
-function endBoxDrag() {
+function endBoxDrag(e) {
   if (!boxDrag) return;
   const { entry } = boxDrag;
   boxDrag = null;
   renderSelUI(entry); // franjas + ＋ grande recalculados al terminar el gesto
+  // 0.7.3: el popup flotante también para la selección de CAJITAS (el gesto
+  // clásico del panel) — no sólo para texto del mouse. Ancla: el punto donde
+  // soltaste (coords del pointerup — selPopAt aún no se actualizó: este
+  // listener corre antes que el de anclaje) + rect de la última fila pintada.
+  const keys = selKeysOf(entry);
+  if (!keys.size || entry.edit) return hideSelPop();
+  const rows = selectedRowsOf(entry);
+  const lastRect = rows.length ? rows[rows.length - 1].getBoundingClientRect() : null;
+  showSelPop(entry, {
+    x: e?.clientX ?? 100,
+    y: e?.clientY ?? 100,
+    top: lastRect ? lastRect.top : 0,
+    bottom: lastRect ? lastRect.bottom : 0,
+  });
 }
 document.addEventListener("pointerup", endBoxDrag, true);
 document.addEventListener("pointercancel", endBoxDrag, true);
@@ -1292,10 +1309,20 @@ document.addEventListener("pointerup", (e) => {
   if (e.button === 0) selPopAt = { x: e.clientX, y: e.clientY };
 }, true);
 
-function showSelPop(entry) {
-  const sel = document.getSelection();
-  const rect = sel?.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : null;
-  if (!rect || (!rect.width && !rect.height)) return;
+// anchor (opcional): {x, y, top, bottom} — para la selección de CAJITAS, que
+// no tiene selección nativa (rect de rango colapsado = 0 y el gate lo mata).
+function showSelPop(entry, anchor = null) {
+  let rect;
+  let p;
+  if (anchor) {
+    rect = { top: anchor.top, bottom: anchor.bottom, left: anchor.x, right: anchor.x, width: 1, height: 1 };
+    p = { x: anchor.x, y: anchor.y };
+  } else {
+    const sel = document.getSelection();
+    rect = sel?.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : null;
+    if (!rect || (!rect.width && !rect.height)) return;
+    p = selPopAt;
+  }
   hideSelPop();
   const pop = document.createElement("div");
   pop.className = "sel-pop";
@@ -1321,7 +1348,6 @@ function showSelPop(entry) {
   // selección de teclado → esquina superior derecha del rectángulo
   const w = pop.offsetWidth;
   const h = pop.offsetHeight;
-  const p = selPopAt;
   let x;
   let y;
   if (p && p.y >= rect.top - 60 && p.y <= rect.bottom + 60) {
