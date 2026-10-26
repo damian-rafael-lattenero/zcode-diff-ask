@@ -868,6 +868,26 @@ button.fedit.on {
 .sel-pop button:hover { filter: brightness(1.12); }
 .sel-pop button.rev { background: var(--warn); color: #fff; }
 
+/* Chip de diagnóstico del flujo selección→popup (0.7.4): narra el último
+   evento arriba a la derecha, chiquito y sin interceptar el mouse. */
+.diag-chip {
+  position: fixed;
+  top: 6px;
+  right: 6px;
+  z-index: 24;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 10px/1.4 ui-monospace, Menlo, monospace;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--card) 85%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 7px;
+  pointer-events: none;
+}
+
 /* Modo edición = PURO editor (0.6.4): sin ＋ ni ↩ ni cajitas ni 💬 — sólo
    escribir/borrar y ⌘Z. Todo vuelve al salir del ✏️. */
 .file.editing .hover-plus,

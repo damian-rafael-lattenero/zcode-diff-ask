@@ -1,6 +1,6 @@
 {
   "name": "diff-ask",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Ask questions about your workspace diff, anchored to exact lines: hover + to question a line, drag line numbers for ranges, free-form questions from the ask bar, one message with everything. Modes: working tree, unpushed, last turn, and a commit browser with hash/title search.",
   "description_i18n": {
     "en": "Live workspace diff panel with a '+' on every diff line: click it, write a question, and it reaches the conversation anchored to the exact file and line.",
