@@ -1073,21 +1073,44 @@ function containerOf(node) {
   return null;
 }
 
+// diagSel: chip persistente arriba a la derecha que narra el flujo de
+// selección→popup (0.7.4). En la app no hay consola visible: cuando algo
+// "no funciona" este chip dice EN QUÉ gate murió, sin screenshots ni OCR.
+const diagSel = (() => {
+  let el = null;
+  return (msg) => {
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "diag-chip";
+      document.body.appendChild(el);
+    }
+    el.textContent = `${new Date().toLocaleTimeString()} · ${msg}`;
+  };
+})();
+
 function selectionAsk() {
   const sel = document.getSelection();
-  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return diagNull("colapsada/sin rangos");
   const range = sel.getRangeAt(0);
   const host = containerOf(range.startContainer);
-  if (!host || containerOf(range.endContainer) !== host) return null;
+  if (!host || containerOf(range.endContainer) !== host) return diagNull("fuera de un diff");
   const content = host.shadowRoot?.querySelector("[data-content]");
-  if (!content) return null;
+  if (!content) return diagNull("sin [data-content]");
   const rows = [...content.children].filter((r) => r.hasAttribute("data-line"));
   const selRows = rows.filter((r) => range.intersectsNode(r));
   const text = sel.toString();
-  if (!selRows.length || !text.trim()) return null;
+  if (!selRows.length || !text.trim()) return diagNull("0 filas/texto vacío");
   for (const e of rendered.values()) {
-    if (e.body.contains(host)) return { entry: e, rows: selRows, text };
+    if (e.body.contains(host)) {
+      diagSel(`selchg → ${selRows.length} filas en ${e.path}`);
+      return { entry: e, rows: selRows, text };
+    }
   }
+  return diagNull("host sin entry");
+}
+
+function diagNull(gate) {
+  diagSel(`selchg → null (${gate})`);
   return null;
 }
 
@@ -1284,10 +1307,30 @@ document.addEventListener("selectionchange", () => {
       setBoxSel(info.entry, new Set(info.rows.map(keyOfRow)), info.text);
       showSelPop(info.entry);
     } else {
-      hideSelPop();
+      if (info?.entry?.edit) diagSel("selchg → archivo en edición, ignorada");
+      hideSelPop("seleccionó nada");
     }
   }, 150);
 });
+
+// 0.7.4 respaldo: si por lo que fuere el selectionchange no llegara (webview
+// raro, foco, IME), el pointerup re-intenta el mismo flujo 180ms después.
+// Nunca ESCONDE: si no hay selección, no hace nada (el popup del gutter
+// recién creado por endBoxDrag debe sobrevivir este camino).
+document.addEventListener("pointerup", (e) => {
+  if (e.button !== 0) return;
+  setTimeout(() => {
+    if (selPop) return;
+    const sel = document.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    const info = selectionAsk();
+    if (info && !info.entry.edit) {
+      diagSel("respaldo pointerup → mostrando popup");
+      setBoxSel(info.entry, new Set(info.rows.map(keyOfRow)), info.text);
+      showSelPop(info.entry);
+    }
+  }, 180);
+}, true);
 
 // --------------------------------- popup flotante ＋/↩ de la selección
 // Al soltar el mouse sobre texto del diff los DOS botones aparecen flotando
@@ -1299,7 +1342,8 @@ document.addEventListener("selectionchange", () => {
 let selPop = null;
 let selPopAt = null;
 
-function hideSelPop() {
+function hideSelPop(why = "") {
+  if (selPop && why) diagSel(`popup fuera (${why})`);
   selPop?.remove();
   selPop = null;
 }
@@ -1320,7 +1364,10 @@ function showSelPop(entry, anchor = null) {
   } else {
     const sel = document.getSelection();
     rect = sel?.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : null;
-    if (!rect || (!rect.width && !rect.height)) return;
+    if (!rect || (!rect.width && !rect.height)) {
+      diagSel("showSelPop → rect 0×0, sin popup (¿selección retargeteada?)");
+      return;
+    }
     p = selPopAt;
   }
   hideSelPop();
@@ -1361,15 +1408,16 @@ function showSelPop(entry, anchor = null) {
   if (y < 6) y = Math.min(rect.bottom + 8, Math.max(6, window.innerHeight - h - 6));
   pop.style.left = `${Math.round(x)}px`;
   pop.style.top = `${Math.round(y)}px`;
+  diagSel(`popup ＋${pop.children.length > 1 ? "↩" : ""} @${Math.round(x)},${Math.round(y)} (${anchor ? "gutter" : "texto"})`);
 }
 
 // el popup queda desanclado al scrollear: se va (los grandes siguen)
-document.addEventListener("scroll", hideSelPop, { capture: true, passive: true });
+document.addEventListener("scroll", () => hideSelPop("scroll"), { capture: true, passive: true });
 document.addEventListener("pointerdown", (e) => {
-  if (selPop && !selPop.contains(e.target)) hideSelPop();
+  if (selPop && !selPop.contains(e.target)) hideSelPop("click afuera");
 }, true);
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") hideSelPop();
+  if (e.key === "Escape") hideSelPop("esc");
 });
 
 // ------------------------------------------------ hover-＋ (riel izquierdo)
@@ -2335,7 +2383,7 @@ async function refresh(explicit = false) {
   if (refreshInFlight) return refreshInFlight;
   const run = (async () => {
   const root = document.getElementById("root");
-  hideSelPop(); // re-render: la entrada que cierra el popup deja de existir
+  hideSelPop("re-render"); // re-render: la entrada que cierra el popup deja de existir
   if (explicit) root.classList.add("loading");
   try {
     if (mode === "commits" && !commitSel) {
