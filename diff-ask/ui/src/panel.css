@@ -836,3 +836,14 @@ button.fedit.on {
   border-color: var(--warn);
 }
 .hover-revert:hover { background: var(--warn); color: #fff; }
+
+/* Modo edición = PURO editor (0.6.4): sin ＋ ni ↩ ni cajitas ni 💬 — sólo
+   escribir/borrar y ⌘Z. Todo vuelve al salir del ✏️. */
+.file.editing .hover-plus,
+.file.editing .hover-revert,
+.file.editing .sel-layer,
+.file.editing .anchor-layer,
+.file.editing .line-marker,
+.file.editing .head-marker,
+.file.editing .fplus,
+.file.editing .frev { display: none !important; }
