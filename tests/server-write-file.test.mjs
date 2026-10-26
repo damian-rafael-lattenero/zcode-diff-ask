@@ -17,7 +17,8 @@ const { setActiveWorkspace, writeFileGuarded } = await import("../diff-ask/serve
 function git(cwd, ...args) {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 }
-const sha1 = (s) => createHash("sha1").update(s).digest("hex");
+// el panel manda el CONTENIDO base; el server hashea ambos lados (el hash
+// del lado del panel demostró no ser confiable en el sandbox)
 
 function makeRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "da-w-"));
@@ -36,20 +37,20 @@ test("write_file: guarda con base correcta y rechaza rutas que escapan", async (
   const dir = makeRepo();
   await setActiveWorkspace(dir);
   const cur = fs.readFileSync(path.join(dir, "a.py"), "utf8");
-  const r = await writeFileGuarded({ path: "a.py", content: "v1\nmia\n", expect_base: sha1(cur), workspace: dir });
+  const r = await writeFileGuarded({ path: "a.py", content: "v1\nmia\n", base: cur, workspace: dir });
   assert.equal(r.ok, true);
   assert.equal(fs.readFileSync(path.join(dir, "a.py"), "utf8"), "v1\nmia\n");
 
   // subcarpeta OK
   const b = fs.readFileSync(path.join(dir, "src", "b.ts"), "utf8");
-  const r2 = await writeFileGuarded({ path: "src/b.ts", content: "uno\n", expect_base: sha1(b), workspace: dir });
+  const r2 = await writeFileGuarded({ path: "src/b.ts", content: "uno\n", base: b, workspace: dir });
   assert.equal(r2.ok, true);
 
   // escape del workspace → invalid_path, sin tocar disco
-  const esc = await writeFileGuarded({ path: "../fuera.txt", content: "x", expect_base: "x", workspace: dir });
+  const esc = await writeFileGuarded({ path: "../fuera.txt", content: "x", base: "x", workspace: dir });
   assert.equal(esc.error, "invalid_path");
   assert.ok(!fs.existsSync(path.resolve(dir, "../fuera.txt")));
-  const abs = await writeFileGuarded({ path: "/etc/passwd", content: "x", expect_base: "x", workspace: dir });
+  const abs = await writeFileGuarded({ path: "/etc/passwd", content: "x", base: "x", workspace: dir });
   assert.equal(abs.error, "invalid_path");
 });
 
@@ -59,7 +60,7 @@ test("write_file: conflicto GANA EL AGENTE — shelve con contenido + .patch", a
   const base = fs.readFileSync(path.join(dir, "a.py"), "utf8");
   // el panel edita desde base... pero el agente pisa el disco antes del save
   fs.writeFileSync(path.join(dir, "a.py"), "v1\nCAMBIO DEL AGENTE\n");
-  const r = await writeFileGuarded({ path: "a.py", content: "v1\nmi edición\n", expect_base: sha1(base), workspace: dir });
+  const r = await writeFileGuarded({ path: "a.py", content: "v1\nmi edición\n", base: base, workspace: dir });
   assert.equal(r.ok, undefined);
   assert.equal(r.conflict, true);
   // el disco conserva la versión del agente
@@ -79,7 +80,7 @@ test("write_file: drop y archivo borrado", async () => {
   await setActiveWorkspace(dir);
   const base = fs.readFileSync(path.join(dir, "a.py"), "utf8");
   fs.writeFileSync(path.join(dir, "a.py"), "otra cosa\n");
-  const drop = await writeFileGuarded({ path: "a.py", content: "mía", expect_base: sha1(base), on_conflict: "drop", workspace: dir });
+  const drop = await writeFileGuarded({ path: "a.py", content: "mía", base: base, on_conflict: "drop", workspace: dir });
   assert.equal(drop.conflict, true);
   assert.equal(drop.dropped, true);
   assert.equal(drop.shelved, undefined);
@@ -87,7 +88,7 @@ test("write_file: drop y archivo borrado", async () => {
 
   // archivo borrado en disco mientras editaba
   fs.rmSync(path.join(dir, "a.py"));
-  const gone = await writeFileGuarded({ path: "a.py", content: "x", expect_base: sha1(base), workspace: dir });
+  const gone = await writeFileGuarded({ path: "a.py", content: "x", base: base, workspace: dir });
   assert.equal(gone.conflict, true);
   assert.equal(gone.onConflict, "drop");
 });

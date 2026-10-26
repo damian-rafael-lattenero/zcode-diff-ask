@@ -267,11 +267,6 @@ function editingCount() {
   return n;
 }
 
-async function sha1Hex(str) {
-  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(str));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 // ¿este archivo se puede editar en la vista ACTUAL? Sólo vistas del working
 // tree (Trabajo, Sin pushear, turno EN VIVO) y con contenido completo.
 function editableNow(f) {
@@ -344,7 +339,7 @@ async function startEditing(entry) {
     onChange: () => scheduleSave(entry),
   });
   const detach = editor.edit(entry.fd);
-  entry.edit = { editor, detach, origin, lastSaved: origin, baseHash: await sha1Hex(origin), timer: null };
+  entry.edit = { editor, detach, origin, lastSaved: origin, timer: null };
   const chip = document.createElement("span");
   chip.className = "editing-chip";
   chip.textContent = "✏️ editando";
@@ -371,12 +366,11 @@ async function saveEntry(entry) {
   try {
     const res = await app.callServerTool({
       name: "write_file",
-      arguments: { path: entry.path, content, expect_base: e.baseHash },
+      arguments: { path: entry.path, content, base: e.lastSaved },
     });
     const sc = res?.structuredContent;
     if (sc?.ok) {
       e.lastSaved = content;
-      e.baseHash = sc.hash;
       return;
     }
     if (sc?.conflict) return handleConflict(entry, sc);
@@ -430,7 +424,7 @@ async function discardAllEdits() {
         arguments: {
           path: entry.path,
           content: entry.edit.origin,
-          expect_base: entry.edit.baseHash,
+          base: entry.edit.lastSaved,
           on_conflict: "drop",
         },
       });
@@ -455,7 +449,7 @@ async function writeReverted(entry, content, label) {
   try {
     const res = await app.callServerTool({
       name: "write_file",
-      arguments: { path: entry.path, content, expect_base: await sha1Hex(entry.fileData.after) },
+      arguments: { path: entry.path, content, base: entry.fileData.after },
     });
     const sc = res?.structuredContent;
     if (sc?.ok) {
