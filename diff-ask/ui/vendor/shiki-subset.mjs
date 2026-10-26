@@ -108,7 +108,14 @@ class SubsetShikiHighlighter extends DiffsHighlighter {
 
   codeToTokens(code, options) {
     if (!this.raw) return PLAIN(code);
-    return this.raw.codeToTokens(code, this.resolveOptions(options));
+    try {
+      return this.raw.codeToTokens(code, this.resolveOptions(options));
+    } catch {
+      // lang fuera del subset (p.ej. .sql/.sqlite): tokens planos. JAMÁS
+      // propagar — el pipeline de pierre renderiza CON esto y un throw
+      // tumbaba el render entero del panel (bug 0.8.0 con data.sql).
+      return PLAIN(code);
+    }
   }
 
   createEditorTokenizer(options) {
