@@ -67,6 +67,41 @@ const CORE = createHighlighterCore({
 const PLAIN = (code) => ({
   tokens: String(code).split("\n").map((l) => (l === "" ? [] : [{ content: l, offset: 0 }])),
 });
+// Stream tokenizer plano (lang fuera del subset): una token por línea, sin
+// color. Interfaz DiffsStreamTokenizer: enqueue async → {stable, unstable,
+// recall}, close → {stable}, clear/clone/dispose.
+const PLAIN_STREAM_TOKENIZER = () => {
+  let buf = "";
+  let base = 0; // offset absoluto de buf dentro del stream
+  return {
+    async enqueue(chunk) {
+      buf += String(chunk);
+      const stable = [];
+      let idx;
+      while ((idx = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, idx);
+        if (line) stable.push({ content: line, offset: base });
+        base += idx + 1;
+        buf = buf.slice(idx + 1);
+      }
+      return { stable, unstable: [], recall: 0 };
+    },
+    close() {
+      const stable = buf ? [{ content: buf, offset: base }] : [];
+      buf = "";
+      base += stable[0]?.content.length ?? 0;
+      return { stable };
+    },
+    clear() {
+      buf = "";
+    },
+    clone() {
+      return PLAIN_STREAM_TOKENIZER();
+    },
+    dispose() {},
+  };
+};
+
 const PLAIN_EDITOR_TOKENIZER = () => ({
   tokenize: () => new Map(),
   prebuildStateStack() {},
@@ -118,13 +153,32 @@ class SubsetShikiHighlighter extends DiffsHighlighter {
     }
   }
 
+  // lang del request: null si no viene (que el camino real decida)
+  langLoaded(options) {
+    const lang = options?.lang ?? options?.language;
+    if (!lang) return true;
+    try {
+      return this.raw.getLoadedLanguages().includes(lang);
+    } catch {
+      return false;
+    }
+  }
+
   createEditorTokenizer(options) {
-    if (!this.raw) return PLAIN_EDITOR_TOKENIZER();
+    if (!this.raw || !this.langLoaded(options)) return PLAIN_EDITOR_TOKENIZER();
     return new ShikiEditorTokenizer(this.raw, options, this);
   }
 
   createStreamTokenizer(options) {
-    return new ShikiStreamTokenizer(this.raw, this.resolveOptions(options), this);
+    // lang fuera del subset (p.ej. .sql/.sqlite): tokenizer plano. El real
+    // explota ASYNC dentro del pipeline worker de pierre → 8× ONERROR
+    // 'reading length' (bug 0.8.1 en la app, invisible en jsdom sin workers).
+    if (!this.raw || !this.langLoaded(options)) return PLAIN_STREAM_TOKENIZER();
+    try {
+      return new ShikiStreamTokenizer(this.raw, this.resolveOptions(options), this);
+    } catch {
+      return PLAIN_STREAM_TOKENIZER();
+    }
   }
 
   // El subconjunto viene cargado de fábrica. loadLanguages ADEMÁS espera el
