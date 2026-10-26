@@ -298,7 +298,7 @@ export async function setActiveWorkspace(input) {
 // que el panel tenía como base (expect_base = sha1), NO se pisa — la versión
 // del panel va a un shelve (contenido completo + .patch con la diferencia)
 // bajo ~/.zcode/diff-ask/shelved/<ws>/ y el panel cierra la edición.
-export async function writeFileGuarded({ path: rel, content, expect_base: expect, on_conflict: onConflict = "shelve", workspace = activeWorkspace } = {}) {
+export async function writeFileGuarded({ path: rel, content, base, expect_base: expect, on_conflict: onConflict = "shelve", workspace = activeWorkspace } = {}) {
   const ws = workspace;
   const abs = path.resolve(ws, String(rel ?? ""));
   if (abs !== ws && !abs.startsWith(ws + path.sep))
@@ -317,7 +317,15 @@ export async function writeFileGuarded({ path: rel, content, expect_base: expect
     };
   }
   const curHash = hash(cur);
-  if (String(expect ?? "") !== curHash) {
+  // La verificación de base se hace SIEMPRE acá (server-side): el panel manda
+  // el CONTENIDO base y este lado lo hashea con la MISMA función que el disco.
+  // El hash del lado del panel (crypto.subtle en el sandbox) demostró no ser
+  // confiable — shelvings con patch VACÍO: bytes idénticos, hashes distintos.
+  const baseOk =
+    typeof base === "string"
+      ? hash(Buffer.from(base, "utf8")) === curHash
+      : String(expect ?? "") === curHash;
+  if (!baseOk) {
     if (onConflict === "drop")
       return { conflict: true, dropped: true, current_hash: curHash, message: "El archivo cambió en disco mientras editabas (gana el agente); tus ediciones no se guardaron." };
     // shelve: contenido completo + patch con la diferencia (disco vs mío)
@@ -1060,10 +1068,11 @@ const TOOLS = [
       properties: {
         path: { type: "string", description: "Workspace-relative path of the file." },
         content: { type: "string", description: "Full new content (utf8)." },
-        expect_base: { type: "string", description: "sha1 of the content the panel believes is on disk (conflict check)." },
+        base: { type: "string", description: "The content the panel believes is on disk (conflict check — hashed SERVER-side; do NOT pre-hash)." },
+        expect_base: { type: "string", description: "Legacy: sha1 hex of the base content (only used when 'base' is absent)." },
         on_conflict: { type: "string", enum: ["shelve", "drop"], default: "shelve" },
       },
-      required: ["path", "content", "expect_base"],
+      required: ["path", "content", "base"],
     },
   },
   {
@@ -1182,6 +1191,7 @@ async function handleRequest(msg) {
           data = await writeFileGuarded({
             path: params.arguments?.path,
             content: params.arguments?.content,
+            base: typeof params.arguments?.base === "string" ? params.arguments.base : undefined,
             expect_base: params.arguments?.expect_base,
             on_conflict: params.arguments?.on_conflict === "drop" ? "drop" : "shelve",
           });
