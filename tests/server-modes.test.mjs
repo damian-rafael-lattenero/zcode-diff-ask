@@ -249,3 +249,20 @@ test("setActiveWorkspace: cambia el workspace por defecto del server y valida", 
   // explícito, pero por higiene)
   await setActiveWorkspace(a);
 });
+
+test("carpetas NUEVAS se expanden archivo por archivo (-uall), subcarpetas incluidas", async () => {
+  const dir = makeRepo();
+  commitFile(dir, "a.py", "v1\n", "base");
+  fs.mkdirSync(path.join(dir, "nueva", "sub"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "nueva", "uno.ts"), "export const X = 1;\n");
+  fs.writeFileSync(path.join(dir, "nueva", "sub", "dos.json"), "{}\n");
+  const d = await buildDiff({ mode: "working", workspace: dir });
+  const paths = d.files.map((f) => f.path).sort();
+  // ANTES del fix: un solo registro "nueva/" imposible de abrir.
+  assert.ok(paths.includes("nueva/uno.ts"));
+  assert.ok(paths.includes("nueva/sub/dos.json"));
+  assert.ok(!paths.some((p) => p === "nueva/" || p.endsWith("/")));
+  const uno = d.files.find((f) => f.path === "nueva/uno.ts");
+  assert.equal(uno.status, "?");
+  assert.equal(uno.after, "export const X = 1;\n");
+});
