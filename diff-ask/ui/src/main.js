@@ -483,7 +483,9 @@ function revertGuard(entry) {
 }
 
 // Revertir el ARCHIVO entero a su versión original.
-async function revertWholeFile(entry) {
+async function revertWholeFile(entryIn) {
+  if (refreshInFlight) await refreshInFlight.catch(() => {});
+  const entry = rendered.get(entryIn.path) ?? entryIn;
   if (!revertGuard(entry)) return;
   await writeReverted(entry, entry.fileData.before, `↩ ${entry.path} vuelto al original`);
 }
@@ -492,7 +494,15 @@ async function revertWholeFile(entry) {
 // seleccionadas vuelven (selOld), las verdes seleccionadas se van (selNew),
 // el resto no se toca. La reconstrucción es revertLines (pura, testeada)
 // sobre el alineamiento hunkContent del diff interno.
-async function revertKeys(entry, keys) {
+async function revertKeys(entryIn, keys) {
+  // La carrera del 0.6.1: el propio usuario editó (autosave en disco) pero
+  // el re-render puede seguir EN VUELO — con el alineamiento viejo, sus
+  // líneas nuevas eran "contexto" (no revertible) o el hash base no pegaba
+  // y saltaba el conflicto contra su propio edit. Esperamos el refresh y
+  // re-resolvemos el archivo del render NUEVO (las claves son números de
+  // línea del lado nuevo: siguen válidas).
+  if (refreshInFlight) await refreshInFlight.catch(() => {});
+  const entry = rendered.get(entryIn.path) ?? entryIn;
   if (!revertGuard(entry)) return;
   const diff = entry.fd?.getInputDiff?.();
   if (!diff || diff.isPartial || !Array.isArray(diff.hunks)) {
@@ -512,6 +522,12 @@ async function revertKeys(entry, keys) {
   const newLines = revertLines(beforeLines, afterLines, diff.hunks, selOld, selNew);
   if (!newLines) {
     chip("⚠ no pude reconstruir el revert (alineamiento inconsistente)");
+    return;
+  }
+  // chip HONESTO: si la reconstrucción es idéntica, esas líneas no tenían
+  // cambios que revertir (p.ej. contexto seleccionado solito).
+  if (newLines.join("\n") === entry.fileData.after) {
+    chip("⚠ esas líneas no tienen cambios para revertir");
     return;
   }
   const n = selOld.size + selNew.size;
@@ -2138,6 +2154,7 @@ async function setMode(m) {
 }
 
 let pendingRefresh = false;
+let refreshInFlight = null;
 async function refresh(explicit = false) {
   // El editor no sobrevive un re-render: mientras haya edición, el refresh
   // REACTIVO se difiere (al terminar la edición se aplica solo). El
@@ -2146,6 +2163,11 @@ async function refresh(explicit = false) {
     pendingRefresh = true;
     return;
   }
+  // Coalescer: dos disparos casi simultáneos (nuestra propia escritura +
+  // un cambio del agente) comparten UNA sola lectura/render. Las acciones
+  // que dependen del estado fresco (revert) esperan esta promesa.
+  if (refreshInFlight) return refreshInFlight;
+  const run = (async () => {
   const root = document.getElementById("root");
   if (explicit) root.classList.add("loading");
   try {
@@ -2177,6 +2199,9 @@ async function refresh(explicit = false) {
   } finally {
     root.classList.remove("loading");
   }
+  })();
+  refreshInFlight = run.finally(() => (refreshInFlight = null));
+  return refreshInFlight;
 }
 
 function applyTheme(ctx) {
