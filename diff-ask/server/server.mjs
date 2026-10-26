@@ -401,7 +401,7 @@ export async function buildDiff({ mode = "working", includePatches = true, works
 
   const [nsR, stR, numR] = await Promise.all([
     runGit(["diff", "--name-status", "-z", "-M", base], { cwd: ws }),
-    runGit(["status", "--porcelain=v1", "-z"], { cwd: ws }),
+    runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: ws }),
     runGit(["diff", "--numstat", "-M", base], { cwd: ws }),
   ]);
   const entries = parseNameStatusZ(nsR.out);
@@ -524,7 +524,7 @@ export async function recordTurn(prompt, at = localIso(), workspace = activeWork
   const ws = workspace;
   const headR = await runGit(["rev-parse", "HEAD"], { cwd: ws });
   if (!headR.ok) return null; // sin repo no hay turno
-  const stR = await runGit(["status", "--porcelain=v1", "-z"], { cwd: ws });
+  const stR = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: ws });
   const files = [];
   for (const f of parsePorcelainZ(stR.out)) {
     if (f.status === "D") {
@@ -706,7 +706,7 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace } = {}) {
   // estado "después": la foto siguiente, o el working tree vivo.
   let nowMap = new Map();
   if (isLatest) {
-    const stR = await runGit(["status", "--porcelain=v1", "-z"], { cwd: ws });
+    const stR = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: ws });
     nowMap = new Map(parsePorcelainZ(stR.out).map((f) => [f.path, f]));
   }
   const paths = new Set(rec.files.map((f) => f.path));
@@ -920,7 +920,7 @@ function sendNotification(method, params) {
 // origin/* también tiene que refrescar el panel.
 async function signature() {
   const [s, n, h, u] = await Promise.all([
-    runGit(["status", "--porcelain=v1", "-z"]),
+    runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
     runGit(["diff", "HEAD", "--numstat"]),
     runGit(["rev-parse", "HEAD"]),
     runGit(["rev-parse", "@{upstream}"]),
