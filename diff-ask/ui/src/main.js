@@ -16,7 +16,7 @@
 
 import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
 import { ResourceUpdatedNotificationSchema } from "@modelcontextprotocol/core";
-import { FileDiff, parsePatchFiles, isHighlighterLoaded, isHighlighterLoading, isHighlighterNull } from "@pierre/diffs";
+import { FileDiff, parsePatchFiles, isHighlighterLoaded, isHighlighterLoading, isHighlighterNull, getFiletypeFromFileName } from "@pierre/diffs";
 import { Editor } from "@pierre/diffs/edit";
 import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
@@ -533,6 +533,48 @@ async function revertKeys(entryIn, keys) {
 
 async function revertSelection(entry) {
   revertKeys(entry, selKeysOf(entry));
+}
+
+
+// ------------------------------------------------- pintado de sintaxis
+// Lenguajes del subconjunto bundleado (vendor/shiki-subset) + aliases.
+const HL_LANGS = new Set([
+  "json", "yaml", "python", "typescript", "javascript", "markdown",
+  "html", "css", "bash", "shellscript", "kotlin", "haskell",
+  "yml", "py", "ts", "js", "md", "sh", "shell", "zsh", "kt", "hs",
+]);
+// El motor (vendor/shiki-subset) tokeniza; el RENDERER de pierre no cablea
+// esos tokens en nuestro contexto embebido — así que pintamos las filas
+// nosotras: cada fila plain tiene UN <span> de contenido; lo reemplazamos
+// por spans coloreados por token. Idempotente por tema (data-hl); se re-
+// pinta en el rAF de anclajes (expansión de hunks incluida) y al cambiar
+// el tema. La cita/selección siguen leyendo textContent (intacto).
+const HL_THEME = () => (theme === "dark" ? "pierre-dark" : "pierre-light");
+
+function hlColorize(entry, lang) {
+  const api = globalThis.__DA_HL_READY;
+  if (!api?.has(lang)) return;
+  const themeName = HL_THEME();
+  const afterTok =
+    typeof entry.fileData?.after === "string" ? api.lines(entry.fileData.after, lang, themeName) : null;
+  const beforeTok =
+    typeof entry.fileData?.before === "string" ? api.lines(entry.fileData.before, lang, themeName) : null;
+  if (!afterTok && !beforeTok) return;
+  const sr = shadowHostOf(entry)?.shadowRoot;
+  const content = sr?.querySelector("[data-content]");
+  if (!content) return;
+  for (const r of content.children) {
+    if (!r.hasAttribute("data-line") || r.dataset.hl === themeName) continue;
+    const isDel = r.dataset.lineType === "change-deletion";
+    const toks = (isDel ? beforeTok : afterTok)?.[parseInt(r.dataset.line, 10) - 1];
+    if (!toks) continue;
+    const span = r.querySelector("span");
+    if (!span) continue;
+    span.innerHTML = toks
+      .map((tk) => (tk.color ? `<span style="color:${tk.color}">${esc(tk.content)}</span>` : esc(tk.content)))
+      .join("");
+    r.dataset.hl = themeName;
+  }
 }
 
 // ------------------------------------------------------------ búsqueda ⌘F// ------------------------------------------------------------ búsqueda ⌘F
@@ -1409,6 +1451,12 @@ function scheduleAnchors() {
   requestAnimationFrame(() => {
     anchorsScheduled = false;
     renderAnchors();
+    // filas nuevas (expansión) o motor recién listo → re-pintar sintaxis
+    for (const entry of rendered.values()) {
+      if (!entry.fileData) continue;
+      const l = getFiletypeFromFileName(entry.fileData.oldPath ?? entry.fileData.path);
+      if (l && HL_LANGS.has(l)) hlColorize(entry, l);
+    }
     // Al expandir un separador aparecen filas NUEVAS: re-marcar la búsqueda
     // activa sin mover el scroll (el match podía estar en el contexto
     // colapsado y hasta ahora era invisible para ⌘F).
@@ -1665,6 +1713,14 @@ function renderFileInner(f) {
   body.appendChild(container);
   applyLineFilter(entry); // el archivo nuevo nace con los filtros corrientes
 
+  // Lenguaje para el highlighting (HL_LANGS a nivel módulo): la librería no
+  // lo infiere sola en el render por contenidos — sin esto pinta plain.
+  const hlLang = (() => {
+    const l = getFiletypeFromFileName(f.oldPath ?? f.path);
+    return l && HL_LANGS.has(l) ? l : undefined;
+  })();
+  if (hlLang) hlColorize(entry, hlLang);
+
   if (typeof f.before === "string" || typeof f.after === "string") {
     // Contenido completo: diff local expandible (los números de línea del
     // gutter son los del archivo real, la cita sale de acá directo).
@@ -1672,11 +1728,11 @@ function renderFileInner(f) {
       fileContainer: container,
       oldFile:
         f.before !== undefined && f.before !== null
-          ? { name: f.oldPath ?? f.path, contents: f.before, cacheKey: `da-old:${f.path}:${f.before.length}` }
+          ? { name: f.oldPath ?? f.path, contents: f.before, cacheKey: `da-old:${f.path}:${f.before.length}`, lang: hlLang }
           : null,
       newFile:
         f.after !== undefined && f.after !== null
-          ? { name: f.path, contents: f.after, cacheKey: `da-new:${f.path}:${f.after.length}` }
+          ? { name: f.path, contents: f.after, cacheKey: `da-new:${f.path}:${f.after.length}`, lang: hlLang }
           : null,
     });
     fd.setThemeType(theme);
@@ -2257,6 +2313,7 @@ if (window.__DA_TEST__) {
     hl: { loaded: isHighlighterLoaded, loading: isHighlighterLoading, isNull: isHighlighterNull },
     get rendered() { return rendered; },
     get diffData() { return diffData; },
+    renderAll,
     get pendingAsks() { return pendingAsks; },
     get boxSel() { return boxSel; },
     renderSelUI,
