@@ -828,3 +828,11 @@ button.fedit.on {
 .big-revert:hover { background: var(--warn); color: #fff; }
 .file-head .frev { padding: 2px 8px; color: var(--warn); }
 .file-head .frev:hover { border-color: var(--warn); background: var(--warn); color: #fff; }
+
+/* ↩ por línea: riel DERECHO del archivo (0.6.1) — donde viven los 💬 */
+.hover-revert {
+  left: auto;
+  right: 2px;
+  border-color: var(--warn);
+}
+.hover-revert:hover { background: var(--warn); color: #fff; }
