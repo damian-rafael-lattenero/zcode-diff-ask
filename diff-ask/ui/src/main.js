@@ -1255,15 +1255,95 @@ function endBoxDrag() {
 document.addEventListener("pointerup", endBoxDrag, true);
 document.addEventListener("pointercancel", endBoxDrag, true);
 
-// Selección de texto del mouse → el MISMO modelo de cajitas (con verbatim).
+// Selección de texto del mouse → el MISMO modelo de cajitas (con verbatim)
+// y el popup flotante ＋/↩ anclado a donde terminó el gesto.
 let selTimer = null;
 document.addEventListener("selectionchange", () => {
   clearTimeout(selTimer);
   selTimer = setTimeout(() => {
     const info = selectionAsk();
     // en edición la selección de texto es DEL EDITOR — no se convierte en cajitas
-    if (info && !info.entry.edit) setBoxSel(info.entry, new Set(info.rows.map(keyOfRow)), info.text);
+    if (info && !info.entry.edit) {
+      setBoxSel(info.entry, new Set(info.rows.map(keyOfRow)), info.text);
+      showSelPop(info.entry);
+    } else {
+      hideSelPop();
+    }
   }, 150);
+});
+
+// --------------------------------- popup flotante ＋/↩ de la selección
+// Al soltar el mouse sobre texto del diff los DOS botones aparecen flotando
+// pegados a donde terminó el gesto: ＋ pregunta sobre la selección, ↩ revierte
+// SOLO lo seleccionado. Hacen exactamente lo mismo que el ＋ grande y la ↩
+// grande que quedan bajo la última línea — el popup es el atajo inmediato,
+// los grandes siguen de ancla cuando scrolleás. Se va solo: scroll, click
+// afuera, Esc, selección nueva/colapsada o re-render.
+let selPop = null;
+let selPopAt = null;
+
+function hideSelPop() {
+  selPop?.remove();
+  selPop = null;
+}
+
+// última posición del mouse: es el ancla natural del popup (donde soltaste)
+document.addEventListener("pointerup", (e) => {
+  if (e.button === 0) selPopAt = { x: e.clientX, y: e.clientY };
+}, true);
+
+function showSelPop(entry) {
+  const sel = document.getSelection();
+  const rect = sel?.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : null;
+  if (!rect || (!rect.width && !rect.height)) return;
+  hideSelPop();
+  const pop = document.createElement("div");
+  pop.className = "sel-pop";
+  const ask = document.createElement("button");
+  ask.textContent = "＋";
+  ask.title = "Preguntar sobre la selección";
+  ask.onclick = () => { hideSelPop(); openComposerMulti(entry); };
+  pop.appendChild(ask);
+  // ↩ sólo si hay original al cual volver (archivo nuevo no tiene)
+  if (typeof entry.fileData?.before === "string") {
+    const rev = document.createElement("button");
+    rev.className = "rev";
+    rev.textContent = "↩";
+    rev.title = "Revertir la selección al original";
+    rev.onclick = () => { hideSelPop(); revertSelection(entry); };
+    pop.appendChild(rev);
+  }
+  // pointerdown propio sin colapsar la selección nativa al tocar un botón
+  pop.addEventListener("pointerdown", (e) => e.preventDefault());
+  document.body.appendChild(pop);
+  selPop = pop;
+  // ancla: el punto donde soltaste el mouse (si cayó sobre la selección);
+  // selección de teclado → esquina superior derecha del rectángulo
+  const w = pop.offsetWidth;
+  const h = pop.offsetHeight;
+  const p = selPopAt;
+  let x;
+  let y;
+  if (p && p.y >= rect.top - 60 && p.y <= rect.bottom + 60) {
+    x = p.x - w / 2;
+    y = p.y - h - 10;
+  } else {
+    x = rect.right - w;
+    y = rect.top - h - 6;
+  }
+  x = Math.min(Math.max(6, x), Math.max(6, window.innerWidth - w - 6));
+  if (y < 6) y = Math.min(rect.bottom + 8, Math.max(6, window.innerHeight - h - 6));
+  pop.style.left = `${Math.round(x)}px`;
+  pop.style.top = `${Math.round(y)}px`;
+}
+
+// el popup queda desanclado al scrollear: se va (los grandes siguen)
+document.addEventListener("scroll", hideSelPop, { capture: true, passive: true });
+document.addEventListener("pointerdown", (e) => {
+  if (selPop && !selPop.contains(e.target)) hideSelPop();
+}, true);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideSelPop();
 });
 
 // ------------------------------------------------ hover-＋ (riel izquierdo)
@@ -2229,6 +2309,7 @@ async function refresh(explicit = false) {
   if (refreshInFlight) return refreshInFlight;
   const run = (async () => {
   const root = document.getElementById("root");
+  hideSelPop(); // re-render: la entrada que cierra el popup deja de existir
   if (explicit) root.classList.add("loading");
   try {
     if (mode === "commits" && !commitSel) {
