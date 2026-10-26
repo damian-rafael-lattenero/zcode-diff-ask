@@ -99,6 +99,15 @@ diff-ask/
   abre el diff del commit (vs primer padre; merge anotado) y las preguntas
   se anclan igual que en cualquier modo, con el commit nombrado en el
   encabezado del mensaje.
+- **↩ revert estilo IDE** (0.6.0): "dejálo como el original" — por
+  SELECCIÓN (las cajitas cubren el bloque, verde o rojo por igual: el hunk
+  vuelve a su versión before; botón ↩ junto al ＋ de la selección) y por
+  ARCHIVO completo (↩ en el head). Reconstrucción pura y testeada
+  (`revertHunks` en lib) y escritura por `write_file` → misma política
+  AGENTE GANA. Bloqueado mientras el archivo está en edición ✏️.
+- **Selección con contraste** (0.6.0): `::selection` con acento/contraste en
+  ambos temas, también inyectada al shadow DOM de pierre (compite con los
+  fondos verde/rojo y gana).
 - **⌘F** (0.3.1): búsqueda propia del panel — el webview no tiene find
   nativo (y el shadow DOM lo rompería). Barra con contador, Enter/⇧Enter
   cicla y centra la fila actual, Esc cierra y limpia. Coincidencia = fila
