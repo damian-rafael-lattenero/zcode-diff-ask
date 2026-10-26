@@ -20,7 +20,7 @@ import { FileDiff, parsePatchFiles, isHighlighterLoaded, isHighlighterLoading, i
 import { Editor } from "@pierre/diffs/edit";
 import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
-  compressRuns, linesLabel, quoteForRanges, revertHunks,
+  compressRuns, linesLabel, quoteForRanges, revertLines,
 } from "./lib.js";
 
 const DIFF_URI = "diff://workspace";
@@ -451,23 +451,6 @@ async function discardAllEdits() {
 // pasa por write_file → misma política AGENTE GANA (conflicto = shelve/aviso,
 // nunca pisa). Revertir mientras el archivo está en edición ✏️ se bloquea
 // (el editor tiene su propio estado del documento).
-function hunksForSelection(entry, keys) {
-  const diff = entry.fd?.getInputDiff?.();
-  if (!diff || diff.isPartial || !Array.isArray(diff.hunks)) return null;
-  const news = [];
-  const olds = [];
-  for (const k of keys) {
-    const n = parseInt(k.slice(2), 10);
-    if (k[0] === "A") news.push(n);
-    else olds.push(n);
-  }
-  return diff.hunks.filter(
-    (h) =>
-      news.some((n) => n >= h.additionStart && n < h.additionStart + h.additionCount) ||
-      olds.some((n) => n >= h.deletionStart && n < h.deletionStart + h.deletionCount),
-  );
-}
-
 async function writeReverted(entry, content, label) {
   try {
     const res = await app.callServerTool({
@@ -499,33 +482,47 @@ function revertGuard(entry) {
   return true;
 }
 
-// Revertir los BLOQUES cubiertos por la selección de cajitas.
-async function revertSelection(entry) {
-  if (!revertGuard(entry)) return;
-  const keys = selKeysOf(entry);
-  if (!keys.size) return;
-  const hunks = hunksForSelection(entry, keys);
-  if (!hunks || !hunks.length) {
-    chip("⚠ la selección no cubre ningún bloque con cambios");
-    return;
-  }
-  const afterLines = entry.fileData.after.split("\n");
-  const beforeLines = entry.fileData.before.split("\n");
-  const newLines = revertHunks(beforeLines, afterLines, hunks);
-  if (!newLines) {
-    chip("⚠ no pude reconstruir el revert (bloques solapados)");
-    return;
-  }
-  await writeReverted(entry, newLines.join("\n"), `↩ ${hunks.length} bloque${hunks.length === 1 ? "" : "s"} revertido${hunks.length === 1 ? "" : "s"}`);
-}
-
 // Revertir el ARCHIVO entero a su versión original.
 async function revertWholeFile(entry) {
   if (!revertGuard(entry)) return;
   await writeReverted(entry, entry.fileData.before, `↩ ${entry.path} vuelto al original`);
 }
 
-// ------------------------------------------------------------ búsqueda ⌘F
+// Revertir EXACTAMENTE las líneas indicadas (cajitas o hover): las rojas
+// seleccionadas vuelven (selOld), las verdes seleccionadas se van (selNew),
+// el resto no se toca. La reconstrucción es revertLines (pura, testeada)
+// sobre el alineamiento hunkContent del diff interno.
+async function revertKeys(entry, keys) {
+  if (!revertGuard(entry)) return;
+  const diff = entry.fd?.getInputDiff?.();
+  if (!diff || diff.isPartial || !Array.isArray(diff.hunks)) {
+    chip("⚠ no tengo el alineamiento de este archivo");
+    return;
+  }
+  const selOld = new Set();
+  const selNew = new Set();
+  for (const k of keys) {
+    const n = parseInt(k.slice(2), 10);
+    if (k[0] === "A") selNew.add(n);
+    else selOld.add(n);
+  }
+  if (!selOld.size && !selNew.size) return;
+  const afterLines = entry.fileData.after.split("\n");
+  const beforeLines = entry.fileData.before.split("\n");
+  const newLines = revertLines(beforeLines, afterLines, diff.hunks, selOld, selNew);
+  if (!newLines) {
+    chip("⚠ no pude reconstruir el revert (alineamiento inconsistente)");
+    return;
+  }
+  const n = selOld.size + selNew.size;
+  await writeReverted(entry, newLines.join("\n"), `↩ ${n} línea${n === 1 ? "" : "s"} revertida${n === 1 ? "" : "s"}`);
+}
+
+async function revertSelection(entry) {
+  revertKeys(entry, selKeysOf(entry));
+}
+
+// ------------------------------------------------------------ búsqueda ⌘F// ------------------------------------------------------------ búsqueda ⌘F
 // El webview no tiene find nativo (y el shadow DOM lo rompería igual):
 // barra propia. Coincidencia = fila cuyo texto contiene el query
 // (case-insensitive); se resalta la FILA (hit) y la actual (cur, con barra
@@ -1212,11 +1209,14 @@ document.addEventListener("selectionchange", () => {
 // nunca sobre el texto seleccionable). Se va con el mouse. Click → composer
 // de esa línea. Un solo botón global que vive en el body de su archivo.
 let hoverPlus = null;
+let hoverRevert = null;
 let hoverRow = null;
 
 function hideHoverPlus() {
   hoverPlus?.remove();
+  hoverRevert?.remove();
   hoverPlus = null;
+  hoverRevert = null;
   hoverRow = null;
 }
 
@@ -1241,9 +1241,25 @@ function showHoverPlus(entry, row) {
     openComposer(entry, entry.path, rangeOfRow(row), { row, span: { first: idx, last: idx } });
   };
   entry.body.appendChild(hoverPlus);
+  // ↩ por línea en el riel DERECHO (donde viven los 💬): sólo filas CAMBIADAS
+  // (agregada se quita / borrada vuelve). Convive con el ＋ izquierdo.
+  const t = row.dataset.lineType;
+  if (t === "change-addition" || t === "change-deletion") {
+    hoverRevert = document.createElement("button");
+    hoverRevert.className = "hover-plus hover-revert";
+    hoverRevert.textContent = "↩";
+    hoverRevert.title = "Revertir esta línea al original";
+    hoverRevert.onclick = () => {
+      const key = keyOfRow(row);
+      hideHoverPlus();
+      revertKeys(entry, new Set([key]));
+    };
+    entry.body.appendChild(hoverRevert);
+  }
   const bodyRect = entry.body.getBoundingClientRect();
   const r = row.getBoundingClientRect();
   hoverPlus.style.top = `${r.top - bodyRect.top + (r.height - hoverPlus.offsetHeight) / 2}px`;
+  if (hoverRevert) hoverRevert.style.top = hoverPlus.style.top;
 }
 
 document.addEventListener("pointermove", (e) => {

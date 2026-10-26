@@ -99,12 +99,15 @@ diff-ask/
   abre el diff del commit (vs primer padre; merge anotado) y las preguntas
   se anclan igual que en cualquier modo, con el commit nombrado en el
   encabezado del mensaje.
-- **↩ revert estilo IDE** (0.6.0): "dejálo como el original" — por
-  SELECCIÓN (las cajitas cubren el bloque, verde o rojo por igual: el hunk
-  vuelve a su versión before; botón ↩ junto al ＋ de la selección) y por
-  ARCHIVO completo (↩ en el head). Reconstrucción pura y testeada
-  (`revertHunks` en lib) y escritura por `write_file` → misma política
-  AGENTE GANA. Bloqueado mientras el archivo está en edición ✏️.
+- **↩ revert estilo IDE, por LÍNEA** (0.6.0/0.6.1): tres niveles —
+  hover una línea cambiada → **↩ en el riel DERECHO** (donde los 💬) revierte
+  ESA línea sola (agregada se quita / borrada vuelve); **selección** de
+  cajitas o texto multilínea (verde o rojo por igual, salteadas incluidas) →
+  ↩ junto al ＋ revierte EXACTAMENTE esas líneas; **↩ en el head** = archivo
+  completo. Reconstrucción pura y testeada (`revertLines` en lib, sobre el
+  alineamiento `hunkContent` de cada hunk — el resto del archivo no se
+  toca); escritura por `write_file` → AGENTE GANA. Bloqueado durante la
+  edición ✏️ del archivo.
 - **Selección con contraste** (0.6.0): `::selection` con acento/contraste en
   ambos temas, también inyectada al shadow DOM de pierre (compite con los
   fondos verde/rojo y gana).

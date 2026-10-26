@@ -98,23 +98,43 @@ export function quoteFor(entry, range, verbatim) {
   return extractLines(entry.patch, side, range.start, range.end);
 }
 
-// Revertir hunks a su versión ORIGINAL: en el contenido nuevo, el rango
-// new-side de cada hunk se reemplaza por su rango old-side del before.
-// Hunks 1-based (additionStart/Count, deletionStart/Count, como pierre).
-// Devuelve null si los hunks se solapan o son inconsistentes (no se toca nada).
-export function revertHunks(beforeLines, afterLines, hunks) {
+// Revertir LÍNEAS puntuales al original (no bloques): camina el
+// alineamiento exacto de cada hunk (hunkContent: context/change con índices
+// 1-based implícitos desde additionStart/deletionStart). selOld = números de
+// líneas viejas a RESTAURAR (borradas que vuelven); selNew = números de
+// líneas nuevas a QUITAR (agregadas que se van). El resto queda tal cual.
+// Devuelve null si un hunk no trae hunkContent o es inconsistente (no toca nada).
+export function revertLines(beforeLines, afterLines, hunks, selOld, selNew) {
   const sorted = [...hunks].sort((a, b) => a.additionStart - b.additionStart);
   const out = [];
-  let cursor = 0; // índice 0-based en afterLines
+  let nIdx = 1; // puntero 1-based sobre afterLines
   for (const h of sorted) {
-    const s = h.additionStart - 1;
-    const e = s + h.additionCount;
-    if (s < cursor || s > afterLines.length) return null;
-    out.push(...afterLines.slice(cursor, s));
-    out.push(...beforeLines.slice(h.deletionStart - 1, h.deletionStart - 1 + h.deletionCount));
-    cursor = e;
+    if (!Array.isArray(h.hunkContent) || h.hunkContent.length === 0) return null;
+    if (h.additionStart - 1 > afterLines.length || h.additionStart < nIdx) return null; // solapado
+    out.push(...afterLines.slice(nIdx - 1, h.additionStart - 1)); // tramo idéntico
+    let oldN = h.deletionStart;
+    let newN = h.additionStart;
+    for (const c of h.hunkContent) {
+      if (c.type === "context") {
+        for (let i = 0; i < c.lines; i++) {
+          out.push(afterLines[newN - 1]);
+          oldN++;
+          newN++;
+        }
+      } else {
+        for (let i = 0; i < c.deletions; i++) {
+          if (selOld.has(oldN)) out.push(beforeLines[oldN - 1]); // restaurar
+          oldN++;
+        }
+        for (let i = 0; i < c.additions; i++) {
+          if (!selNew.has(newN)) out.push(afterLines[newN - 1]); // conservar
+          newN++;
+        }
+      }
+    }
+    nIdx = newN;
   }
-  out.push(...afterLines.slice(cursor));
+  out.push(...afterLines.slice(nIdx - 1));
   return out;
 }
 
