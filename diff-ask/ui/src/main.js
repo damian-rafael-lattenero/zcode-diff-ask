@@ -340,6 +340,9 @@ async function startEditing(entry) {
   });
   const detach = editor.edit(entry.fd);
   entry.edit = { editor, detach, origin, lastSaved: origin, timer: null };
+  // modo edición = PURO editor: fuera selecciones y hover de ESTE archivo
+  setBoxSel(entry, new Set());
+  hideHoverPlus();
   const chip = document.createElement("span");
   chip.className = "editing-chip";
   chip.textContent = "✏️ editando";
@@ -1167,6 +1170,12 @@ document.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
   const body = e.target.closest?.(".file-body");
   if (!body) return;
+  // modo edición: el gutter es del editor — ni cajitas ni drag propio
+  {
+    let en = null;
+    for (const cand of rendered.values()) if (cand.body === body) { en = cand; break; }
+    if (en?.edit) return;
+  }
   // no intervenir sobre nuestra propia UI
   if (e.target.closest?.(".inline-editor, .line-marker, .head-marker, .composer, .big-plus, .hover-plus, .sel-layer")) return;
   let entry = null;
@@ -1210,7 +1219,8 @@ document.addEventListener("selectionchange", () => {
   clearTimeout(selTimer);
   selTimer = setTimeout(() => {
     const info = selectionAsk();
-    if (info) setBoxSel(info.entry, new Set(info.rows.map(keyOfRow)), info.text);
+    // en edición la selección de texto es DEL EDITOR — no se convierte en cajitas
+    if (info && !info.entry.edit) setBoxSel(info.entry, new Set(info.rows.map(keyOfRow)), info.text);
   }, 150);
 });
 
@@ -1279,7 +1289,7 @@ document.addEventListener("pointermove", (e) => {
   if (!body) { hideHoverPlus(); return; }
   let entry = null;
   for (const en of rendered.values()) if (en.body === body) { entry = en; break; }
-  if (!entry) { hideHoverPlus(); return; }
+  if (!entry || entry.edit) { hideHoverPlus(); return; } // edición = puro editor
   const row = rowFromPoint(e.clientX, e.clientY, entry);
   if (!row) { hideHoverPlus(); return; }
   showHoverPlus(entry, row);
