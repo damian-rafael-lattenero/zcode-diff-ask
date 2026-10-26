@@ -111,6 +111,14 @@ diff-ask/
 - **Selección con contraste** (0.6.0): `::selection` con acento/contraste en
   ambos temas, también inyectada al shadow DOM de pierre (compite con los
   fondos verde/rojo y gana).
+- **Syntax highlighting REAL** (0.7.0): 11 lenguajes bundleados (json, yaml,
+  python, ts/js, markdown, html, css, bash, kotlin, haskell) con el motor
+  JS de shiki (sin wasm) — el subset entra en el límite de 4 MiB del host
+  (panel: ~3.6 MB). El renderer embebido de pierre no cablea tokens en
+  nuestro contexto, así que el PANEL PINTA las filas: tokens del motor →
+  spans coloreados en el shadow DOM (idempotente por tema, re-pintado en
+  expansión de hunks y cambio de tema; cita/selección intactas — leen
+  textContent). Fuera del subset → plain, como siempre.
 - **⌘F** (0.3.1): búsqueda propia del panel — el webview no tiene find
   nativo (y el shadow DOM lo rompería). Barra con contador, Enter/⇧Enter
   cicla y centra la fila actual, Esc cierra y limpia. Coincidencia = fila

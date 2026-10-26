@@ -17,14 +17,19 @@ const LIMIT = 4 * 1024 * 1024;
 // catalog, oniguruma/highlights wasm). Diffs render plain — same degradation
 // the host shows for unknown languages.
 const stub = (file) => path.join(HERE, "vendor", file);
+// 0.7.0: highlighting REAL por subconjunto — el backend shiki se reemplaza
+// por vendor/shiki-subset.mjs (gramáticas elegidas + motor JS sin wasm,
+// importadas por ruta). Sigue STUBBEADO el catálogo dinámico completo
+// (shiki/langs*, a lo que apunta el resolveLanguage de pierre), el motor
+// oniguruma+wasm y @pierre/highlights: esbuild sólo empaqueta el subset.
 const slimHighlighter = {
   name: "da-slim-highlighter",
   setup(builder) {
     builder.onResolve({ filter: /backends[\\/](shiki|highlights)\.js$/ }, () => ({
-      path: stub("stub-backend.mjs"),
+      path: stub("shiki-subset.mjs"),
     }));
-    builder.onResolve({ filter: /^(shiki|@shikijs)(\/|$)/ }, () => ({
-      path: stub("stub-shiki.mjs"),
+    builder.onResolve({ filter: /^shiki\/langs(\/|$)|^shiki\/(engine\/oniguruma|wasm)$/ }, () => ({
+      path: stub("stub-empty.mjs"),
     }));
     builder.onResolve({ filter: /^@pierre\/highlights(\/|$)/ }, () => ({
       path: stub("stub-highlights.mjs"),
