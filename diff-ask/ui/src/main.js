@@ -20,7 +20,7 @@ import { FileDiff, parsePatchFiles, isHighlighterLoaded, isHighlighterLoading, i
 import { Editor } from "@pierre/diffs/edit";
 import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
-  compressRuns, linesLabel, quoteForRanges, revertLines,
+  compressRuns, linesLabel, quoteForRanges, revertLines, revertFrags,
 } from "./lib.js";
 
 const DIFF_URI = "diff://workspace";
@@ -1084,7 +1084,8 @@ const diagSel = (() => {
       el.className = "diag-chip";
       document.body.appendChild(el);
     }
-    el.textContent = `${new Date().toLocaleTimeString()} · ${msg}`;
+    el.__log = [...(el.__log ?? []), `${new Date().toLocaleTimeString()}.${String(Date.now() % 1000).padStart(3, "0")} ${msg}`].slice(-14);
+    el.textContent = el.__log.join(" ⏐ ");
   };
 })();
 
@@ -1124,8 +1125,9 @@ function selectionAsk() {
 // fila del diff (el orden se respeta, corrida contigua desde alguna fila).
 // Las líneas parciales (media primera/media última) matchean por inclusión
 // mutua de texto; las líneas vacías matchean cualquier fila (no discriminan).
-function matchRowsToLines(rows, lines) {
+function matchRowsToLines(rows, lines, near = -1) {
   if (!lines.length || lines.length > rows.length) return null;
+  const runs = [];
   for (let start = 0; start + lines.length <= rows.length; start++) {
     let ok = true;
     for (let li = 0; li < lines.length; li++) {
@@ -1133,9 +1135,20 @@ function matchRowsToLines(rows, lines) {
       const line = lines[li].trim();
       if (line && rowText !== line && !rowText.includes(line) && !line.includes(rowText)) { ok = false; break; }
     }
-    if (ok) return rows.slice(start, start + lines.length);
+    if (ok) runs.push(start);
   }
-  return null;
+  if (!runs.length) return null;
+  // texto repetido (el mismo código en contexto Y en la adición): gana la
+  // corrida más cercana a dónde soltaste el mouse (geometría real)
+  let start = runs[0];
+  if (near >= 0) {
+    let best = Infinity;
+    for (const r of runs) {
+      const d = Math.abs(r + lines.length / 2 - near);
+      if (d < best) { best = d; start = r; }
+    }
+  }
+  return rows.slice(start, start + lines.length);
 }
 
 function selectionFromText(sel, text) {
@@ -1147,7 +1160,9 @@ function selectionFromText(sel, text) {
   for (const e of [...new Set([...byAnchor, ...candidates])]) {
     if (e.edit) continue;
     const rows = contentRowsOf(e);
-    const matched = matchRowsToLines(rows, lines);
+    // pista geométrica: la fila bajo el último pointerup de este archivo
+    const near = selPopAt ? rows.indexOf(rowFromPoint(selPopAt.x, selPopAt.y, e)) : -1;
+    const matched = matchRowsToLines(rows, lines, near);
     if (matched) {
       diagSel(`selchg → ${matched.length} filas por TEXTO (retarget) en ${e.path}`);
       return { entry: e, rows: matched, text };
@@ -1349,18 +1364,13 @@ document.addEventListener("selectionchange", () => {
   clearTimeout(selTimer);
   selTimer = setTimeout(() => {
     const info = selectionAsk();
-    // en edición la selección de texto es DEL EDITOR — no se convierte en cajitas
+    // en edición la selección de texto es DEL EDITOR — no pinta nada
     if (info && !info.entry.edit) {
-      setBoxSel(info.entry, new Set(info.rows.map(keyOfRow)), info.text);
-      // ancla: el FIN de la selección (última fila, su borde derecho) — el
-      // popup flota en el área de texto, pegado a la última palabra (spec Damian)
-      showSelPop(info.entry, { row: info.rows[info.rows.length - 1] });
+      paintFromSelection(info.entry, info.rows, info.text);
     } else {
       if (info?.entry?.edit) diagSel("selchg → archivo en edición, ignorada");
-      // colapsada: si hay cajitas activas (gutter), el popup sobrevive —
-      // un selectionchange rezagado no debe matar el popup que endBoxDrag
-      // acaba de crear (los grandes también siguen).
-      if (!boxSel.size) hideSelPop("seleccionó nada");
+      // colapsada: si hay cajitas (gutter) o frags pintados, el popup sobrevive
+      if (!boxSel.size && !fragSelTotal()) hideSelPop("seleccionó nada");
     }
   }, 150);
 });
@@ -1377,9 +1387,8 @@ document.addEventListener("pointerup", (e) => {
     if (!sel || !String(sel).trim()) return; // retarget: no confiar en isCollapsed
     const info = selectionAsk();
     if (info && !info.entry.edit) {
-      diagSel("respaldo pointerup → mostrando popup");
-      setBoxSel(info.entry, new Set(info.rows.map(keyOfRow)), info.text);
-      showSelPop(info.entry, { row: info.rows[info.rows.length - 1] });
+      diagSel("respaldo pointerup → pintando frag");
+      paintFromSelection(info.entry, info.rows, info.text);
     }
   }, 180);
 }, true);
@@ -1407,7 +1416,7 @@ document.addEventListener("pointerup", (e) => {
 
 // anchor (opcional): {x, y, top, bottom} — para la selección de CAJITAS, que
 // no tiene selección nativa (rect de rango colapsado = 0 y el gate lo mata).
-function showSelPop(entry, anchor = null) {
+function showSelPop(entry, anchor = null, actions = null) {
   let rect;
   let p;
   if (anchor?.row) {
@@ -1436,7 +1445,7 @@ function showSelPop(entry, anchor = null) {
   const ask = document.createElement("button");
   ask.textContent = "＋";
   ask.title = "Preguntar sobre la selección";
-  ask.onclick = () => { hideSelPop(); openComposerMulti(entry); };
+  ask.onclick = () => { hideSelPop(); actions?.frag ? openFragComposer(entry) : openComposerMulti(entry); };
   pop.appendChild(ask);
   // ↩ sólo si hay original al cual volver (archivo nuevo no tiene)
   if (typeof entry.fileData?.before === "string") {
@@ -1444,7 +1453,7 @@ function showSelPop(entry, anchor = null) {
     rev.className = "rev";
     rev.textContent = "↩";
     rev.title = "Revertir la selección al original";
-    rev.onclick = () => { hideSelPop(); revertSelection(entry); };
+    rev.onclick = () => { hideSelPop(); actions?.frag ? revertPainted(entry) : revertSelection(entry); };
     pop.appendChild(rev);
   }
   // pointerdown propio sin colapsar la selección nativa al tocar un botón
@@ -1480,6 +1489,396 @@ document.addEventListener("pointerdown", (e) => {
 }, true);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hideSelPop("esc");
+});
+
+// ------------------------------------------------ pintado quirúrgico
+// 0.8.0 — la selección de texto es un canal PROPIO, separado de las cajitas
+// del gutter (que quedan exactamente como estaban). frags por archivo:
+// {firstRowIdx, lastRowIdx, offA, offB, text} — offsets planos [A,B) sobre
+// el texto de la primera/última fila (intermedias van completas).
+// Modo por archivo (botones ?/↩ junto a ✏️): neutral = pintada ÚNICA con
+// popup inmediato; modo = acumulativa con toggle (pintar sobre pintado
+// despinta); el botón pasa a ✓-ejecutar; Esc despinta lo del archivo activo.
+const fragSel = new Map(); // path → [frag...]
+const fragModes = new Map(); // path → "ask" | "rev"
+let lastPaintedEntry = null;
+
+function fragSelTotal() {
+  let n = 0;
+  for (const v of fragSel.values()) n += v.length;
+  return n;
+}
+
+// Range interno sobre el span de una fila para offsets planos [a,b): camina
+// los childNodes sumando textContent (texto + spans del highlighting).
+function plainOffsetToRange(span, a, b) {
+  const range = document.createRange();
+  let pos = 0;
+  let started = false;
+  for (const node of span.childNodes) {
+    const len = node.textContent.length;
+    if (!started && pos + len > a) { range.setStart(node, a - pos); started = true; }
+    if (started && pos + len >= b) { range.setEnd(node, b - pos); return range; }
+    pos += len;
+  }
+  range.setEnd(span, span.childNodes.length);
+  return range;
+}
+
+// Camino del drag de texto: punto inicial y final del gesto. Con el
+// retargeting de Chromium ni el rango ni (a veces) los newlines de
+// String(sel) son confiables — caretRangeFromPoint sobre ESTOS puntos sí
+// atraviesa el shadow root y da fila+offset exactos.
+let dragPath = null;
+document.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  dragPath = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, at: Date.now() };
+}, true);
+document.addEventListener("pointermove", (e) => {
+  if (dragPath && (e.buttons & 1)) { dragPath.x1 = e.clientX; dragPath.y1 = e.clientY; }
+}, true);
+
+// frag geométrico: hit-test de los extremos del drag contra el shadow DOM
+// (shadowRoot.elementFromPoint SÍ devuelve el elemento interno — y los spans
+// del highlighting son tokens, así que la suma de hermanos previos da offset
+// con precisión de palabra). caretRangeFromPoint NO sirve: retargetea.
+function pointToRowInfo(x, y) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  for (const e of rendered.values()) {
+    const host = e.body.querySelector("diffs-container");
+    if (!host?.shadowRoot) continue;
+    const r = host.getBoundingClientRect();
+    if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+    const inner = host.shadowRoot.elementFromPoint(x, y);
+    if (!inner) continue;
+    let node = inner;
+    while (node && !node.hasAttribute?.("data-line")) node = node.parentElement;
+    if (!node?.hasAttribute?.("data-line")) return null;
+    const rows = contentRowsOf(e);
+    const idx = rows.indexOf(node);
+    if (idx < 0) return null;
+    const span = node.querySelector("span");
+    const spanText = span?.textContent ?? "";
+    let off = spanText.length;
+    if (span && inner !== node && inner !== span) {
+      let n = inner;
+      while (n && n.parentElement !== span) n = n.parentElement;
+      if (n) {
+        off = 0;
+        for (const c of span.childNodes) {
+          if (c === n) break;
+          off += c.textContent.length;
+        }
+      }
+    } else if (span) {
+      // el punto no tocó texto (padding/fin de línea corta): por posición
+      // horizontal — derecha del texto = fin, izquierda = principio
+      const sr = span.getBoundingClientRect();
+      off = x > sr.right ? spanText.length : x < sr.left ? 0 : Math.round(spanText.length / 2);
+    }
+    return { entry: e, idx, off };
+  }
+  return null;
+}
+
+function caretFrag(entry) {
+  if (!dragPath || Date.now() - dragPath.at > 1200) return null;
+  const A = pointToRowInfo(dragPath.x0, dragPath.y0);
+  const B = pointToRowInfo(dragPath.x1, dragPath.y1);
+  if (!A || !B || A.entry !== entry || B.entry !== entry) return null;
+  if (A.idx === B.idx && B.off <= A.off) return null; // degenerado (doble-click)
+  const first = A.idx <= B.idx ? A : B;
+  const last = A.idx <= B.idx ? B : A;
+  const rows = contentRowsOf(entry);
+  const rowText = (i) => rows[i]?.querySelector("span")?.textContent ?? rows[i]?.textContent ?? "";
+  // drag VERTICAL (el gesto natural para "estas líneas enteras"): filas
+  // completas — la componente horizontal no discrimina nada útil
+  const vertical = Math.abs(dragPath.y1 - dragPath.y0) > 3 * Math.abs(dragPath.x1 - dragPath.x0);
+  const offA = vertical ? 0 : Math.min(first.off, rowText(first.idx).length);
+  const offB = vertical ? rowText(last.idx).length : Math.min(last.off, rowText(last.idx).length);
+  const parts = [];
+  for (let i = first.idx; i <= last.idx; i++) {
+    const rt = rowText(i);
+    parts.push(rt.slice(i === first.idx ? offA : 0, i === last.idx ? offB : rt.length));
+  }
+  return { firstRowIdx: first.idx, lastRowIdx: last.idx, offA, offB, text: parts.join("\n") };
+}
+
+// Selección → frag. PRIMERO geometría (camino del drag + carets, exacto);
+// si no hay camino usable, match del texto contra las filas (fallback).
+function paintFromSelection(entry, rows, text) {
+  const byCaret = caretFrag(entry);
+  if (byCaret) return toggleFrag(entry, byCaret);
+  if (entry.edit) return;
+  const crows = contentRowsOf(entry);
+  const idxOf = new Map(crows.map((r, i) => [r, i]));
+  const first = idxOf.get(rows[0]);
+  const last = idxOf.get(rows[rows.length - 1]);
+  if (first == null || last == null || last < first) return;
+  const lines = text.split("\n");
+  const firstText = crows[first]?.querySelector("span")?.textContent ?? crows[first]?.textContent ?? "";
+  const lastText = crows[last]?.querySelector("span")?.textContent ?? crows[last]?.textContent ?? "";
+  // línea vacía = la selección nace/muere EN el borde de la fila (no un
+  // "endsWith('')" que mandaría el offset al otro extremo)
+  const firstLine = lines[0] ?? "";
+  const lastLine = lines[lines.length - 1] ?? "";
+  let offA = 0;
+  if (firstLine) offA = firstText.endsWith(firstLine) ? firstText.length - firstLine.length : Math.max(0, firstText.indexOf(firstLine));
+  let offB = lastText.length;
+  if (rows.length === 1) {
+    if (lastLine) {
+      const idx = firstText.indexOf(lastLine, offA);
+      offB = idx >= 0 ? idx + lastLine.length : firstText.length;
+    } else offB = firstText.length;
+  } else if (lastLine) {
+    offB = lastText.startsWith(lastLine) ? lastLine.length : Math.max(0, lastText.indexOf(lastLine)) + lastLine.length;
+  }
+  if (offB <= offA) offB = firstText.length;
+  const frag = { firstRowIdx: first, lastRowIdx: last, offA, offB, text };
+  toggleFrag(entry, frag);
+}
+
+function toggleFrag(entry, frag) {
+  lastPaintedEntry = entry;
+  const list = fragSel.get(entry.path) ?? [];
+  const mode = fragModes.get(entry.path);
+  if (mode) {
+    // modo: toggle exacto; solapado con otro → el nuevo lo reemplaza
+    const eq = list.find((f) => f.firstRowIdx === frag.firstRowIdx && f.lastRowIdx === frag.lastRowIdx && f.offA === frag.offA && f.offB === frag.offB);
+    let next;
+    if (eq) next = list.filter((f) => f !== eq);
+    else {
+      next = list.filter((f) => f.lastRowIdx < frag.firstRowIdx || f.firstRowIdx > frag.lastRowIdx);
+      next.push(frag);
+      next.sort((a, b) => a.firstRowIdx - b.firstRowIdx);
+    }
+    if (next.length) fragSel.set(entry.path, next);
+    else fragSel.delete(entry.path);
+  } else {
+    // neutral: pintada ÚNICA y continua
+    fragSel.set(entry.path, [frag]);
+  }
+  renderFragUI(entry);
+  renderFragBadge(entry);
+  if (fragSel.get(entry.path)?.length) {
+    const rows = contentRowsOf(entry);
+    const f = fragSel.get(entry.path).at(-1);
+    showSelPop(entry, { row: rows[f.lastRowIdx] }, { frag: true });
+  } else {
+    hideSelPop("despintado");
+  }
+}
+
+// franjas de lo pintado: rects reales de la porción [a,b) de cada fila
+function renderFragUI(entry) {
+  let layer = entry.body.querySelector(".frag-layer");
+  const frags = fragSel.get(entry.path) ?? [];
+  if (!frags.length) { layer?.remove(); return; }
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.className = "frag-layer";
+    entry.body.appendChild(layer);
+  }
+  layer.textContent = "";
+  const crows = contentRowsOf(entry);
+  const bodyRect = entry.body.getBoundingClientRect();
+  const frag = document.createDocumentFragment();
+  for (const f of frags) {
+    for (let i = f.firstRowIdx; i <= f.lastRowIdx; i++) {
+      const row = crows[i];
+      if (!row) continue;
+      const rt = row.querySelector("span")?.textContent ?? row.textContent ?? "";
+      const a = i === f.firstRowIdx ? f.offA : 0;
+      const b = i === f.lastRowIdx ? Math.min(f.offB, rt.length) : rt.length;
+      if (b <= a) continue;
+      let rects;
+      const span = row.querySelector("span");
+      if (span) {
+        try { rects = [...plainOffsetToRange(span, a, b).getClientRects()]; } catch { rects = []; }
+      }
+      if (!rects.length) rects = [row.getBoundingClientRect()];
+      for (const r of rects) {
+        if (!r.width && !r.height) continue;
+        const d = document.createElement("div");
+        d.className = "frag-stripe";
+        d.style.top = `${r.top - bodyRect.top}px`;
+        d.style.left = `${r.left - bodyRect.left}px`;
+        d.style.width = `${r.width}px`;
+        d.style.height = `${r.height}px`;
+        frag.appendChild(d);
+      }
+    }
+  }
+  layer.appendChild(frag);
+}
+
+function clearFrags(entry) {
+  fragSel.delete(entry.path);
+  renderFragUI(entry);
+  renderFragBadge(entry);
+  hideSelPop("esc despinta");
+}
+
+function renderFragBadge(entry) {
+  const n = fragSel.get(entry.path)?.length ?? 0;
+  const mode = fragModes.get(entry.path);
+  for (const [btn, m] of [[entry.fragAskBtn, "ask"], [entry.fragRevBtn, "rev"]]) {
+    if (!btn) continue;
+    const active = mode === m;
+    btn.classList.toggle("on", active);
+    if (m === "ask") btn.textContent = active ? (n ? "?✓" : "?") : "?";
+    else btn.textContent = active ? (n ? "↩✓" : "↩") : "↩";
+    btn.title = active
+      ? (n ? `Ejecutar sobre ${n} fragmento${n === 1 ? "" : "s"} pintado${n === 1 ? "" : "s"} (Esc despinta)` : "Modo pintar para preguntar — seleccioná fragmentos")
+      : m === "ask"
+        ? "Modo brocha: pintá fragmentos y después preguntás"
+        : "Modo brocha: pintá fragmentos y después revertís (quirúrgico)";
+  }
+}
+
+function setFragMode(entry, m) {
+  const cur = fragModes.get(entry.path);
+  if (cur === m) {
+    // ya activo: con pintadas = EJECUTAR; sin pintadas = apagar
+    const n = fragSel.get(entry.path)?.length ?? 0;
+    if (n && m === "ask") return openFragComposer(entry);
+    if (n && m === "rev") return revertPainted(entry);
+    fragModes.delete(entry.path);
+  } else {
+    fragModes.set(entry.path, m);
+  }
+  renderFragBadge(entry);
+}
+
+// ---- ejecutores ----
+function fragsToLib(entry) {
+  const crows = contentRowsOf(entry);
+  const out = [];
+  for (const f of fragSel.get(entry.path) ?? []) {
+    for (let i = f.firstRowIdx; i <= f.lastRowIdx; i++) {
+      const row = crows[i];
+      if (!row) continue;
+      const rt = row.querySelector("span")?.textContent ?? row.textContent ?? "";
+      const a = i === f.firstRowIdx ? f.offA : 0;
+      const b = i === f.lastRowIdx ? Math.min(f.offB, rt.length) : rt.length;
+      if (b <= a) continue;
+      const line = parseInt(row.dataset.line, 10);
+      const side = row.dataset.lineType === "change-deletion" ? "old" : "new";
+      out.push({ side, line, offA: a, offB: b });
+    }
+  }
+  return out;
+}
+
+function fragRangeOf(entry) {
+  const crows = contentRowsOf(entry);
+  let start = Infinity;
+  let end = -1;
+  for (const f of fragSel.get(entry.path) ?? []) {
+    for (let i = f.firstRowIdx; i <= f.lastRowIdx; i++) {
+      const row = crows[i];
+      if (!row || row.dataset.lineType === "change-deletion") continue;
+      const n = parseInt(row.dataset.line, 10);
+      start = Math.min(start, n);
+      end = Math.max(end, n);
+    }
+  }
+  return start === Infinity ? null : { start, end, side: "additions" };
+}
+
+async function openFragComposer(entry) {
+  const frags = fragSel.get(entry.path) ?? [];
+  if (!frags.length) return;
+  const range = fragRangeOf(entry);
+  const lines = frags.map((f) => f.text.split("\n")).flat();
+  closeComposer(entry);
+  const card = document.createElement("div");
+  card.className = "composer";
+  card.innerHTML = `
+    <div class="composer-head">
+      <span class="anchor"></span>
+      <button class="ghost close" title="Cancelar">✕</button>
+    </div>
+    <textarea rows="3"></textarea>
+    <div class="composer-actions">
+      <span class="hint">⌘↵ envía</span>
+      <button class="ghost cancel">Cancelar</button>
+      <button class="primary ask">Preguntar</button>
+    </div>`;
+  card.querySelector(".anchor").textContent = `${entry.path} · ${frags.length} fragmento${frags.length === 1 ? "" : "s"}`;
+  const ta = card.querySelector("textarea");
+  ta.placeholder = `Preguntá sobre ${frags.length} fragmento${frags.length === 1 ? "" : "s"} pintado${frags.length === 1 ? "" : "s"}…`;
+  entry.section.appendChild(card);
+  const close = () => card.remove();
+  card.querySelector(".close").onclick = close;
+  card.querySelector(".cancel").onclick = close;
+  const submit = () => {
+    const q = ta.value.trim();
+    if (!q) { ta.focus(); return; }
+    // cita verbatim: los fragmentos concatenados con separador ⋯
+    const quote = [];
+    frags.forEach((f, i) => {
+      if (i) quote.push("⋯");
+      quote.push(...f.text.split("\n"));
+    });
+    queueQuestion(entry.path, range ?? { start: 1, end: 1, side: "additions" }, quote, q, null);
+    close();
+  };
+  card.querySelector(".ask").onclick = submit;
+  ta.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); }
+  });
+  ta.focus();
+}
+
+async function revertPainted(entry) {
+  if (entry.edit) return;
+  const uiFrags = fragSel.get(entry.path) ?? [];
+  if (!uiFrags.length) return;
+  const diff = entry.fd?.getInputDiff?.();
+  if (!diff || !Array.isArray(diff.hunks)) return chip("⚠ no tengo el alineamiento de este archivo");
+  const libFrags = fragsToLib(entry);
+  diagSel(`rev input: ${JSON.stringify(libFrags).slice(0, 150)}`);
+  const res = revertFrags(entry.beforeLines, entry.afterLines, diff.hunks, libFrags);
+  diagSel(`rev res: ${res?.noDiff ? "noDiff" : res?.lines ? "lines:" + res.lines.length : String(res)}`);
+  if (!res) return chip("⚠ no pude reconstruir el revert (alineamiento inconsistente)");
+  if (res.noDiff) {
+    clearFrags(entry);
+    return miniNotice("no diff selected");
+  }
+  const n = uiFrags.length;
+  await writeReverted(entry, res.lines.join("\n"), `↩ quirúrgico: ${n} fragmento${n === 1 ? "" : "s"}`);
+  clearFrags(entry);
+}
+
+// mini aviso efímero (p.ej. "no diff selected") — infimo, esquina inferior
+function miniNotice(msg) {
+  const d = document.createElement("div");
+  d.className = "mini-notice";
+  d.textContent = msg;
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 2200);
+}
+
+// Esc en cascada: composer → findbar → pintado del activo → edición (descarta)
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  const composer = document.querySelector(".composer");
+  if (composer) { composer.remove(); return; }
+  const fb = document.getElementById("findbar");
+  if (fb && !fb.hidden) { closeFindbar(); return; }
+  const entry = lastPaintedEntry && rendered.get(lastPaintedEntry.path) ? lastPaintedEntry : null;
+  if (entry && (fragSel.get(entry.path)?.length || fragModes.get(entry.path))) {
+    clearFrags(entry);
+    fragModes.delete(entry.path);
+    renderFragBadge(entry);
+    return;
+  }
+  const editing = entry?.edit ? entry : [...rendered.values()].find((en) => en.edit);
+  if (editing) {
+    // ✏️ mismo contrato que ?: apretar de nuevo acepta, Esc DESESTIMA todo
+    discardAllEdits();
+  }
 });
 
 // ------------------------------------------------ hover-＋ (riel izquierdo)
@@ -1672,6 +2071,7 @@ function scheduleAnchors() {
       if (!entry.fileData) continue;
       const l = getFiletypeFromFileName(entry.fileData.oldPath ?? entry.fileData.path);
       if (l && HL_LANGS.has(l)) hlColorize(entry, l);
+      if (fragSel.has(entry.path)) renderFragUI(entry); // overlays tras repaint
     }
     // Al expandir un separador aparecen filas NUEVAS: re-marcar la búsqueda
     // activa sin mover el scroll (el match podía estar en el contexto
@@ -1878,6 +2278,22 @@ function renderFileInner(f) {
     };
     entry.editBtn = editBtn;
     head.querySelector(".fplus").after(editBtn);
+  }
+  // Modos brocha (0.8.0): ? acumula fragmentos para PREGUNTAR, ↩ para
+  // REVERTIR quirúrgico. Sin modo: pintada única con popup inmediato.
+  if (!f.binary) {
+    const askBtn = document.createElement("button");
+    askBtn.className = "ghost fmode fmode-ask";
+    askBtn.textContent = "?";
+    const revBtn = document.createElement("button");
+    revBtn.className = "ghost fmode fmode-rev";
+    revBtn.textContent = "↩";
+    askBtn.onclick = (e) => { e.stopPropagation(); setFragMode(entry, "ask"); };
+    revBtn.onclick = (e) => { e.stopPropagation(); setFragMode(entry, "rev"); };
+    entry.fragAskBtn = askBtn;
+    entry.fragRevBtn = revBtn;
+    head.querySelector(".fplus").after(askBtn, revBtn);
+    renderFragBadge(entry);
   }
   // ↩ revert de TODO el archivo (sólo modificados con before completo)
   if (typeof f.before === "string" && f.status !== "A" && f.status !== "?") {
@@ -2171,6 +2587,11 @@ function renderAll() {
   }
   for (const f of diffData.files) renderFile(f);
   applyLineFilter();
+  // re-render: restaurar overlays/modos de pintado (sobreviven por path)
+  for (const [p] of fragSel) {
+    const e = rendered.get(p);
+    if (e) { renderFragUI(e); renderFragBadge(e); }
+  }
   // Si hay búsqueda activa, re-marcar sobre las filas nuevas SIN saltar el
   // scroll (el refresh reactivo no debe moverle la lectura a nadie).
   if (find.q && !document.getElementById("findbar")?.hidden) runFind(find.q, false);
@@ -2533,6 +2954,8 @@ if (window.__DA_TEST__) {
     renderAll,
     get pendingAsks() { return pendingAsks; },
     get boxSel() { return boxSel; },
+    get fragSel() { return fragSel; },
+    get fragModes() { return fragModes; },
     renderSelUI,
     edit: (path) => startEditing(window.__DA.rendered.get(path)),
     get editingCount() { return editingCount(); },

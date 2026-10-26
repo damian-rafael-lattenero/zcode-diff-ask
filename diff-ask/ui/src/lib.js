@@ -181,3 +181,166 @@ export function buildAskMessage(asks, scope = "") {
   const scopeTxt = scope ? ` (${scope})` : "";
   return { n, label, text: `Diff Ask — ${label} al diff${scopeTxt}:\n\n${blocks.join("\n\n")}` };
 }
+
+// ------------------------------------------- revert quirúrgico (0.8.0)
+// Fragmentos PINTADOS con el mouse (chars exactos, no líneas enteras).
+// frags: [{side:"new"|"old", line, offA, offB}] — offsets planos [A,B) sobre
+//   la línea: side new = número de línea del AFTER (fila verde/contexto,
+//   texto visible); side old = número de línea del BEFORE (fila roja).
+// Semántica (Damian):
+//   - new: dentro de lo pintado, los chars que el cambio AGREGÓ se eliminan
+//     (diff intra-línea por tokens); los chars que ya existían quedan.
+//     "Hola Mundo"→"Hola Cruel Mundo": pinto "Cruel" → "Hola Mundo";
+//     pinto "el" → "Hola Cru Mundo". Espacios agregados pegados a la
+//     eliminación se comen también (no queda doble espacio).
+//   - old (fila roja): el texto pintado VUELVE — se inserta como línea(s)
+//     nueva(s) en la posición del hunk ("esas palabras aparecen").
+//   - Línea que queda vacía tras la cirugía → se elimina entera.
+// Devuelve {lines} | {noDiff:true} | null (alineamiento inconsistente).
+export function tokenizeLine(s) {
+  const out = [];
+  const re = /\s+|\w+|[^\s\w]+/g;
+  let m;
+  while ((m = re.exec(s))) out.push({ text: m[0], start: m.index, end: m.index + m[0].length });
+  return out;
+}
+
+function lcsMatch(aT, bT) {
+  // match de tokens AFTER contra BEFORE (LCS clásico); devuelve para cada
+  // índice de aT el índice de bT con el que matchea (o -1 = agregado)
+  const n = aT.length;
+  const m = bT.length;
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = aT[i].text === bT[j].text ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const match = new Int32Array(n).fill(-1);
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (aT[i].text === bT[j].text) { match[i] = j; i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+    else j++;
+  }
+  return match;
+}
+
+// Aplica la cirugía a UNA línea after con selecciones (lista de [a,b)
+// MERGEADAS). beforeLine null = adición pura. Devuelve {line} (aunque idéntica)
+// o {noChange:true} si lo pintado no tocó ningún char agregado.
+function surgeryLine(afterLine, beforeLine, sels) {
+  if (beforeLine === afterLine) return { noChange: true };
+  const aT = tokenizeLine(afterLine);
+  const bT = beforeLine != null ? tokenizeLine(beforeLine) : [];
+  const match = lcsMatch(aT, bT);
+  const added = aT.map((_, k) => match[k] === -1);
+  // chars a borrar: intersección sel ∩ tokens agregados
+  const del = new Array(afterLine.length).fill(false);
+  let touched = false;
+  for (let k = 0; k < aT.length; k++) {
+    if (!added[k]) continue;
+    const t = aT[k];
+    for (const [a, b] of sels) {
+      const lo = Math.max(a, t.start);
+      const hi = Math.min(b, t.end);
+      if (lo < hi) {
+        for (let x = lo; x < hi; x++) del[x] = true;
+        touched = true;
+      }
+    }
+  }
+  if (!touched) return { noChange: true };
+  // espacios AGREGADOS que tras las eliminaciones quedarían ADYACENTES a
+  // otro espacio sobreviviente: se comen (sin esto "Cruel" pintado deja
+  // "Hola  Mundo"). Con "el" pintado NO quedan adyacentes ("Cru" en el
+  // medio) y el espacio queda ("Hola Cru Mundo").
+  for (let k = 0; k < aT.length; k++) {
+    const t = aT[k];
+    if (!added[k] || !/^\s+$/.test(t.text)) continue;
+    let left = -1;
+    for (let x = t.start - 1; x >= 0; x--) if (!del[x]) { left = x; break; }
+    let right = -1;
+    for (let x = t.end; x < afterLine.length; x++) if (!del[x]) { right = x; break; }
+    const near = (c) => c >= 0 && /\s/.test(afterLine[c]);
+    if (near(left) || near(right)) for (let x = t.start; x < t.end; x++) del[x] = true;
+  }
+  let out = "";
+  for (let x = 0; x < afterLine.length; x++) if (!del[x]) out += afterLine[x];
+  return { line: out };
+}
+
+export function revertFrags(beforeLines, afterLines, hunks, frags) {
+  if (!Array.isArray(hunks) || !frags.length) return { noDiff: true };
+  const sorted = [...hunks].sort((a, b) => a.additionStart - b.additionStart);
+  // agrupar frags new por línea after (merge de rangos) y old por línea before
+  const newSels = new Map(); // afterLine → [[a,b),...]
+  const oldSels = []; // {line, a, b} en orden
+  for (const f of frags) {
+    if (f.side === "old") oldSels.push(f);
+    else {
+      const arr = newSels.get(f.line) ?? [];
+      arr.push([f.offA, f.offB]);
+      newSels.set(f.line, arr);
+    }
+  }
+  oldSels.sort((x, y) => x.line - y.line || x.offA - y.offA);
+  let changed = false;
+
+  // caminar los hunks como revertLines; insertar frags old en su punto de
+  // borrado y aplicar cirugía a las líneas after marcadas
+  const out = [];
+  let nIdx = 1;
+  for (const h of sorted) {
+    if (!Array.isArray(h.hunkContent) || h.hunkContent.length === 0) return null;
+    if (h.additionStart - 1 > afterLines.length || h.additionStart < nIdx) return null;
+    out.push(...afterLines.slice(nIdx - 1, h.additionStart - 1));
+    let oldN = h.deletionStart;
+    let newN = h.additionStart;
+    const flushOld = (upToOld) => {
+      while (oldSels.length && oldSels[0].line < upToOld) {
+        const f = oldSels.shift();
+        const text = beforeLines[f.line - 1].slice(f.offA, f.offB);
+        if (text) { out.push(text); changed = true; }
+      }
+    };
+    for (const c of h.hunkContent) {
+      if (c.type === "context") {
+        flushOld(oldN);
+        for (let i = 0; i < c.lines; i++) { out.push(afterLines[newN - 1]); oldN++; newN++; }
+      } else {
+        flushOld(oldN);
+        const dels = [];
+        for (let i = 0; i < c.deletions; i++) dels.push(oldN + i);
+        oldN += c.deletions;
+        for (let i = 0; i < c.additions; i++) {
+          const N = newN;
+          newN++;
+          if (!newSels.has(N)) { out.push(afterLines[N - 1]); continue; }
+          const sels = mergeRanges(newSels.get(N));
+          const beforeLine = dels[i] !== undefined ? beforeLines[dels[i] - 1] : null;
+          const r = surgeryLine(afterLines[N - 1], beforeLine, sels);
+          if (r.noChange) { out.push(afterLines[N - 1]); continue; }
+          changed = true;
+          if (r.line !== "") out.push(r.line); // vacía → línea eliminada
+        }
+      }
+    }
+    flushOld(Infinity); // hunk que termina en deletion: su cola se inserta acá
+    nIdx = newN;
+  }
+  if (oldSels.length) return null; // frag roja fuera de todo hunk: inconsistente
+  if (!changed) return { noDiff: true };
+  out.push(...afterLines.slice(nIdx - 1));
+  return { lines: out };
+}
+
+export function mergeRanges(ranges) {
+  const rs = [...ranges].sort((a, b) => a[0] - b[0]);
+  const out = [];
+  for (const r of rs) {
+    const last = out[out.length - 1];
+    if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+    else out.push([r[0], r[1]]);
+  }
+  return out;
+}
