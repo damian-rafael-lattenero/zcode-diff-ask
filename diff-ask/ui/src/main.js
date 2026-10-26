@@ -20,7 +20,7 @@ import { FileDiff, parsePatchFiles, isHighlighterLoaded, isHighlighterLoading, i
 import { Editor } from "@pierre/diffs/edit";
 import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
-  compressRuns, linesLabel, quoteForRanges,
+  compressRuns, linesLabel, quoteForRanges, revertHunks,
 } from "./lib.js";
 
 const DIFF_URI = "diff://workspace";
@@ -198,7 +198,10 @@ const EXTRA_STYLE = [
   ':host(.da-hide-ctx) [data-line-type="context"]{display:none !important;}',
   ':host(.da-hide-ctx) [data-line-type="context-expanded"]{display:none !important;}',
   ':host(.da-hide-ctx) [data-separator]{display:none !important;}',
-  '[data-da-find="hit"]{background:var(--da-find-hit,#E9C46A4D) !important;}',
+  // selección de texto con contraste real en ambos temas (pierre trae la
+  // suya apagada y encima compite con los fondos verde/rojo de las filas)
+  '::selection{background:var(--accent,#4268d8) !important;color:var(--accent-contrast,#ffffff) !important;}',
+  '[data-da-find="hit"]{background:var(--da-find-hit,#E9C46A4D) !important;}', 
   '[data-da-find="cur"]{background:var(--da-find-cur,#E9C46AAA) !important;box-shadow:inset 3px 0 0 var(--accent,#4268d8) !important;}',
 ].join("\n");
 
@@ -439,6 +442,87 @@ async function discardAllEdits() {
     endEdit(entry, "discard");
   }
   refresh(true);
+}
+
+// ------------------------------------------------------- revert (↩)
+// "Dejálo como el original" estilo IDE (revert chunk / discard changes):
+// por SELECCIÓN (las cajitas — verde o rojo da igual: el hunk que cubre esas
+// líneas vuelve a su versión before) y por ARCHIVO completo. La escritura
+// pasa por write_file → misma política AGENTE GANA (conflicto = shelve/aviso,
+// nunca pisa). Revertir mientras el archivo está en edición ✏️ se bloquea
+// (el editor tiene su propio estado del documento).
+function hunksForSelection(entry, keys) {
+  const diff = entry.fd?.getInputDiff?.();
+  if (!diff || diff.isPartial || !Array.isArray(diff.hunks)) return null;
+  const news = [];
+  const olds = [];
+  for (const k of keys) {
+    const n = parseInt(k.slice(2), 10);
+    if (k[0] === "A") news.push(n);
+    else olds.push(n);
+  }
+  return diff.hunks.filter(
+    (h) =>
+      news.some((n) => n >= h.additionStart && n < h.additionStart + h.additionCount) ||
+      olds.some((n) => n >= h.deletionStart && n < h.deletionStart + h.deletionCount),
+  );
+}
+
+async function writeReverted(entry, content, label) {
+  try {
+    const res = await app.callServerTool({
+      name: "write_file",
+      arguments: { path: entry.path, content, expect_base: await sha1Hex(entry.fileData.after) },
+    });
+    const sc = res?.structuredContent;
+    if (sc?.ok) {
+      setBoxSel(entry, new Set());
+      chip(label);
+      return;
+    }
+    if (sc?.conflict) return showEditBanner(sc.message ?? "El archivo cambió en disco (gana el agente).", true);
+    throw new Error(sc?.message ?? "write_file sin respuesta");
+  } catch (e) {
+    chip(`⚠ revert ${entry.path}: ${e?.message ?? e}`);
+  }
+}
+
+function revertGuard(entry) {
+  if (entry.edit) {
+    chip("⚠ cerrá la edición ✏️ de este archivo antes de revertir");
+    return false;
+  }
+  if (typeof entry.fileData?.after !== "string" || typeof entry.fileData?.before !== "string") {
+    chip("⚠ este archivo no tiene contenido completo (¿binario/grande?)");
+    return false;
+  }
+  return true;
+}
+
+// Revertir los BLOQUES cubiertos por la selección de cajitas.
+async function revertSelection(entry) {
+  if (!revertGuard(entry)) return;
+  const keys = selKeysOf(entry);
+  if (!keys.size) return;
+  const hunks = hunksForSelection(entry, keys);
+  if (!hunks || !hunks.length) {
+    chip("⚠ la selección no cubre ningún bloque con cambios");
+    return;
+  }
+  const afterLines = entry.fileData.after.split("\n");
+  const beforeLines = entry.fileData.before.split("\n");
+  const newLines = revertHunks(beforeLines, afterLines, hunks);
+  if (!newLines) {
+    chip("⚠ no pude reconstruir el revert (bloques solapados)");
+    return;
+  }
+  await writeReverted(entry, newLines.join("\n"), `↩ ${hunks.length} bloque${hunks.length === 1 ? "" : "s"} revertido${hunks.length === 1 ? "" : "s"}`);
+}
+
+// Revertir el ARCHIVO entero a su versión original.
+async function revertWholeFile(entry) {
+  if (!revertGuard(entry)) return;
+  await writeReverted(entry, entry.fileData.before, `↩ ${entry.path} vuelto al original`);
 }
 
 // ------------------------------------------------------------ búsqueda ⌘F
@@ -1027,6 +1111,18 @@ function renderSelUI(entry) {
   big.style.left = "2px"; // riel izquierdo (el número ya no ocupa cajita propia)
   big.onclick = () => openComposerMulti(entry);
   layer.appendChild(big);
+  // ↩ revert: los bloques cubiertos por la selección vuelven al original
+  // (estilo IDE). Sólo si hay before completo — archivo nuevo no tiene original.
+  if (typeof entry.fileData?.before === "string") {
+    const rev = document.createElement("button");
+    rev.className = "big-plus big-revert";
+    rev.textContent = "↩";
+    rev.title = "Revertir la selección al original (verde y rojo por igual)";
+    rev.style.top = big.style.top;
+    rev.style.left = "36px";
+    rev.onclick = () => revertSelection(entry);
+    layer.appendChild(rev);
+  }
 }
 
 // Cambio in-place de una línea seleccionada (sin rebuild: el drag va fluido).
@@ -1482,6 +1578,18 @@ function renderFileInner(f) {
     };
     entry.editBtn = editBtn;
     head.querySelector(".fplus").after(editBtn);
+  }
+  // ↩ revert de TODO el archivo (sólo modificados con before completo)
+  if (typeof f.before === "string" && f.status !== "A" && f.status !== "?") {
+    const revBtn = document.createElement("button");
+    revBtn.className = "ghost frev";
+    revBtn.textContent = "↩";
+    revBtn.title = "Revertir TODO este archivo al original";
+    revBtn.onclick = (e) => {
+      e.stopPropagation();
+      revertWholeFile(entry);
+    };
+    head.querySelector(".fplus").after(revBtn);
   }
 
   // ＋ a nivel archivo: ancla al archivo entero, cita = mini-resumen.

@@ -817,3 +817,14 @@ button.fedit.on {
   background: var(--accent);
   color: var(--accent-contrast);
 }
+
+/* ---- selección con contraste + revert ↩ (0.6.0) ---- */
+::selection { background: var(--accent); color: var(--accent-contrast); }
+.big-revert {
+  background: var(--card);
+  border-color: var(--warn);
+  color: var(--text);
+}
+.big-revert:hover { background: var(--warn); color: #fff; }
+.file-head .frev { padding: 2px 8px; color: var(--warn); }
+.file-head .frev:hover { border-color: var(--warn); background: var(--warn); color: #fff; }

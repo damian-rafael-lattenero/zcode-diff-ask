@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
-  compressRuns, linesLabel, quoteForRanges,
+  compressRuns, linesLabel, quoteForRanges, revertHunks,
 } from "../diff-ask/ui/src/lib.js";
 
 const PATCH = [
@@ -150,4 +150,27 @@ test("buildAskMessage: pregunta multi-rango cita las líneas de todas las corrid
   ]);
   assert.ok(text.includes("- `a.py:3` (Diff Ask · diff, líneas 3-5, 9 · additions):"));
   assert.ok(text.includes("> x3\n> x4\n> x5\n> x9"));
+});
+
+test("revertHunks: reemplaza el rango nuevo por el original, hunks múltiples y solapados", () => {
+  const before = ["a", "b", "c", "d", "e", "f"].map((x) => x);
+  const after = ["a", "B", "c", "D", "e", "f"];
+  // hunk 1: línea 2 (B↔b), hunk 2: línea 4 (D↔d)
+  const h = (as, ac, ds, dc) => ({ additionStart: as, additionCount: ac, deletionStart: ds, deletionCount: dc });
+  // un hunk (línea 2: contexto+1 cambio con contexto → cubre 1..3? simplificado: exacto)
+  assert.deepEqual(
+    revertHunks(before, after, [h(2, 1, 2, 1)]),
+    ["a", "b", "c", "D", "e", "f"],
+  );
+  assert.deepEqual(
+    revertHunks(before, after, [h(2, 1, 2, 1), h(4, 1, 4, 1)]),
+    ["a", "b", "c", "d", "e", "f"],
+  );
+  // bloque con más líneas nuevas que viejas (el revert achica)
+  const after2 = ["a", "X", "Y", "Z", "c", "d"];
+  assert.deepEqual(revertHunks(before, after2, [h(2, 3, 2, 1)]), ["a", "b", "c", "d"]);
+  // solapados → null (no se toca nada)
+  assert.equal(revertHunks(before, after, [h(2, 2, 2, 1), h(3, 1, 3, 1)]), null);
+  // sin hunks → igual
+  assert.deepEqual(revertHunks(before, after, []), after);
 });

@@ -98,6 +98,26 @@ export function quoteFor(entry, range, verbatim) {
   return extractLines(entry.patch, side, range.start, range.end);
 }
 
+// Revertir hunks a su versión ORIGINAL: en el contenido nuevo, el rango
+// new-side de cada hunk se reemplaza por su rango old-side del before.
+// Hunks 1-based (additionStart/Count, deletionStart/Count, como pierre).
+// Devuelve null si los hunks se solapan o son inconsistentes (no se toca nada).
+export function revertHunks(beforeLines, afterLines, hunks) {
+  const sorted = [...hunks].sort((a, b) => a.additionStart - b.additionStart);
+  const out = [];
+  let cursor = 0; // índice 0-based en afterLines
+  for (const h of sorted) {
+    const s = h.additionStart - 1;
+    const e = s + h.additionCount;
+    if (s < cursor || s > afterLines.length) return null;
+    out.push(...afterLines.slice(cursor, s));
+    out.push(...beforeLines.slice(h.deletionStart - 1, h.deletionStart - 1 + h.deletionCount));
+    cursor = e;
+  }
+  out.push(...afterLines.slice(cursor));
+  return out;
+}
+
 // Totales reales del diff para el header: líneas +/- y archivos por status.
 // Los counts llegan como STRINGS (git numstat) y pueden faltar (binarios,
 // truncados) — NaN no suma.
