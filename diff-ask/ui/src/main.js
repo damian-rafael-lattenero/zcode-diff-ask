@@ -1747,7 +1747,17 @@ function paintFromSelection(entry, rows, text) {
   toggleFrag(entry, frag);
 }
 
+let lastFragPaint = null; // {sig, gesture} — dedupe de re-notificaciones
 function toggleFrag(entry, frag) {
+  // Un mismo gesto genera VARIAS selectionchange (drag → release → settle):
+  // cada una re-intenta pintar el MISMO frag y el toggle lo despintaba
+  // (e2e: paint→unpaint→paint en 80ms — el "se me despintó sola" real).
+  // Idempotente dentro del gesto; entre gestos distintos el toggle sigue
+  // valiendo (repintar lo mismo a propósito = despintar, spec).
+  const gesture = dragPath?.at ?? 0;
+  const sig = `${entry.path}|${frag.firstRowIdx}|${frag.lastRowIdx}|${frag.offA}|${frag.offB}`;
+  if (lastFragPaint?.sig === sig && lastFragPaint.gesture === gesture) return;
+  lastFragPaint = { sig, gesture };
   lastPaintedEntry = entry;
   const list = fragSel.get(entry.path) ?? [];
   // 中文注释：画笔永远累加（spec：选一个词再选另一个，两个都保持）。
@@ -1852,10 +1862,14 @@ function wcAddRects(frag, row, a, b, bodyRect, cls) {
       if (!r.width && !r.height) continue;
       const d = document.createElement("div");
       d.className = cls;
-      d.style.top = `${r.top - bodyRect.top}px`;
-      d.style.left = `${r.left - bodyRect.left}px`;
-      d.style.width = `${r.width}px`;
-      d.style.height = `${r.height}px`;
+      // 2px de aire por lado (spec Damian): la línea del recuadro no toca
+      // las letras — el rect del char es exacto, el box se agranda un toque.
+      const padX = 2;
+      const padY = 1.5;
+      d.style.top = `${Math.max(0, r.top - bodyRect.top - padY)}px`;
+      d.style.left = `${Math.max(0, r.left - bodyRect.left - padX)}px`;
+      d.style.width = `${r.width + padX * 2}px`;
+      d.style.height = `${r.height + padY * 2}px`;
       frag.appendChild(d);
     }
   } catch { /* 行结构异常：跳过该标记 */ }
