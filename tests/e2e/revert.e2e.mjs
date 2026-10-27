@@ -14,6 +14,8 @@
 //   - drag vertical en el gutter → cajitas (revert de línea por números)
 //   - Enter = ↩ quirúrgico; palabra de una línea 100% nueva → SOLO la palabra (0.9.2)
 //   - modo brocha ↩ del header: N pintadas acumuladas → UN rollback general (sin popups flotantes)
+//   - coexistencia: dos palabras en la MISMA fila, drag multilínea multipalabra,
+//     palabra gemela pinta UNA sola, y drag LENTO (>1.5s) sigue vivo (0.9.3)
 // Uso: node tests/e2e/revert.e2e.mjs   (requiere Google Chrome instalado)
 
 import { spawn, execFileSync } from "node:child_process";
@@ -206,7 +208,7 @@ await evalJs(`(() => {
       const r = h.getBoundingClientRect();
       return { x: r.left + r.width / 2, y: r.top + r.height / 2, collapsed: e.section.classList.contains("collapsed") };
     },
-    async locate(rel, needle, type) {
+    async locate(rel, needle, type, noScroll) {
       const entry = [...__DA.rendered.values()].find((e) => e.path === rel);
       if (!entry) return { error: "no entry " + rel };
       const host = entry.body.querySelector("diffs-container");
@@ -218,10 +220,12 @@ await evalJs(`(() => {
         const text = row.textContent ?? "";
         const idx = text.indexOf(needle);
         if (idx < 0) continue;
-        row.scrollIntoView({ block: "center" });
+        if (!noScroll) row.scrollIntoView({ block: "center" });
         // esperar que el scroll TERMINE antes de medir (si fuera smooth,
-        // medir a mitad de animación da coords que ya no valen al gestear)
-        await new Promise((res) => {
+        // medir a mitad de animación da coords que ya no valen al gestear).
+        // noScroll = la fila ya está a la vista (medición doble sin invalidar
+        // la primera con un scroll nuevo): medir directo.
+        if (!noScroll) await new Promise((res) => {
           const root = document.getElementById("root");
           let last = null, same = 0, n = 0;
           const iv = setInterval(() => {
@@ -597,6 +601,64 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(afterK.includes("return r.Ti") && !afterK.includes("return r.Title"), "K3: SOLO las 3 letras 'tle' removidas del return");
   check(await until(async () => (await evalJs(`__E2E.frags(${JSON.stringify(TYPES_GO)})`)).length === 0), "frags despintados tras el rollback general");
   await shot("10-tras-rollback-general-modo-brocha.png");
+
+  await panelStable();
+  // ============ L. coexistencia + gemelas + drag lento (spec Damian 0.9.3) ============
+  // "no puedo hacer selección multilinea multipalabra: se despinta lo
+  // pintado al pintar lo nuevo" + "me selecciona todas las idénticas".
+  const PARSER_PY = "tests/diffs/parser.py";
+  await expandFile(PARSER_PY);
+  const pFrags = async () => (await evalJs(`__E2E.frags(${JSON.stringify(PARSER_PY)})`));
+
+  // L1: DOS palabras en la MISMA fila — coexisten (antes el filtro por filas
+  // despintaba la primera al pintar la segunda)
+  loc = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "Marker words:")`);
+  check(loc && !loc.error, "L1 localizo la línea Marker", loc?.error ?? "");
+  await dblclick((loc.chars[2].left + loc.chars[2].right) / 2, loc.y); // "Marker"
+  await sleep(500);
+  const locAlpha = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "alpha (tokens)")`);
+  await dblclick((locAlpha.chars[2].left + locAlpha.chars[2].right) / 2, locAlpha.y); // "alpha"
+  await sleep(500);
+  let pf = await pFrags();
+  check(pf.length === 2 && pf.some((f) => f.text === "Marker") && pf.some((f) => f.text === "alpha"),
+    `L1: dos palabras de la MISMA fila coexisten (${JSON.stringify(pf.map((f) => f.text))})`);
+
+  // L2: drag MULTILÍNEA multipalabra — de "render" a "join" (dos filas)
+  const a2 = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "def render(tokens):")`);
+  // sin re-scroll: el locate del join movería las filas y volvería stale a2
+  const b2 = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, 'return " ".join', null, true)`);
+  check(a2 && !a2.error && b2 && !b2.error, "L2 localizo render y join", a2?.error ?? b2?.error ?? "");
+  await drag((a2.chars[6].left + a2.chars[6].right) / 2, a2.y, b2.chars[b2.chars.length - 1].right + 1.5, b2.y);
+  await sleep(700);
+  pf = await pFrags();
+  check(pf.length === 3 && pf.some((f) => f.first !== f.last),
+    `L2: drag multilínea pinta UN frag de dos filas y NO despinta lo anterior (${JSON.stringify(pf.map((f) => f.text.slice(0, 8)))})`);
+
+  // L4: drag LENTO (>1.5s) multilínea — el gesto geométrico sigue vivo.
+  // Re-ubico fresco (L2 pintó overlays; coordenadas al día).
+  const a4 = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "def render(tokens):")`);
+  const b4 = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, 'return " ".join', null, true)`);
+  check(a4 && !a4.error && b4 && !b4.error, "L4 re-localizo render y join", a4?.error ?? b4?.error ?? "");
+  await mouse.press((a4.chars[0].left + a4.chars[0].right) / 2, a4.y);
+  for (let i = 1; i <= 8; i++) {
+    await mouse.move((a4.chars[0].left + a4.chars[0].right) / 2 + ((b4.right - a4.chars[0].left) * i) / 8, a4.y + ((b4.y - a4.y) * i) / 8);
+    await sleep(210);
+  }
+  await mouse.release(b4.right + 1.5, b4.y);
+  await sleep(700);
+  pf = await pFrags();
+  check(pf.length === 3 && pf.some((f) => f.first !== f.last),
+    `L4: drag LENTO multilínea (1.7s) pinta igual (${JSON.stringify(pf.map((f) => ({ t: f.text.slice(0, 6), r: f.first + "-" + f.last })))})`);
+
+  // L3: palabra GEMELA ("Response" existe en varios handlers) → UNA sola
+  const gem = await evalJs(`__E2E.locate(${JSON.stringify(SERVER_TS)}, 'new Response("missing"')`);
+  check(gem && !gem.error, "L3 localizo un Response en server.ts", gem?.error ?? "");
+  await dblclick((gem.chars[7].left + gem.chars[7].right) / 2, gem.y); // "Response"
+  await sleep(500);
+  const sf = await evalJs(`__E2E.frags(${JSON.stringify(SERVER_TS)})`);
+  check(sf.length === 1 && sf[0].text === "Response",
+    `L3: la palabra gemela pinta UNA sola ocurrencia (${JSON.stringify(sf.map((f) => f.text))})`);
+  await shot("11-coexistencia-multilinea-gemelas-lento.png");
 
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));
