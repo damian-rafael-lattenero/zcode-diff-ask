@@ -685,6 +685,20 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(popText.includes("alpha (words)"), `la burbuja muestra la línea VIEJA (${JSON.stringify(popText.slice(0, 60))})`);
   check(popText.includes("antes"), "la burbuja está ETIQUETADA como el antes (no es una copia más)");
   await shot("12-una-fila-por-linea-hover.png");
+  // re-render con contenido idéntico (refresh): la roja pareada NO puede
+  // reaparecer — el gate de firma saltaba el colapso y la duplicaba (bug
+  // reportado por Damian: "const payload ... se duplica")
+  await evalJs("__DA.refresh(true)");
+  await panelStable();
+  const mods2 = await evalJs(`(() => {
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(PARSER_PY)});
+    const rows = [...e.body.querySelector("diffs-container").shadowRoot.querySelectorAll("[data-line]")].filter((r) => !r.querySelector("[data-line]"));
+    const redVisible = rows.some((r) => (r.textContent ?? "").includes("alpha (words)") && getComputedStyle(r).display !== "none");
+    const green = rows.find((r) => (r.dataset.daOld ?? "").includes("alpha (words)"));
+    return { redVisible, greenPaired: !!green };
+  })()`);
+  check(mods2.redVisible === false, "tras un refresh idéntico la roja pareada SIGUE oculta (no se duplica)");
+  check(mods2.greenPaired, "y la verde sigue pareada con su original");
 
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));

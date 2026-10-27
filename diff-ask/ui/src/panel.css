@@ -846,17 +846,21 @@ button.fedit.on {
    红/绿方框（粗描边 + 实色垫底）标出，红词在删除行、绿词在新增行。 */
 .wc-layer { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
 .file-body:has(.wc-layer) { position: relative; }
-/* spec Damian 0.9.4: caja SIN borde y relleno FUERTE — el borde fino
-   sumaba un segundo lenguaje visual encima del fondo de la fila. */
+/* spec Damian 0.9.6: la cajita usa el VERDE REAL del diff (muestreado de
+   la fila por JS en --wc-green/--wc-red) y es apenas un 25% más fuerte que
+   el fondo de la fila — el 55% fijo lavaba el texto ("con esos colores no
+   veo nada"). */
 .wc-add {
   position: absolute;
   border-radius: 3px;
-  background: color-mix(in srgb, #3fb950 55%, transparent);
+  background: var(--wc-green, #3fb950);
+  opacity: 0.25;
 }
 .wc-del {
   position: absolute;
   border-radius: 3px;
-  background: color-mix(in srgb, #f85149 55%, transparent);
+  background: var(--wc-red, #f85149);
+  opacity: 0.25;
 }
 /* espacios agregados/borrados: circulito mínimo y TENUE (una corrida = un punto) */
 .wc-ws-add, .wc-ws-del {
@@ -866,8 +870,8 @@ button.fedit.on {
   border-radius: 50%;
   pointer-events: none;
 }
-.wc-ws-add { background: color-mix(in srgb, #3fb950 45%, transparent); }
-.wc-ws-del { background: color-mix(in srgb, #f85149 45%, transparent); }
+.wc-ws-add { background: var(--wc-green, #3fb950); opacity: 0.45; }
+.wc-ws-del { background: var(--wc-red, #f85149); opacity: 0.45; }
 /* burbuja de la línea ORIGINAL (hover en fila modificada — la roja está
    oculta por "una fila por línea"): removidas marcadas en rojo */
 .da-old-pop {
