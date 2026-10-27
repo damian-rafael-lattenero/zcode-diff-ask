@@ -187,14 +187,21 @@ export function buildAskMessage(asks, scope = "") {
 // frags: [{side:"new"|"old", line, offA, offB}] — offsets planos [A,B) sobre
 //   la línea: side new = número de línea del AFTER (fila verde/contexto,
 //   texto visible); side old = número de línea del BEFORE (fila roja).
-// Semántica (Damian):
-//   - new: dentro de lo pintado, los chars que el cambio AGREGÓ se eliminan
-//     (diff intra-línea por tokens); los chars que ya existían quedan.
-//     "Hola Mundo"→"Hola Cruel Mundo": pinto "Cruel" → "Hola Mundo";
-//     pinto "el" → "Hola Cru Mundo". Espacios agregados pegados a la
-//     eliminación se comen también (no queda doble espacio).
-//   - old (fila roja): el texto pintado VUELVE — se inserta como línea(s)
-//     nueva(s) en la posición del hunk ("esas palabras aparecen").
+// Semántica (Damian; 0.9.0 — la cirugía de chars NO puede resucitar lo
+// borrado, así que la cobertura COMPLETA del cambio restaura la línea):
+//   - new, pintado PARCIAL: los chars que el cambio AGREGÓ dentro de lo
+//     pintado se eliminan; los que ya existían quedan. "Hola Mundo"→"Hola
+//     Cruel Mundo": pinto "el" → "Hola Cru Mundo". Espacios agregados
+//     pegados a la eliminación se comen (no queda doble espacio).
+//   - new, pintado que cubre la LÍNEA entera o TODOS los rangos agregados
+//     (= pintaste la palabra/las palabras cambiadas): la línea vuelve AL
+//     ORIGINAL del before — incluidas las palabras que el cambio borró.
+//     Antes quedaba un híbrido ("alpha  gamma") que seguía apareciendo en
+//     el diff: el "rebota" del revert de línea.
+//   - old (fila roja) pintada: la pareja DEL VUELTA ENTERA — la línea
+//     original se restaura y su contraparte verde se va (media línea
+//     revertida es peor que la línea sin revertir). Si la roja no tiene
+//     pareja (línea puramente borrada), se restaura tal cual.
 //   - Línea que queda vacía tras la cirugía → se elimina entera.
 // Devuelve {lines} | {noDiff:true} | null (alineamiento inconsistente).
 export function tokenizeLine(s) {
@@ -264,9 +271,40 @@ function surgeryLine(afterLine, beforeLine, sels) {
     const near = (c) => c >= 0 && /\s/.test(afterLine[c]);
     if (near(left) || near(right)) for (let x = t.start; x < t.end; x++) del[x] = true;
   }
+  // token agregado NO-blanco borrado ENTERO con espacios SOBREVIVIENTES a
+  //AMBOS lados: uno de los dos se come (matched, no agregado — el bloque de
+  // arriba no los tocó). "alpha delta epsilon" con "delta" pintado (cambio
+  // parcial de una línea con más cambios) → "alpha epsilon", sin doble
+  // espacio. Si sólo UN lado tiene espacio, queda (no hay doble).
+  for (let k = 0; k < aT.length; k++) {
+    const t = aT[k];
+    if (!added[k] || /^\s+$/.test(t.text)) continue;
+    let fullyDel = true;
+    for (let x = t.start; x < t.end; x++) if (!del[x]) { fullyDel = false; break; }
+    if (!fullyDel) continue;
+    let right = -1;
+    for (let x = t.end; x < afterLine.length; x++) if (!del[x]) { right = x; break; }
+    if (right < 0 || !/\s/.test(afterLine[right])) continue;
+    let left = -1;
+    for (let x = t.start - 1; x >= 0; x--) if (!del[x]) { left = x; break; }
+    if (left >= 0 && /\s/.test(afterLine[left])) del[right] = true;
+  }
   let out = "";
   for (let x = 0; x < afterLine.length; x++) if (!del[x]) out += afterLine[x];
   return { line: out };
+}
+
+// ¿la pintada cubre el cambio ENTERO de la línea? Dos formas equivalentes
+// de "quiero esta línea como el original": la línea completa (recortada) o
+// todos los rangos que el cambio agregó (= las palabras cambiadas pintadas).
+function coversFullChange(sels, beforeLine, afterLine) {
+  let first = 0;
+  while (first < afterLine.length && /\s/.test(afterLine[first])) first++;
+  let lastEnd = afterLine.length;
+  while (lastEnd > first && /\s/.test(afterLine[lastEnd - 1])) lastEnd--;
+  if (sels.some(([a, b]) => a <= first && b >= lastEnd)) return true;
+  const add = changedWordRanges(beforeLine, afterLine)?.add ?? [];
+  return add.length > 0 && add.every(([a, b]) => sels.some(([s, e]) => s <= a && e >= b));
 }
 
 export function revertFrags(beforeLines, afterLines, hunks, frags) {
@@ -274,7 +312,7 @@ export function revertFrags(beforeLines, afterLines, hunks, frags) {
   const sorted = [...hunks].sort((a, b) => a.additionStart - b.additionStart);
   // agrupar frags new por línea after (merge de rangos) y old por línea before
   const newSels = new Map(); // afterLine → [[a,b),...]
-  const oldSels = []; // {line, a, b} en orden
+  let oldSels = []; // {line, a, b} en orden
   for (const f of frags) {
     if (f.side === "old") oldSels.push(f);
     else {
@@ -286,8 +324,8 @@ export function revertFrags(beforeLines, afterLines, hunks, frags) {
   oldSels.sort((x, y) => x.line - y.line || x.offA - y.offA);
   let changed = false;
 
-  // caminar los hunks como revertLines; insertar frags old en su punto de
-  // borrado y aplicar cirugía a las líneas after marcadas
+  // caminar los hunks como revertLines; restaurar frags old en su punto de
+  // borrado y aplicar cirugía/restauración a las líneas after marcadas
   const out = [];
   let nIdx = 1;
   for (const h of sorted) {
@@ -299,7 +337,7 @@ export function revertFrags(beforeLines, afterLines, hunks, frags) {
     const flushOld = (upToOld) => {
       while (oldSels.length && oldSels[0].line < upToOld) {
         const f = oldSels.shift();
-        const text = beforeLines[f.line - 1].slice(f.offA, f.offB);
+        const text = beforeLines[f.line - 1]?.slice(f.offA, f.offB);
         if (text) { out.push(text); changed = true; }
       }
     };
@@ -307,22 +345,43 @@ export function revertFrags(beforeLines, afterLines, hunks, frags) {
       if (c.type === "context") {
         flushOld(oldN);
         for (let i = 0; i < c.lines; i++) { out.push(afterLines[newN - 1]); oldN++; newN++; }
-      } else {
-        flushOld(oldN);
-        const dels = [];
-        for (let i = 0; i < c.deletions; i++) dels.push(oldN + i);
-        oldN += c.deletions;
-        for (let i = 0; i < c.additions; i++) {
-          const N = newN;
-          newN++;
-          if (!newSels.has(N)) { out.push(afterLines[N - 1]); continue; }
-          const sels = mergeRanges(newSels.get(N));
-          const beforeLine = dels[i] !== undefined ? beforeLines[dels[i] - 1] : null;
-          const r = surgeryLine(afterLines[N - 1], beforeLine, sels);
-          if (r.noChange) { out.push(afterLines[N - 1]); continue; }
+        continue;
+      }
+      flushOld(oldN);
+      const addStart = newN;
+      const dels = [];
+      for (let i = 0; i < c.deletions; i++) dels.push(oldN + i);
+      oldN += c.deletions;
+      // frags ROJAS del bloque: la línea vieja vuelve ENTERA y su pareja
+      // verde se va (dropNew) — medio revertir deja la línea en el diff.
+      const dropNew = new Set();
+      for (let i = 0; i < dels.length; i++) {
+        const L = dels[i];
+        if (!oldSels.some((f) => f.line === L)) continue;
+        oldSels = oldSels.filter((f) => f.line !== L);
+        const beforeLine = beforeLines[L - 1];
+        if (beforeLine === undefined) return null;
+        if (i < c.additions) dropNew.add(addStart + i);
+        if (beforeLine !== "") out.push(beforeLine);
+        changed = true;
+      }
+      for (let i = 0; i < c.additions; i++) {
+        const N = addStart + i;
+        newN = N + 1;
+        if (dropNew.has(N)) continue;
+        if (!newSels.has(N)) { out.push(afterLines[N - 1]); continue; }
+        const sels = mergeRanges(newSels.get(N));
+        const beforeLine = dels[i] !== undefined ? beforeLines[dels[i] - 1] : null;
+        const afterLine = afterLines[N - 1];
+        if (beforeLine !== null && beforeLine !== afterLine && coversFullChange(sels, beforeLine, afterLine)) {
           changed = true;
-          if (r.line !== "") out.push(r.line); // vacía → línea eliminada
+          if (beforeLine !== "") out.push(beforeLine);
+          continue;
         }
+        const r = surgeryLine(afterLine, beforeLine, sels);
+        if (r.noChange) { out.push(afterLine); continue; }
+        changed = true;
+        if (r.line !== "") out.push(r.line); // vacía → línea eliminada
       }
     }
     flushOld(Infinity); // hunk que termina en deletion: su cola se inserta acá

@@ -1582,7 +1582,9 @@ function plainOffsetToRange(span, a, b) {
 let dragPath = null;
 document.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
-  dragPath = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, at: Date.now() };
+  // detail: 1=single, 2=doble (palabra), 3+=triple (línea) — el gesto NATIVO
+  // del mouse define la semántica del pintado, igual que en un editor.
+  dragPath = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, at: Date.now(), detail: e.detail || 1 };
 }, true);
 document.addEventListener("pointermove", (e) => {
   if (dragPath && (e.buttons & 1)) { dragPath.x1 = e.clientX; dragPath.y1 = e.clientY; }
@@ -1660,7 +1662,12 @@ function caretFrag(entry) {
     diagSel(`caretFrag ✗ A=${A ? A.entry.path.slice(-14) : "null"} B=${B ? B.entry.path.slice(-14) : "null"} (cae al match por texto)`);
     return null;
   }
-  if (A.idx === B.idx && B.off <= A.off) {
+  // gesto NATIVO: doble-click = palabra, triple-click = línea, drag = rango.
+  // "moved" separa click (sin arrastre, jitter ≤3px) de drag real — un drag
+  // derecha→izquierda en la MISMA fila no debe caer al branch de palabra.
+  const moved = Math.abs(dragPath.x1 - dragPath.x0) > 3 || Math.abs(dragPath.y1 - dragPath.y0) > 3;
+  const triple = (dragPath.detail || 1) >= 3;
+  if (!moved && !triple && A.idx === B.idx) {
     // doble-click / click sin arrastre: PALABRA bajo el caret (spec Damian —
     // antes esto caía al fallback de texto y pintaba la LÍNEA ENTERA)
     // 中文注释：rowText 取整行 textContent（跨 token），词边界用 Unicode 类
@@ -1684,8 +1691,20 @@ function caretFrag(entry) {
   // más y casi sin componente horizontal. Diagonales cortas de palabra ya no
   // clasifican (antes pintaban la fila entera).
   const vertical = Math.abs(dragPath.y1 - dragPath.y0) >= 14 && Math.abs(dragPath.x1 - dragPath.x0) < 8;
-  const offA = vertical ? 0 : Math.min(first.off, rowText(first.idx).length);
-  const offB = vertical ? rowText(last.idx).length : Math.min(last.off, rowText(last.idx).length);
+  let offA;
+  let offB;
+  if (triple || vertical) {
+    offA = 0;
+    offB = rowText(last.idx).length;
+  } else if (first.idx === last.idx) {
+    // drag DENTRO de una fila: derecha→izquierda da A.off > B.off — se
+    // normaliza (mismo resultado que izquierda→derecha, como el editor).
+    offA = Math.min(first.off, last.off);
+    offB = Math.max(first.off, last.off);
+  } else {
+    offA = Math.min(first.off, rowText(first.idx).length);
+    offB = Math.min(last.off, rowText(last.idx).length);
+  }
   const parts = [];
   for (let i = first.idx; i <= last.idx; i++) {
     const rt = rowText(i);
@@ -3151,7 +3170,7 @@ if (window.__DA_TEST__) {
   window.__DA = {
     FileDiff,
     parsePatchFiles,
-    hl: { loaded: isHighlighterLoaded, loading: isHighlighterLoading, isNull: isHighlighterNull },
+    hl: { loaded: isHighlighterLoaded, loading: isHighlighterLoading, null: isHighlighterNull },
     get rendered() { return rendered; },
     get diffData() { return diffData; },
     renderAll,
@@ -3160,6 +3179,7 @@ if (window.__DA_TEST__) {
     get fragSel() { return fragSel; },
     get fragModes() { return fragModes; },
     renderSelUI,
+    refresh,
     edit: (path) => startEditing(window.__DA.rendered.get(path)),
     get editingCount() { return editingCount(); },
     re: (path) => {
@@ -3180,6 +3200,28 @@ if (window.__DA_TEST__) {
   renderPile();
   // Fake send so the composer flow can be exercised outside the app too.
   app.sendMessage = async () => ({ mode: "sent", ok: true });
+  // __DA_E2E__: puente al server MCP REAL (tests/e2e): readServerResource y
+  // callServerTool viajan por http al harness, que los reenvía por stdio al
+  // server.mjs de verdad — el revert escribe archivos REALES y el refresh
+  // llega por SSE igual que el notify reactivo de la app.
+  if (window.__DA_E2E__) {
+    app.readServerResource = async ({ uri }) => {
+      const r = await fetch(`/mcp?read=${encodeURIComponent(uri)}`);
+      return { contents: [{ text: await r.text() }] };
+    };
+    app.callServerTool = async ({ name, arguments: a }) => {
+      const r = await fetch("/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tool: name, args: a }),
+      });
+      return { structuredContent: await r.json() };
+    };
+    app.setNotificationHandler = (_schema, cb) => { window.__DA_ONUPDATE = cb; };
+    new EventSource("/events").onmessage = () => {
+      window.__DA_ONUPDATE?.({ params: { uri: diffUriFor() } });
+    };
+  } else {
   // Recursos mockeados (window.__DA_TEST__.mockResources[uri]) para ejercitar
   // las vistas que leen recursos (turn://list, diff://turn/…) sin host.
   app.readServerResource = async ({ uri }) => {
@@ -3195,6 +3237,7 @@ if (window.__DA_TEST__) {
       return { structuredContent: { ok: true, hash: "stub-hash" } };
     return { structuredContent: { ok: true, at: new Date().toISOString() } };
   };
+  }
 } else {
   boot();
 }

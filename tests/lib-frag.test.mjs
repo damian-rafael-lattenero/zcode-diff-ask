@@ -61,8 +61,8 @@ test("adición pura pintada a medias → queda el resto quirúrgico", () => {
 });
 
 // Línea ROJA: before borrado entero; pinto "Cruel" de la línea vieja →
-// VUELVE como línea insertada en la posición del hunk.
-test("fila roja: pinto 'Cruel' → la palabra reaparece como línea", () => {
+// la línea VUELVE ENTERA (0.9.0: media línea revertida deja el diff a medias).
+test("fila roja: pinto 'Cruel' → la línea vieja vuelve entera", () => {
   const before = ["uno", "Hola Cruel Mundo", "tres"];
   const after = ["uno", "tres"];
   const hunks = [{
@@ -76,7 +76,17 @@ test("fila roja: pinto 'Cruel' → la palabra reaparece como línea", () => {
   }];
   // offsets en "Hola Cruel Mundo": Cruel = [5,10)
   const r = revertFrags(before, after, hunks, [{ side: "old", line: 2, offA: 5, offB: 10 }]);
-  assert.deepEqual(r.lines, ["uno", "Cruel", "tres"]);
+  assert.deepEqual(r.lines, ["uno", "Hola Cruel Mundo", "tres"]);
+});
+
+// 0.9.0 — la pareja del↔add restaurada COMPLETA: pinto la roja de una
+// línea modificada → original vuelve, la verde pareada SE VA.
+test("fila roja de línea MODIFICADA → pareja completa (verde fuera)", () => {
+  const before = ["alpha beta gamma"];
+  const after = ["alpha delta gamma"];
+  const hunks = [{ additionStart: 1, deletionStart: 1, hunkContent: [{ type: "change", deletions: 1, additions: 1 }] }];
+  const r = revertFrags(before, after, hunks, [{ side: "old", line: 1, offA: 6, offB: 10 }]);
+  assert.deepEqual(r.lines, ["alpha beta gamma"]);
 });
 
 test("múltiples frags: verde en un archivo con dos cambios separados", () => {
@@ -94,13 +104,50 @@ test("múltiples frags: verde en un archivo con dos cambios separados", () => {
       hunkContent: [{ type: "change", deletions: 0, additions: 1 }],
     },
   ];
-  // pinto "100" entero de la línea 1 y "33" de la línea 3 — quirúrgico:
-  // se van los chars pintados (el "1" viejo NO vuelve solo)
+  // pinto "100" entero de la línea 1 (la palabra cambiada — 0.9.0: la línea
+  // vuelve al original, el "1" viejo INCLUÍDO) y "33" de la línea 3 (adición
+  // pura, sin pareja → quirúrgico: se van los chars pintados)
   const r = revertFrags(before, after, hunks, [
     { side: "new", line: 1, offA: 4, offB: 7 },
     { side: "new", line: 3, offA: 4, offB: 6 },
   ]);
-  assert.deepEqual(r.lines, ["x = ", "y = 2", "z = "]);
+  assert.deepEqual(r.lines, ["x = 1", "y = 2", "z = "]);
+});
+
+// 0.9.0 — el REBOTA del revert de línea: pintar la línea entera (o la
+// palabra cambiada) de una línea MODIFICADA tiene que restaurar el original
+// COMPLETO. Antes la cirugía dejaba "alpha  gamma": la palabra borrada se
+// perdía y la línea seguía en el diff (el revert "rebotaba").
+test("línea MODIFICADA pintada entera → vuelve al original (rebota fix)", () => {
+  const before = ["alpha beta gamma", "x"];
+  const after = ["alpha delta gamma", "x"];
+  const hunks = [{ additionStart: 1, deletionStart: 1, hunkContent: [{ type: "change", deletions: 1, additions: 1 }] }];
+  const entera = revertFrags(before, after, hunks, [{ side: "new", line: 1, offA: 0, offB: 18 }]);
+  assert.deepEqual(entera.lines, ["alpha beta gamma", "x"]);
+  const palabra = revertFrags(before, after, hunks, [{ side: "new", line: 1, offA: 6, offB: 11 }]);
+  assert.deepEqual(palabra.lines, ["alpha beta gamma", "x"]);
+  // pintar SOLO la línea sin los bordes (recortada) también es línea entera
+  const recortada = revertFrags(before, after, hunks, [{ side: "new", line: 1, offA: 6, offB: 11 }]);
+  assert.deepEqual(recortada.lines, ["alpha beta gamma", "x"]);
+});
+
+test("línea modificada: pinto 3 letras del agregado → parcial quirúrgico", () => {
+  const before = ["alpha beta gamma"];
+  const after = ["alpha delta gamma"];
+  const hunks = [{ additionStart: 1, deletionStart: 1, hunkContent: [{ type: "change", deletions: 1, additions: 1 }] }];
+  // "del" de "delta" [6,9): se van esas letras, el resto queda
+  const r = revertFrags(before, after, hunks, [{ side: "new", line: 1, offA: 6, offB: 9 }]);
+  assert.deepEqual(r.lines, ["alpha ta gamma"]);
+});
+
+test("dos palabras agregadas, pinto una → partial SIN doble espacio", () => {
+  const before = ["alpha beta gamma"];
+  const after = ["alpha delta epsilon gamma"];
+  const hunks = [{ additionStart: 1, deletionStart: 1, hunkContent: [{ type: "change", deletions: 1, additions: 1 }] }];
+  const una = revertFrags(before, after, hunks, [{ side: "new", line: 1, offA: 6, offB: 11 }]);
+  assert.deepEqual(una.lines, ["alpha epsilon gamma"]);
+  const dos = revertFrags(before, after, hunks, [{ side: "new", line: 1, offA: 6, offB: 19 }]);
+  assert.deepEqual(dos.lines, ["alpha beta gamma"]);
 });
 
 test("mergeRanges solapa y ordena", () => {
