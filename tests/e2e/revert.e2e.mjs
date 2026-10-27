@@ -191,6 +191,15 @@ await cdp("Page.navigate", { url: `http://127.0.0.1:${PORT}/panel` });
 await sleep(700);
 await evalJs(`(() => {
   window.__E2E = {
+    head(rel) {
+      const e = [...__DA.rendered.values()].find((x) => x.path === rel);
+      if (!e) return null;
+      const h = e.section.querySelector(".file-head");
+      if (!h) return null;
+      h.scrollIntoView({ block: "start" });
+      const r = h.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2, collapsed: e.section.classList.contains("collapsed") };
+    },
     locate(rel, needle, type) {
       const entry = [...__DA.rendered.values()].find((e) => e.path === rel);
       if (!entry) return { error: "no entry " + rel };
@@ -224,7 +233,7 @@ await evalJs(`(() => {
           return r.getBoundingClientRect();
         };
         const full = box(idx, idx + needle.length);
-        if (!full) continue;
+        if (!full || full.width < 5) return { error: "rect degenerado (¿archivo colapsado?) para " + needle };
         const chars = [];
         for (let i = 0; i < needle.length; i++) {
           const c = box(idx + i, idx + i + 1);
@@ -238,7 +247,8 @@ await evalJs(`(() => {
       }
       return { error: "sin fila con " + needle + " (" + type + ")" };
     },
-    frags(rel) { return [...(__DA.fragSel.get(rel) ?? [])].map((f) => ({ text: f.text, offA: f.offA, offB: f.offB })); },
+    frags(rel) { return [...(__DA.fragSel.get(rel) ?? [])].map((f) => ({ text: f.text, offA: f.offA, offB: f.offB, first: f.firstRowIdx, last: f.lastRowIdx })); },
+    allFrags() { const o = {}; for (const [p, v] of __DA.fragSel) o[p] = v.map((f) => ({ text: f.text, first: f.firstRowIdx, last: f.lastRowIdx })); return o; },
     stripes(rel) { const e = [...__DA.rendered.values()].find((x) => x.path === rel); return e ? e.body.querySelectorAll(".frag-stripe").length : -1; },
     hasRowText(rel, needle) {
       const e = [...__DA.rendered.values()].find((x) => x.path === rel);
@@ -291,14 +301,22 @@ const until = async (fn, ms = 5000, stepMs = 90) => {
 const waitPaint = async (rel, n) => {
   const ok = await until(async () => ((await evalJs(`__E2E.frags(${JSON.stringify(rel)})`)).length >= n ? true : false), 5000);
   if (!ok) {
-    console.error("    diag:", await evalJs(`(document.querySelector('.diag-chip')?.__log ?? []).slice(-10).join(' ⏐ ')`).catch((e) => "diag?" + e.message));
+    console.error("    diag:", await evalJs(`(document.querySelector('.diag-chip')?.__log ?? []).slice(-20).join(' ⏐ ')`).catch((e) => "diag?" + e.message));
     console.error("    selection:", JSON.stringify(await evalJs(`String(document.getSelection())`).catch(() => "?")));
+    console.error("    allFrags:", JSON.stringify(await evalJs(`__E2E.allFrags()`).catch(() => "?")));
     await shot("debug-no-paint.png");
   }
   return ok;
 };
 const readDisk = (rel) => fs.readFileSync(path.join(REPO, rel), "utf8");
 const waitDisk = async (rel, pred, label) => until(async () => pred(readDisk(rel)), 6000);
+const expandFile = async (rel) => {
+  const h = await evalJs(`__E2E.head(${JSON.stringify(rel)})`);
+  if (!h) throw new Error("sin header para " + rel);
+  if (h.collapsed) { await click(h.x, h.y); await sleep(350); }
+  const h2 = await evalJs(`__E2E.head(${JSON.stringify(rel)})`);
+  if (h2.collapsed) throw new Error("no pude expandir " + rel);
+};
 const clickRevert = async () => {
   const p = await until(async () => await evalJs("__E2E.popRev()"), 3000);
   if (!p) throw new Error("no apareció el popup ↩");
@@ -307,6 +325,7 @@ const clickRevert = async () => {
 
 try {
   // ============ A. doble-click en la palabra cambiada "singular" ============
+  await expandFile(NOTES);
   let loc = await evalJs(`__E2E.locate(${JSON.stringify(NOTES)}, "singular", "change-addition")`);
   check(loc && !loc.error, "localizo fila verde con 'singular'", loc?.error ?? "");
   await dblclick((loc.left + loc.right) / 2, loc.y);
@@ -396,6 +415,7 @@ try {
   await shot("06-tras-revert-fila-roja.png");
 
   // ============ I. cajitas del gutter (drag vertical) → revert de línea en server.ts ============
+  await expandFile(SERVER_TS);
   loc = await evalJs(`__E2E.locate(${JSON.stringify(SERVER_TS)}, '"ready"', "change-addition")`);
   check(loc && !loc.error, "localizo fila verde con \\\"ready\\\" en server.ts", loc?.error ?? "");
   check(loc.gutterX, "tengo la coordenada del gutter");
