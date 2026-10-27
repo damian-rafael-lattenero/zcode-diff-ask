@@ -1126,29 +1126,34 @@ function selectionAsk() {
 // Las líneas parciales (media primera/media última) matchean por inclusión
 // mutua de texto; las líneas vacías matchean cualquier fila (no discriminan).
 function matchRowsToLines(rows, lines, near = -1) {
-  if (!lines.length || lines.length > rows.length) return null;
+  // El String(sel) RETARGETEADO puede llegar INFLADO (trae contenido de más,
+  // p.ej. todo el archivo) y las líneas vacías matchean cualquier fila. Las
+  // vacías NO cuentan: el largo de la corrida = líneas con contenido, y las
+  // vacías del texto pueden caer en cualquier fila de la corrida.
+  const real = lines.map((l) => l.trim()).filter(Boolean);
+  if (!real.length || real.length > rows.length) return null;
+  const match1 = (line, row) => {
+    const rowText = (row.textContent ?? "").trim();
+    return rowText === line || rowText.includes(line) || line.includes(rowText);
+  };
   const runs = [];
-  for (let start = 0; start + lines.length <= rows.length; start++) {
+  for (let start = 0; start + real.length <= rows.length; start++) {
     let ok = true;
-    for (let li = 0; li < lines.length; li++) {
-      const rowText = (rows[start + li].textContent ?? "").trim();
-      const line = lines[li].trim();
-      if (line && rowText !== line && !rowText.includes(line) && !line.includes(rowText)) { ok = false; break; }
+    for (let li = 0; li < real.length; li++) {
+      if (!match1(real[li], rows[start + li])) { ok = false; break; }
     }
     if (ok) runs.push(start);
   }
   if (!runs.length) return null;
-  // texto repetido (el mismo código en contexto Y en la adición): gana la
-  // corrida más cercana a dónde soltaste el mouse (geometría real)
+  // texto repetido o inflado: gana la corrida MÁS CERCANA a dónde soltaste
+  // el mouse (geometría real), y entre empatadas la MÁS CORTA en distancia
   let start = runs[0];
-  if (near >= 0) {
-    let best = Infinity;
-    for (const r of runs) {
-      const d = Math.abs(r + lines.length / 2 - near);
-      if (d < best) { best = d; start = r; }
-    }
+  let best = Infinity;
+  for (const r of runs) {
+    const d = near >= 0 ? Math.abs(r + real.length / 2 - near) : r === 0 ? 0 : Infinity;
+    if (d < best) { best = d; start = r; }
   }
-  return rows.slice(start, start + lines.length);
+  return rows.slice(start, start + real.length);
 }
 
 function selectionFromText(sel, text) {
@@ -1362,18 +1367,35 @@ document.addEventListener("pointercancel", endBoxDrag, true);
 let selTimer = null;
 document.addEventListener("selectionchange", () => {
   clearTimeout(selTimer);
-  selTimer = setTimeout(() => {
-    const info = selectionAsk();
-    // en edición la selección de texto es DEL EDITOR — no pinta nada
-    if (info && !info.entry.edit) {
-      paintFromSelection(info.entry, info.rows, info.text);
-    } else {
-      if (info?.entry?.edit) diagSel("selchg → archivo en edición, ignorada");
-      // colapsada: si hay cajitas (gutter) o frags pintados, el popup sobrevive
-      if (!boxSel.size && !fragSelTotal()) hideSelPop("seleccionó nada");
-    }
-  }, 150);
+  selTimer = setTimeout(paintCurrentSelection, 150);
 });
+
+// FLUJO ÚNICO de pintado (0.8.4): 1) geometría del drag (caret sobre el
+// shadow — inmune al retargeting de Chromium); 2) match por texto (fallback);
+// 3) nada. Antes selectionAsk era el portero y si su texto inflado no
+// matcheaba, el pintado moría aunque la geometría del drag fuera perfecta.
+function paintCurrentSelection() {
+  const sel = document.getSelection();
+  if (!sel || !String(sel).trim()) {
+    if (!boxSel.size && !fragSelTotal()) hideSelPop("seleccionó nada");
+    return;
+  }
+  // 1) drag conocido → entry por hit-test del punto inicial, frag por carets
+  if (dragPath && Date.now() - dragPath.at < 1500) {
+    const A = pointToRowInfo(dragPath.x0, dragPath.y0, true);
+    diagSel(`caret A=${A?.fail ?? A.entry.path.slice(-18) + "@" + A.idx} drag=${dragPath.x0},${dragPath.y0}`);
+    const entry = A?.entry && rendered.get(A.entry.path) ? A.entry : null;
+    if (entry && !entry.edit) {
+      const byCaret = caretFrag(entry);
+      if (byCaret) return void toggleFrag(entry, byCaret);
+      diagSel("caretFrag ✗ sobre el entry del drag (sigue por texto)");
+    }
+  }
+  // 2) fallback: selección → filas por rango/texto → offsets derivados
+  const info = selectionAsk();
+  if (info && !info.entry.edit) paintFromSelection(info.entry, info.rows, info.text);
+  else if (info?.entry?.edit) diagSel("selchg → archivo en edición, ignorada");
+}
 
 // 0.7.4 respaldo: si por lo que fuere el selectionchange no llegara (webview
 // raro, foco, IME), el pointerup re-intenta el mismo flujo 180ms después.
@@ -1385,11 +1407,9 @@ document.addEventListener("pointerup", (e) => {
     if (selPop) return;
     const sel = document.getSelection();
     if (!sel || !String(sel).trim()) return; // retarget: no confiar en isCollapsed
-    const info = selectionAsk();
-    if (info && !info.entry.edit) {
-      diagSel("respaldo pointerup → pintando frag");
-      paintFromSelection(info.entry, info.rows, info.text);
-    }
+    const before = fragSelTotal();
+    paintCurrentSelection();
+    if (fragSelTotal() > before) diagSel("respaldo pointerup → pintó");
   }, 180);
 }, true);
 
@@ -1542,21 +1562,24 @@ document.addEventListener("pointermove", (e) => {
 // (shadowRoot.elementFromPoint SÍ devuelve el elemento interno — y los spans
 // del highlighting son tokens, así que la suma de hermanos previos da offset
 // con precisión de palabra). caretRangeFromPoint NO sirve: retargetea.
-function pointToRowInfo(x, y) {
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+function pointToRowInfo(x, y, why = false) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return why ? { fail: "coords" } : null;
   for (const e of rendered.values()) {
     const host = e.body.querySelector("diffs-container");
     if (!host?.shadowRoot) continue;
     const r = host.getBoundingClientRect();
     if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
     const inner = host.shadowRoot.elementFromPoint(x, y);
-    if (!inner) continue;
+    if (!inner) {
+      if (why) return { fail: "sin inner " + e.path.slice(-16) };
+      continue; // probar el próximo archivo — no es culpa suya
+    }
     let node = inner;
     while (node && !node.hasAttribute?.("data-line")) node = node.parentElement;
-    if (!node?.hasAttribute?.("data-line")) return null;
+    if (!node?.hasAttribute?.("data-line")) return why ? { fail: "walk sin DL desde " + inner.nodeName } : null;
     const rows = contentRowsOf(e);
     const idx = rows.indexOf(node);
-    if (idx < 0) return null;
+    if (idx < 0) return why ? { fail: "idx -1 en " + e.path.slice(-16) } : null;
     const span = node.querySelector("span");
     const spanText = span?.textContent ?? "";
     let off = spanText.length;
@@ -1585,7 +1608,10 @@ function caretFrag(entry) {
   if (!dragPath || Date.now() - dragPath.at > 1200) return null;
   const A = pointToRowInfo(dragPath.x0, dragPath.y0);
   const B = pointToRowInfo(dragPath.x1, dragPath.y1);
-  if (!A || !B || A.entry !== entry || B.entry !== entry) return null;
+  if (!A || !B || A.entry !== entry || B.entry !== entry) {
+    diagSel(`caretFrag ✗ A=${A ? A.entry.path.slice(-14) : "null"} B=${B ? B.entry.path.slice(-14) : "null"} (cae al match por texto)`);
+    return null;
+  }
   if (A.idx === B.idx && B.off <= A.off) return null; // degenerado (doble-click)
   const first = A.idx <= B.idx ? A : B;
   const last = A.idx <= B.idx ? B : A;
@@ -1680,32 +1706,57 @@ function renderFragUI(entry) {
     entry.body.appendChild(layer);
   }
   layer.textContent = "";
+  try {
+    renderFragRows(entry, layer, frags);
+  } catch (err) {
+    // telemetría del throw: fila/datos exactos que lo causan
+    const rows = contentRowsOf(entry);
+    const dump = frags.flatMap((f) => {
+      const out = [];
+      for (let i = f.firstRowIdx; i <= f.lastRowIdx && out.length < 4; i++) {
+        const c = rows[i];
+        out.push({ i, hay: !!c, span: !!c?.querySelector("span"), tc: (c?.textContent ?? "").length, offA: f.offA, offB: f.offB, tipo: c?.dataset?.lineType });
+      }
+      return out;
+    });
+    diagSel(`fragUI THROW ${err.message} ⟵ ${String(err.stack ?? "").split("\n").slice(1, 3).join(" ;; ").slice(0, 200)} ;; ${JSON.stringify(dump).slice(0, 160)}`);
+  }
+}
+
+function renderFragRows(entry, layer, frags) {
   const crows = contentRowsOf(entry);
   const bodyRect = entry.body.getBoundingClientRect();
   const frag = document.createDocumentFragment();
   for (const f of frags) {
     for (let i = f.firstRowIdx; i <= f.lastRowIdx; i++) {
-      const row = crows[i];
-      if (!row) continue;
-      const rt = row.querySelector("span")?.textContent ?? row.textContent ?? "";
-      const a = i === f.firstRowIdx ? f.offA : 0;
-      const b = i === f.lastRowIdx ? Math.min(f.offB, rt.length) : rt.length;
-      if (b <= a) continue;
-      let rects;
-      const span = row.querySelector("span");
-      if (span) {
-        try { rects = [...plainOffsetToRange(span, a, b).getClientRects()]; } catch { rects = []; }
-      }
-      if (!rects.length) rects = [row.getBoundingClientRect()];
-      for (const r of rects) {
-        if (!r.width && !r.height) continue;
-        const d = document.createElement("div");
-        d.className = "frag-stripe";
-        d.style.top = `${r.top - bodyRect.top}px`;
-        d.style.left = `${r.left - bodyRect.left}px`;
-        d.style.width = `${r.width}px`;
-        d.style.height = `${r.height}px`;
-        frag.appendChild(d);
+      // fila a fila a prueba de todo: una fila rara no puede tumbar el
+      // pintado entero (y si explota, el dump dice exactamente qué era)
+      try {
+        const row = crows[i];
+        if (!row) continue;
+        const rt = row.querySelector("span")?.textContent ?? row.textContent ?? "";
+        const a = i === f.firstRowIdx ? f.offA : 0;
+        const b = i === f.lastRowIdx ? Math.min(f.offB, rt.length) : rt.length;
+        if (b <= a) continue;
+        let rects;
+        const span = row.querySelector("span");
+        if (span) {
+          try { rects = [...plainOffsetToRange(span, a, b).getClientRects()]; } catch { rects = []; }
+        }
+        if (!rects.length) rects = [row.getBoundingClientRect()];
+        for (const r of rects) {
+          if (!r.width && !r.height) continue;
+          const d = document.createElement("div");
+          d.className = "frag-stripe";
+          d.style.top = `${r.top - bodyRect.top}px`;
+          d.style.left = `${r.left - bodyRect.left}px`;
+          d.style.width = `${r.width}px`;
+          d.style.height = `${r.height}px`;
+          frag.appendChild(d);
+        }
+      } catch (err) {
+        const c = crows[i];
+        diagSel(`fila ${i} THROW ${err.message} ⟵ nodeType=${c?.nodeType} tc=${typeof c?.textContent} span=${!!c?.querySelector?.("span")} kids=${c?.childNodes?.length}`);
       }
     }
   }
