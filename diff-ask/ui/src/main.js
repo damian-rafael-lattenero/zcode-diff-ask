@@ -2009,30 +2009,24 @@ function markChangedWords(entry) {
   const hostH = Math.round(host?.getBoundingClientRect().height ?? -1);
   let sig = `${rows.length}:${hostH}`;
   for (const r of rows) if (r.dataset.lineType === "change-deletion" || r.dataset.lineType === "change-addition") sig += ":" + (r.textContent || "").length;
-  if (entry._wcSig === sig && layer && layer.childElementCount > 0) return;
-  entry._wcSig = sig;
-  if (!layer) {
-    layer = document.createElement("div");
-    layer.className = "wc-layer";
-    entry.body.appendChild(layer);
-  }
-  layer.textContent = "";
-  // hunks：连续的 deletion 行随后连续的 addition 行
+  // UNA fila por línea + hover corren SIEMPRE, ANTES del gate de firma: el
+  // componente re-crea las filas en cada render y con contenido idéntico
+  // (refresh SSE duplicado) la firma no cambia — si esto quedara adentro
+  // del gate, las filas NUEVAS llegaban sin colapsar y la roja pareada
+  // REAPARECÍA duplicada (bug visto en la prueba de Damian 27/10).
   const groups = [];
-  let i = 0;
-  while (i < rows.length) {
-    if (rows[i]?.dataset?.lineType === "change-deletion") {
-      const dels = [];
-      const adds = [];
-      while (i < rows.length && rows[i].dataset.lineType === "change-deletion") dels.push(rows[i++]);
-      while (i < rows.length && rows[i].dataset.lineType === "change-addition") adds.push(rows[i++]);
-      if (dels.length && adds.length) groups.push({ dels, adds });
-    } else i++;
+  {
+    let i = 0;
+    while (i < rows.length) {
+      if (rows[i]?.dataset?.lineType === "change-deletion") {
+        const dels = [];
+        const adds = [];
+        while (i < rows.length && rows[i].dataset.lineType === "change-deletion") dels.push(rows[i++]);
+        while (i < rows.length && rows[i].dataset.lineType === "change-addition") adds.push(rows[i++]);
+        if (dels.length && adds.length) groups.push({ dels, adds });
+      } else i++;
+    }
   }
-  // UNA fila por línea modificada (spec Damian 0.9.4: "el par rojo+verde me
-  // duplica las palabras que no cambiaron"): la fila ROJA pareada se oculta
-  // y la verde guarda el original en dataset.daOld para el hover. Las
-  // borradas PURAS (sin pareja) siguen rojas y visibles como siempre.
   for (const r of rows) {
     if (r._daHidden) { r.style.display = ""; delete r._daHidden; }
     if (r.dataset.daOld) delete r.dataset.daOld;
@@ -2045,6 +2039,32 @@ function markChangedWords(entry) {
       g.dels[k]._daHidden = true;
     }
   }
+  bindOldLineHover(entry);
+  // el color de las cajitas es el VERDE/ROJO REAL del diff: se muestrea el
+  // backgroundColor de una fila (+/-) del propio componente (respeta tema
+  // claro/oscuro) y se aplana a rgb sólido — la cajita sólo SUMA un 25%
+  // encima de la fila (spec Damian 0.9.6).
+  const solid = (row) => {
+    if (!row) return null;
+    const m = getComputedStyle(row).backgroundColor.match(/rgba?\(([\d.]+), ?([\d.]+), ?([\d.]+)/);
+    return m ? `rgb(${m[1]}, ${m[2]}, ${m[3]})` : null;
+  };
+  const g = solid(rows.find((r) => r.dataset.lineType === "change-addition"));
+  const d = solid(rows.find((r) => r.dataset.lineType === "change-deletion"));
+  if (layer) {
+    if (g) layer.style.setProperty("--wc-green", g);
+    if (d) layer.style.setProperty("--wc-red", d);
+  }
+  if (entry._wcSig === sig && layer && layer.childElementCount > 0) return;
+  entry._wcSig = sig;
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.className = "wc-layer";
+    entry.body.appendChild(layer);
+  }
+  layer.textContent = "";
+  // (groups ya está armado arriba, antes del gate de firma — el colapso
+  // de pares lo necesita en CADA render, no sólo cuando cambian los rects)
   const frag = document.createDocumentFragment();
   for (const g of groups) {
     const n = Math.min(g.dels.length, g.adds.length);
@@ -2057,8 +2077,8 @@ function markChangedWords(entry) {
       for (const [a, b] of r.addWs ?? []) wcAddDot(frag, g.adds[k], a, b, bodyRect, "wc-ws-add");
     }
   }
+  layer.textContent = "";
   layer.appendChild(frag);
-  bindOldLineHover(entry);
 }
 
 // Burbuja de la línea ORIGINAL al hover de una fila modificada (la vieja
