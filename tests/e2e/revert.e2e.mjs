@@ -676,11 +676,14 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(mods.redHidden === true, "la fila ROJA pareada está OCULTA (una fila por línea)");
   check(mods.greenPaired && (mods.daOld ?? "").includes("alpha (words)"), "la fila verde guarda el original para el hover");
   const greenLoc = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "Marker words:")`);
-  await mouse.move((greenLoc.left + greenLoc.right) / 2, greenLoc.y);
+  // hover LIMPIO: buttons 0 — mouse.move lleva buttons:1 (para drags) y el
+  // panel ignora pointerover con botón apretado (no burbujas al pintar)
+  await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: (greenLoc.left + greenLoc.right) / 2, y: greenLoc.y, button: "none", buttons: 0 });
   const popM = await until(async () => (await evalJs(`document.querySelector(".da-old-pop")`)) !== null, 3500);
   check(popM, "el hover sobre la línea modificada abre la burbuja del original");
   const popText = await evalJs(`document.querySelector(".da-old-pop")?.textContent ?? ""`);
   check(popText.includes("alpha (words)"), `la burbuja muestra la línea VIEJA (${JSON.stringify(popText.slice(0, 60))})`);
+  check(popText.includes("antes"), "la burbuja está ETIQUETADA como el antes (no es una copia más)");
   await shot("12-una-fila-por-linea-hover.png");
 
   // ============ salud general del panel ============

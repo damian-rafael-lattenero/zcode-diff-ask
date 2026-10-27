@@ -886,6 +886,14 @@ button.fedit.on {
   box-shadow: 0 4px 14px #000000cc;
 }
 .da-old-pop .da-old-del { background: #f8514955; border-radius: 2px; padding: 0 1px; }
+.da-old-pop .da-old-head {
+  color: #f85149bb;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 3px;
+}
 /* 编辑模式下纯编辑视图：词级标记同样隐藏 */
 .file.editing .wc-layer { display: none; }
 /* botones ? y ↩ de modo brocha (junto a ✏️) */

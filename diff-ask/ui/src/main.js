@@ -2073,6 +2073,7 @@ function bindOldLineHover(entry) {
   let pop = null;
   const hide = () => { clearTimeout(timer); pop?.remove(); pop = null; };
   host.shadowRoot.addEventListener("pointerover", (e) => {
+    if (e.buttons) return; // arrastrando/pintando: nada de burbujas
     const row = e.target?.closest?.("[data-line]");
     if (!row?.dataset?.daOld) return;
     clearTimeout(timer);
@@ -2080,8 +2081,17 @@ function bindOldLineHover(entry) {
       hide();
       const oldLine = row.dataset.daOld;
       const dels = changedWordRanges(oldLine, row.textContent ?? "")?.del ?? [];
+      // sin REMOVIDAS no hay nada que rescatar del antes: la fila YA es el
+      // texto final y las cajas marcan lo nuevo — una copia "antes" casi
+      // idéntica sólo DUPLICA la línea y confunde (spec Damian 27/10:
+      // "quiero leer el texto final, las palabras nuevas una única vez").
+      if (!dels.length) return;
       pop = document.createElement("div");
       pop.className = "da-old-pop";
+      const head = document.createElement("div");
+      head.className = "da-old-head";
+      head.textContent = "antes · línea original — removidas en rojo";
+      pop.append(head);
       let last = 0;
       for (const [a, b] of dels) {
         pop.append(oldLine.slice(last, a));
