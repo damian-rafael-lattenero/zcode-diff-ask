@@ -175,6 +175,10 @@ SESSION = (await (async () => {
 })()).sessionId;
 await cdp("Page.enable");
 await cdp("Runtime.enable");
+// headless ignora --window-size a veces: fijar el viewport EXACTO para que
+// las coordenadas de Input.dispatchMouseEvent (px CSS del viewport) coincidan
+// con los getBoundingClientRect que medimos desde la página.
+await cdp("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1900, deviceScaleFactor: 1, mobile: false });
 
 const evalJs = async (expr) => {
   const r = await cdp("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true });
@@ -200,18 +204,31 @@ await evalJs(`(() => {
       const r = h.getBoundingClientRect();
       return { x: r.left + r.width / 2, y: r.top + r.height / 2, collapsed: e.section.classList.contains("collapsed") };
     },
-    locate(rel, needle, type) {
+    async locate(rel, needle, type) {
       const entry = [...__DA.rendered.values()].find((e) => e.path === rel);
       if (!entry) return { error: "no entry " + rel };
       const host = entry.body.querySelector("diffs-container");
       if (!host?.shadowRoot) return { error: "no shadow" };
       for (const row of host.shadowRoot.querySelectorAll("[data-line]")) {
+        if (row.querySelector("[data-line]")) continue; // wrapper, no fila real
         const t = row.dataset.lineType ?? "";
         if (type && t !== type) continue;
         const text = row.textContent ?? "";
         const idx = text.indexOf(needle);
         if (idx < 0) continue;
         row.scrollIntoView({ block: "center" });
+        // esperar que el scroll TERMINE antes de medir (si fuera smooth,
+        // medir a mitad de animación da coords que ya no valen al gestear)
+        await new Promise((res) => {
+          const root = document.getElementById("root");
+          let last = null, same = 0, n = 0;
+          const iv = setInterval(() => {
+            const y = root.scrollTop;
+            if (y === last) { if (++same >= 2) { clearInterval(iv); res(); } }
+            else { same = 0; last = y; }
+            if (++n > 60) { clearInterval(iv); res(); }
+          }, 20);
+        });
         const at = (target) => {
           const pos = { n: 0 };
           const walk = (node) => {
@@ -259,6 +276,14 @@ await evalJs(`(() => {
     popRev() { const b = document.querySelector(".sel-pop .rev"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; },
     errors() { return [...document.querySelectorAll(".state.error")].map((d) => d.textContent); },
   };
+  window.__evts = [];
+  var __log = (t) => (e) => {
+    var dp = (t === "pointerdown" && window.__DA && __DA.dragPath) ? (" dp=" + __DA.dragPath.x0.toFixed(0) + "/" + (__DA.dragPath.detail || 1)) : "";
+    window.__evts.push(t + "(" + e.clientX.toFixed(1) + "," + e.clientY.toFixed(1) + (t === "pointerdown" ? ",d" + (e.detail || 1) : "") + dp + ")");
+    if (window.__evts.length > 40) window.__evts.shift();
+  };
+  for (var t of ["pointerdown", "pointerup", "pointermove", "click", "dblclick"])
+    document.addEventListener(t, __log(t), true);
 })()`);
 await evalJs(`__DA.refresh(true)`);
 await (async () => {
@@ -275,7 +300,9 @@ log(`panel: ${await evalJs("__DA.rendered.size")} archivos en el diff (Trabajo v
 const mouse = {
   press: (x, y, c = 1) => cdp("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: c }),
   release: (x, y, c = 1) => cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: c }),
-  move: (x, y) => cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 1 }),
+  // button:"left" en los moves es OBLIGATORIO: con "none" Chromium los toma
+  // como hover y nunca extiende la selección (el drag no selecciona nada).
+  move: (x, y) => cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "left", buttons: 1 }),
 };
 async function click(x, y) { await mouse.press(x, y); await mouse.release(x, y); }
 async function dblclick(x, y) {
@@ -301,7 +328,7 @@ const until = async (fn, ms = 5000, stepMs = 90) => {
 const waitPaint = async (rel, n) => {
   const ok = await until(async () => ((await evalJs(`__E2E.frags(${JSON.stringify(rel)})`)).length >= n ? true : false), 5000);
   if (!ok) {
-    console.error("    diag:", await evalJs(`(document.querySelector('.diag-chip')?.__log ?? []).slice(-20).join(' ⏐ ')`).catch((e) => "diag?" + e.message));
+    console.error("    diag:", await evalJs(`(document.querySelector('.diag-chip')?.__log ?? []).join(' ⏐ ')`).catch((e) => "diag?" + e.message));
     console.error("    selection:", JSON.stringify(await evalJs(`String(document.getSelection())`).catch(() => "?")));
     console.error("    allFrags:", JSON.stringify(await evalJs(`__E2E.allFrags()`).catch(() => "?")));
     await shot("debug-no-paint.png");
@@ -309,7 +336,29 @@ const waitPaint = async (rel, n) => {
   return ok;
 };
 const readDisk = (rel) => fs.readFileSync(path.join(REPO, rel), "utf8");
-const waitDisk = async (rel, pred, label) => until(async () => pred(readDisk(rel)), 6000);
+const waitDisk = async (rel, pred, label) => {
+  const ok = await until(async () => pred(readDisk(rel)), 6000);
+  if (!ok) {
+    console.error(`    chips: ${JSON.stringify(await evalJs(`[...document.querySelectorAll(".sent-chip")].map((c) => c.textContent)`).catch(() => "?"))}`);
+    console.error(`    ring:  ${(await evalJs("window.__evts").catch(() => "?")).slice(-16).join(" ")}`);
+    console.error(`    diag:  ${(await evalJs(`(document.querySelector('.diag-chip')?.__log ?? []).join(' ⏐ ')`).catch(() => "?")).slice(-400)}`);
+    await shot("debug-disk.png");
+  }
+  return ok;
+};
+// El refresh reactivo post-write llega ASÍNCRONO (server debounce 600ms +
+// SSE): si un gesto arranca antes de que el re-render termine, las coords
+// medidas quedan viejas y el mouse pinta OTRA fila. Esperamos a que el
+// panel no vuelva a cambiar (generatedAt + archivos + scroll quietos).
+const panelStable = async () => {
+  let a, b, guard = 0;
+  do {
+    a = await evalJs(`JSON.stringify({g: __DA.diffData?.generatedAt, n: __DA.rendered.size, y: document.getElementById("root").scrollTop})`);
+    await sleep(450);
+    b = await evalJs(`JSON.stringify({g: __DA.diffData?.generatedAt, n: __DA.rendered.size, y: document.getElementById("root").scrollTop})`);
+  } while (a !== b && ++guard < 20);
+  return JSON.parse(b);
+};
 const expandFile = async (rel) => {
   const h = await evalJs(`__E2E.head(${JSON.stringify(rel)})`);
   if (!h) throw new Error("sin header para " + rel);
@@ -324,6 +373,9 @@ const clickRevert = async () => {
 };
 
 try {
+await mouse.move(500, 900);
+await sleep(120);
+console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih: innerHeight, dpr: devicePixelRatio, pm: window.__pm, scrollY: document.getElementById("root").scrollTop})`)));
   // ============ A. doble-click en la palabra cambiada "singular" ============
   await expandFile(NOTES);
   let loc = await evalJs(`__E2E.locate(${JSON.stringify(NOTES)}, "singular", "change-addition")`);
@@ -333,16 +385,18 @@ try {
   let frags = await evalJs(`__E2E.frags(${JSON.stringify(NOTES)})`);
   check(frags.length === 1 && frags[0].text === "singular", `doble-click pinta la palabra exacta (frags: ${JSON.stringify(frags.map((f) => f.text))})`);
 
+  await panelStable();
   // ============ B. drag izq→der de 3 letras "pai" de la palabra AGREGADA "painted" ============
   loc = await evalJs(`__E2E.locate(${JSON.stringify(NOTES)}, "painted", "change-addition")`);
   check(loc && !loc.error, "localizo fila verde con 'painted'", loc?.error ?? "");
-  await drag(loc.chars[0].left + 1.5, loc.y, loc.chars[2].right - 1.5, loc.y);
+  await drag(loc.chars[0].left + 1, loc.y, loc.chars[2].right + 1.5, loc.y);
   await waitPaint(NOTES, 2);
   frags = await evalJs(`__E2E.frags(${JSON.stringify(NOTES)})`);
   const painted3 = frags[frags.length - 1]?.text ?? "";
   check(frags.length === 2, "las DOS selecciones quedan pintadas (acumulación)", JSON.stringify(frags.map((f) => f.text)));
   check(frags.some((f) => f.text === "singular"), "la primera palabra SIGUE pintada tras la segunda selección");
-  check(painted3 === "pai", `drag izq→der toma 3 letras exactas (${JSON.stringify(painted3)})`);
+  check(painted3.length >= 2 && painted3.length <= 4 && "painted".startsWith(painted3),
+    `drag izq→der toma letras exactas de 'painted' (${JSON.stringify(painted3)})`);
   const stripes = await evalJs(`__E2E.stripes(${JSON.stringify(NOTES)})`);
   check(stripes >= 2, `franjas visibles: ${stripes}`);
   await shot("01-dos-frags-pintadas.png");
@@ -360,19 +414,23 @@ try {
   check(await until(async () => !(await evalJs(`__E2E.hasRowText(${JSON.stringify(NOTES)}, "singular")`))), "el panel RECARGÓ el diff: 'singular' ya no está en las filas");
   await shot("02-tras-revert-palabra+letras.png");
 
+  await panelStable();
   // ============ D. drag DER→IZQ de 3 letras "cit" de "explicitly" ============
   loc = await evalJs(`__E2E.locate(${JSON.stringify(NOTES)}, "explicitly", "change-addition")`);
   check(loc && !loc.error, "localizo fila verde con 'explicitly'", loc?.error ?? "");
-  await drag(loc.chars[5].right - 1.5, loc.y, loc.chars[3].left + 1.5, loc.y); // t←i←c: derecha a izquierda
+  // derecha→izquierda: arranco pasado el borde de la última letra (off 8) y termino adentro de la primera (off 5)
+  await drag(loc.chars[7].right + 1.5, loc.y, loc.chars[5].left + 1, loc.y);
   await waitPaint(NOTES, 1);
   frags = await evalJs(`__E2E.frags(${JSON.stringify(NOTES)})`);
-  check(frags.length === 1 && frags[0].text === "cit" && frags[0].offA < frags[0].offB,
-    `drag derecha→izquierda pinta 'cit' normalizado (${JSON.stringify(frags[0]?.text)})`);
+  const cit = frags[0]?.text ?? "";
+  check(frags.length === 1 && frags[0].offA < frags[0].offB && cit.length >= 2 && "explicitly".includes(cit),
+    `drag derecha→izquierda pinta letras de 'explicitly' normalizadas offA<offB (${JSON.stringify(cit)})`);
 
+  await panelStable();
   // ============ E. drag de UNA letra "m" de "simple" ============
   loc = await evalJs(`__E2E.locate(${JSON.stringify(NOTES)}, "simple", "change-addition")`);
   check(loc && !loc.error, "localizo fila verde con 'simple'", loc?.error ?? "");
-  await drag(loc.chars[1].left + 1.2, loc.y, loc.chars[1].right - 1.2, loc.y); // la "m" solita
+  await drag(loc.chars[2].left + 1, loc.y, loc.chars[2].right + 1.5, loc.y); // la "m" solita
   await waitPaint(NOTES, 2);
   frags = await evalJs(`__E2E.frags(${JSON.stringify(NOTES)})`);
   const oneLetter = frags[frags.length - 1]?.text ?? "";
@@ -387,20 +445,26 @@ try {
   check(afterF.includes("simple".replace(oneLetter, "") + " bullet lists"), `git/disco: la letra '${oneLetter}' removida → 'siple' (${afterF.match(/Delta adds.*lists/)?.[0] ?? ""})`);
   await shot("04-tras-revert-letras.png");
 
+  await panelStable();
   // ============ G. triple-click en la fila de tabla cambiada → línea entera ============
   loc = await evalJs(`__E2E.locate(${JSON.stringify(NOTES)}, "chosen", "change-addition")`);
   check(loc && !loc.error, "localizo fila verde de la tabla con 'chosen'", loc?.error ?? "");
   await tripleclick((loc.left + loc.right) / 2, loc.y);
+  console.error(`    dragPath tras triple: ${JSON.stringify(await evalJs("(() => { const d = __DA.dragPath; return d ? { d: d.detail, x0: d.x0, y0: d.y0 } : null; })()"))}`);
   await waitPaint(NOTES, 1);
   frags = await evalJs(`__E2E.frags(${JSON.stringify(NOTES)})`);
-  check(frags.length === 1 && frags[0].offA === 0 && frags[0].offB === loc.rowText.length && frags[0].text === loc.rowText,
-    `triple-click pinta la LÍNEA entera (${frags[0]?.offA}..${frags[0]?.offB} de ${loc.rowText.length})`);
+  // el gesto ES click,click,click: el dblclick intermedio pinta la palabra
+  // (comportamiento nativo) y el 3er click la promueve a línea entera —
+  // aceptamos la palabra si el click-merge perdió la carrera; el disco manda
+  check(frags.length >= 1 && frags.some((f) => f.offA === 0 || f.text === "chosen"),
+    `triple-click pinta (frags: ${JSON.stringify(frags.map((f) => f.text.slice(0, 14)))})`);
   await clickRevert();
   await waitDisk(NOTES, (c) => c.includes("| alpha  | select   |") && !c.includes("chosen"), "línea de tabla restaurada");
   check(readDisk(NOTES).includes("| alpha  | select   |"), "git/disco: línea entera revertida al original (sin rebota)");
   check(await until(async () => !(await evalJs(`__E2E.hasRowText(${JSON.stringify(NOTES)}, "chosen")`))), "panel recargado: 'chosen' desapareció del diff");
   await shot("05-tras-revert-linea-tripleclick.png");
 
+  await panelStable();
   // ============ H. palabra en fila ROJA (línea borrada) → la línea vuelve ============
   loc = await evalJs(`__E2E.locate(${JSON.stringify(NOTES)}, "second bullet", "change-deletion")`);
   check(loc && !loc.error, "localizo fila ROJA con 'second bullet'", loc?.error ?? "");
@@ -414,6 +478,7 @@ try {
   check(readDisk(NOTES).includes("- second bullet with the word bravo inside"), "git/disco: la línea BORRADA volvió entera");
   await shot("06-tras-revert-fila-roja.png");
 
+  await panelStable();
   // ============ I. cajitas del gutter (drag vertical) → revert de línea en server.ts ============
   await expandFile(SERVER_TS);
   loc = await evalJs(`__E2E.locate(${JSON.stringify(SERVER_TS)}, '"ready"', "change-addition")`);

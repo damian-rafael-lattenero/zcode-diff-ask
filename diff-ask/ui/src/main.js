@@ -459,6 +459,10 @@ async function writeReverted(entry, content, label) {
     if (sc?.ok) {
       setBoxSel(entry, new Set());
       chip(label);
+      // recarga PROPIA del revert: no esperar al watcher reactivo (fs.watch
+      // puede comerse el evento en macOS y la vista quedaba con la base
+      // vieja → el próximo revert chocaba contra disco y se shelfaba)
+      refresh();
       return;
     }
     if (sc?.conflict) return showEditBanner(sc.message ?? "El archivo cambió en disco (gana el agente).", true);
@@ -1384,6 +1388,10 @@ document.addEventListener("selectionchange", () => {
 // 3) nada. Antes selectionAsk era el portero y si su texto inflado no
 // matcheaba, el pintado moría aunque la geometría del drag fuera perfecta.
 function paintCurrentSelection() {
+  if (dragActive) return; // a mitad del drag no pintamos: manda la selección al SOLTAR
+  // click sobre nuestra UI (↩/＋/modos): la selectionchange que sigue es el
+  // settle del click con la selección VIEJA colgando — no re-pintar (stray)
+  if (lastUiPointer) return;
   const sel = document.getSelection();
   if (!sel || !String(sel).trim()) {
     if (!boxSel.size && !fragSelTotal()) hideSelPop("seleccionó nada");
@@ -1412,8 +1420,12 @@ function paintCurrentSelection() {
 // recién creado por endBoxDrag debe sobrevivir este camino).
 document.addEventListener("pointerup", (e) => {
   if (e.button !== 0) return;
+  // click sobre nuestra UI (popup ↩/＋, botones): la selección que quede
+  // colgando es la VIEJA del gesto — no re-pintarla por texto (stray)
+  if (e.target?.closest?.(".sel-pop, .hover-plus, .big-plus, .fmode, .composer, button")) return;
   setTimeout(() => {
     if (selPop) return;
+    if (dragActive) return;
     const sel = document.getSelection();
     if (!sel || !String(sel).trim()) return; // retarget: no confiar en isCollapsed
     const before = fragSelTotal();
@@ -1580,12 +1592,27 @@ function plainOffsetToRange(span, a, b) {
 // String(sel) son confiables — caretRangeFromPoint sobre ESTOS puntos sí
 // atraviesa el shadow root y da fila+offset exactos.
 let dragPath = null;
+let dragActive = false; // botón apretado: no se pinta a mitad del gesto
+let lastUiPointer = false; // el último pointerdown cayó sobre la UI del panel
 document.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
   // detail: 1=single, 2=doble (palabra), 3+=triple (línea) — el gesto NATIVO
   // del mouse define la semántica del pintado, igual que en un editor.
   dragPath = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, at: Date.now(), detail: e.detail || 1 };
+  dragActive = true;
+  lastFragPaint = null;
+  lastUiPointer = !!e.target?.closest?.(".sel-pop, .hover-plus, .big-plus, .fmode, .composer, button");
 }, true);
+// click nativo: el detail del click es el conteo REAL del browser (el
+// pointerdown sintético/CDP a veces trae detail=1 en el tercero del
+// triple-click — el click sí sabe que fue el tercero).
+document.addEventListener("click", (e) => {
+  if (e.detail > 1 && dragPath) dragPath.detail = Math.max(dragPath.detail || 1, e.detail);
+}, true);
+document.addEventListener("pointerup", (e) => {
+  if (e.button === 0) dragActive = false;
+}, true);
+document.addEventListener("pointercancel", () => { dragActive = false; }, true);
 document.addEventListener("pointermove", (e) => {
   if (dragPath && (e.buttons & 1)) { dragPath.x1 = e.clientX; dragPath.y1 = e.clientY; }
 }, true);
@@ -1710,7 +1737,9 @@ function caretFrag(entry) {
     const rt = rowText(i);
     parts.push(rt.slice(i === first.idx ? offA : 0, i === last.idx ? offB : rt.length));
   }
-  return { firstRowIdx: first.idx, lastRowIdx: last.idx, offA, offB, text: parts.join("\n") };
+  const t = parts.join("\n");
+  if (!t.trim()) return null;
+  return { firstRowIdx: first.idx, lastRowIdx: last.idx, offA, offB, text: t };
 }
 
 // Selección → frag. PRIMERO geometría (camino del drag + carets, exacto);
@@ -1747,17 +1776,18 @@ function paintFromSelection(entry, rows, text) {
   toggleFrag(entry, frag);
 }
 
-let lastFragPaint = null; // {sig, gesture} — dedupe de re-notificaciones
+let lastFragPaint = null; // {gesture} — un gesto pinta UNA vez
 function toggleFrag(entry, frag) {
-  // Un mismo gesto genera VARIAS selectionchange (drag → release → settle):
-  // cada una re-intenta pintar el MISMO frag y el toggle lo despintaba
-  // (e2e: paint→unpaint→paint en 80ms — el "se me despintó sola" real).
-  // Idempotente dentro del gesto; entre gestos distintos el toggle sigue
-  // valiendo (repintar lo mismo a propósito = despintar, spec).
+  // Un mismo gesto genera VARIAS selectionchange (release → settle) y cada
+  // una puede re-pintar: mismo frag lo despintaba (toggle), frag DISTINTO
+  // (caret vs fallback por texto) dejaba strays (e2e: "them"+"cit" del mismo
+  // drag). Lock por gesto: la primera pintada post-release gana; un gesto
+  // NUEVO (pointerdown) resetea. Entre gestos el toggle sigue valiendo
+  // (repintar lo mismo a propósito = despintar, spec).
   const gesture = dragPath?.at ?? 0;
-  const sig = `${entry.path}|${frag.firstRowIdx}|${frag.lastRowIdx}|${frag.offA}|${frag.offB}`;
-  if (lastFragPaint?.sig === sig && lastFragPaint.gesture === gesture) return;
-  lastFragPaint = { sig, gesture };
+  if (lastFragPaint?.gesture === gesture) return;
+  lastFragPaint = { gesture };
+  diagSel(`toggle [${frag.firstRowIdx}-${frag.lastRowIdx} @${frag.offA}-${frag.offB}] "${frag.text.slice(0, 12)}" g=${gesture}`);
   lastPaintedEntry = entry;
   const list = fragSel.get(entry.path) ?? [];
   // 中文注释：画笔永远累加（spec：选一个词再选另一个，两个都保持）。
@@ -1851,6 +1881,21 @@ function renderFragRows(entry, layer, frags) {
   layer.appendChild(frag);
 }
 
+// circulito de 4px para whitespace agregado/borrado (una corrida contigua
+// de espacios = un punto, no una hilera de puntos)
+function wcAddDot(frag, row, a, b, bodyRect, cls) {
+  try {
+    const rects = plainOffsetToRange(row, a, b).getClientRects();
+    const r = rects[rects.length - 1];
+    if (!r || (!r.width && !r.height)) return;
+    const d = document.createElement("div");
+    d.className = cls;
+    d.style.left = `${r.left - bodyRect.left + r.width / 2 - 2}px`;
+    d.style.top = `${r.top - bodyRect.top + r.height / 2 - 2}px`;
+    frag.appendChild(d);
+  } catch { /* skip */ }
+}
+
 // ---- 垫片方框：行内词级变化高亮（spec：整行全红/全绿时保持原底色，
 // 只换了个别词的行把那些词用更醒目的红/绿方框标出来）----
 // 配对单位是 hunk 内同序的 del↔add 行；没配上的行（纯新增/纯删除的
@@ -1918,6 +1963,8 @@ function markChangedWords(entry) {
       if (!r) continue;
       for (const [a, b] of r.del) wcAddRects(frag, g.dels[k], a, b, bodyRect, "wc-del");
       for (const [a, b] of r.add) wcAddRects(frag, g.adds[k], a, b, bodyRect, "wc-add");
+      for (const [a, b] of r.delWs ?? []) wcAddDot(frag, g.dels[k], a, b, bodyRect, "wc-ws-del");
+      for (const [a, b] of r.addWs ?? []) wcAddDot(frag, g.adds[k], a, b, bodyRect, "wc-ws-add");
     }
   }
   layer.appendChild(frag);
@@ -3192,6 +3239,7 @@ if (window.__DA_TEST__) {
     get boxSel() { return boxSel; },
     get fragSel() { return fragSel; },
     get fragModes() { return fragModes; },
+    get dragPath() { return dragPath; },
     renderSelUI,
     refresh,
     edit: (path) => startEditing(window.__DA.rendered.get(path)),
@@ -3231,9 +3279,10 @@ if (window.__DA_TEST__) {
       });
       return { structuredContent: await r.json() };
     };
-    app.setNotificationHandler = (_schema, cb) => { window.__DA_ONUPDATE = cb; };
+    // en modo test boot() no corre: nadie registra el notification handler,
+    // así que el SSE refresca directo (mismo efecto que el notify reactivo).
     new EventSource("/events").onmessage = () => {
-      window.__DA_ONUPDATE?.({ params: { uri: diffUriFor() } });
+      try { refresh(); } catch { /* refresco best-effort */ }
     };
   } else {
   // Recursos mockeados (window.__DA_TEST__.mockResources[uri]) para ejercitar
