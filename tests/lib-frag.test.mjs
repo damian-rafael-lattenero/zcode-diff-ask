@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { revertFrags, mergeRanges, tokenizeLine } from "../diff-ask/ui/src/lib.js";
+import { revertFrags, mergeRanges, tokenizeLine, changedWordRanges } from "../diff-ask/ui/src/lib.js";
 
 // El diff de Damian: "Hola Mundo" → "Hola Cruel Mundo" (línea MODIFICADA:
 // hunk con 1 deletion + 1 addition pareados).
@@ -113,4 +113,27 @@ test("tokenizeLine separa palabras/espacios/símbolos con offsets", () => {
   assert.deepEqual(t.map((x) => x.text), ["Hola", " ", "Cruel", " ", "Mundo"]);
   assert.equal(t[2].start, 5);
   assert.equal(t[2].end, 10);
+});
+
+test("changedWordRanges: palabra suelta cambiada (spec de la almohadilla)", () => {
+  // "Hola Mundo" → "Hola Cruel Mundo": del no marca nada, add marca "Cruel"
+  const r = changedWordRanges("Hola Mundo", "Hola Cruel Mundo");
+  assert.deepEqual(r.add, [[5, 10]]);
+  assert.deepEqual(r.del, []);
+});
+
+test("changedWordRanges: intra-palabra (version → versionNew)", () => {
+  const r = changedWordRanges("return config.version", "return config.versionNew");
+  assert.deepEqual(r.del, [[14, 21]]);
+  assert.deepEqual(r.add, [[14, 24]]);
+});
+
+test("changedWordRanges: líneas idénticas → null (sin almohadilla)", () => {
+  assert.equal(changedWordRanges("línea igual", "línea igual"), null);
+});
+
+test("changedWordRanges: varias palabras sueltas por ambos lados", () => {
+  const r = changedWordRanges("el gato come pescado", "el perro come sopa");
+  assert.deepEqual(r.del, [[3, 7], [13, 20]]);
+  assert.deepEqual(r.add, [[3, 8], [14, 18]]);
 });

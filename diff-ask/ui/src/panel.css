@@ -840,6 +840,26 @@ button.fedit.on {
 }
 /* modo edición puro: sin overlays de pintado */
 .file.editing .frag-layer { display: none; }
+
+/* ---- 垫片方框：行内词级变化高亮 ---- */
+/* spec：整行全红/全绿保持原底色；只改了个别词的行，把那些词用更醒目的
+   红/绿方框（粗描边 + 实色垫底）标出，红词在删除行、绿词在新增行。 */
+.wc-layer { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
+.file-body:has(.wc-layer) { position: relative; }
+.wc-add {
+  position: absolute;
+  border-radius: 3px;
+  background: color-mix(in srgb, #3fb950 34%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, #3fb950 85%, transparent);
+}
+.wc-del {
+  position: absolute;
+  border-radius: 3px;
+  background: color-mix(in srgb, #f85149 34%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, #f85149 85%, transparent);
+}
+/* 编辑模式下纯编辑视图：词级标记同样隐藏 */
+.file.editing .wc-layer { display: none; }
 /* botones ? y ↩ de modo brocha (junto a ✏️) */
 button.fmode { padding: 2px 7px; font-weight: 700; }
 button.fmode-ask.on { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); }

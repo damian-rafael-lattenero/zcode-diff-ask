@@ -344,3 +344,34 @@ export function mergeRanges(ranges) {
   }
   return out;
 }
+
+// 行内词级 diff：一对 old/new 行中真正变化（无 LCS 匹配）的词区间 [a,b)。
+// 中文注释：给 UI 的"只改了几个词就用更醒目的红绿垫片方框标出"用
+// （spec：整行全新时保持整行红绿底色——那种情况调用方根本不配对，不会走到这）。
+// 匹配单位是 tokenizeLine 的 token（含空白 token；空白自身不参与标记）。
+export function changedWordRanges(oldLine, newLine) {
+  if (oldLine == null || newLine == null || oldLine === newLine) return null;
+  const oT = tokenizeLine(oldLine);
+  const nT = tokenizeLine(newLine);
+  const n = oT.length;
+  const m = nT.length;
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = oT[i].text === nT[j].text ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const matchO = new Int32Array(n).fill(-1);
+  const matchN = new Int32Array(m).fill(-1);
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (oT[i].text === nT[j].text) { matchO[i] = j; matchN[j] = i; i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+    else j++;
+  }
+  const del = [];
+  oT.forEach((t, k) => { if (matchO[k] === -1 && /\S/.test(t.text)) del.push([t.start, t.end]); });
+  const add = [];
+  nT.forEach((t, k) => { if (matchN[k] === -1 && /\S/.test(t.text)) add.push([t.start, t.end]); });
+  if (!del.length && !add.length) return null;
+  return { del: mergeRanges(del), add: mergeRanges(add) };
+}
