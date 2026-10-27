@@ -153,29 +153,60 @@ class SubsetShikiHighlighter extends DiffsHighlighter {
     }
   }
 
-  // lang del request: null si no viene (que el camino real decida)
-  langLoaded(options) {
-    const lang = options?.lang ?? options?.language;
-    if (!lang) return true;
-    try {
-      return this.raw.getLoadedLanguages().includes(lang);
-    } catch {
-      return false;
-    }
+  // RAW SEGURO (0.8.3): el editor/stream de pierre reciben EL CORE como
+  // highlighter (new ShikiEditorTokenizer(this.raw, ...)) y su idioma NO viene
+  // en options — se construye adentro (#textDocument.languageId). Ningún guard
+  // de llaves puede verlo; con este Proxy, getLanguage de un lang fuera del
+  // subset devuelve una GRAMÁTICA VACÍA (0 tokens, estado intacto) en vez de
+  // lanzar — ✏️ sobre .toml/.rs/.go/.c/.xml reventaba async (#prebuildStateStack,
+  // debounce 500ms) con REJECT/ONERROR.
+  safeRaw() {
+    if (this.__safeRaw) return this.__safeRaw;
+    const core = this.raw;
+    const noopGrammar = {
+      // interfaz textmate de shiki: tokenizeLine2(line, state) → {tokens, ruleStack}
+      tokenizeLine2(_line, state) {
+        return { tokens: [], ruleStack: state ?? [] };
+      },
+      tokenize(line, state) {
+        return { tokens: [], endState: state ?? [] };
+      },
+    };
+    this.__safeRaw = new Proxy(core, {
+      get(t, prop) {
+        if (prop === "getLanguage") {
+          return (name) => {
+            try {
+              if (t.getLoadedLanguages().includes(name)) return t.getLanguage(name);
+            } catch {}
+            return noopGrammar;
+          };
+        }
+        if (prop === "loadLanguage" || prop === "loadLanguageSync") {
+          return (...args) => {
+            try {
+              return t[prop]?.(...args);
+            } catch {
+              return undefined;
+            }
+          };
+        }
+        const v = Reflect.get(t, prop, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    return this.__safeRaw;
   }
 
   createEditorTokenizer(options) {
-    if (!this.raw || !this.langLoaded(options)) return PLAIN_EDITOR_TOKENIZER();
-    return new ShikiEditorTokenizer(this.raw, options, this);
+    if (!this.raw) return PLAIN_EDITOR_TOKENIZER();
+    return new ShikiEditorTokenizer(this.safeRaw(), options, this);
   }
 
   createStreamTokenizer(options) {
-    // lang fuera del subset (p.ej. .sql/.sqlite): tokenizer plano. El real
-    // explota ASYNC dentro del pipeline worker de pierre → 8× ONERROR
-    // 'reading length' (bug 0.8.1 en la app, invisible en jsdom sin workers).
-    if (!this.raw || !this.langLoaded(options)) return PLAIN_STREAM_TOKENIZER();
+    if (!this.raw) return PLAIN_STREAM_TOKENIZER();
     try {
-      return new ShikiStreamTokenizer(this.raw, this.resolveOptions(options), this);
+      return new ShikiStreamTokenizer(this.safeRaw(), this.resolveOptions(options));
     } catch {
       return PLAIN_STREAM_TOKENIZER();
     }
