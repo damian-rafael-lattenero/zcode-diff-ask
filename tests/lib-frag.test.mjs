@@ -48,10 +48,10 @@ test("línea pura adición pintada entera → la línea desaparece", () => {
   assert.deepEqual(r.lines, ["a"]);
 });
 
-// 0.9.1 — ADICIÓN PURA pintada a medias: antes la cirugía dejaba el resto
-// ("abcdef" pintado [0,3) → quedaba "def"); ahora no hay original parcial,
-// la pintada se lleva la línea ENTERA.
-test("adición pura pintada a medias → la línea se va ENTERA (0.9.1)", () => {
+// 0.9.2 — ADICIÓN PURA pintada a medias: quirúrgico, como pidió Damian
+// ("me rollbackea las 3 líneas no las 3 palabras"): se van SÓLO los chars
+// pintados y la línea queda (sólo se elimina si queda vacía).
+test("adición pura pintada a medias → queda el resto quirúrgico (0.9.2)", () => {
   const before = ["a"];
   const after = ["a", "abcdef"];
   const hunks = [{
@@ -60,14 +60,14 @@ test("adición pura pintada a medias → la línea se va ENTERA (0.9.1)", () => 
     hunkContent: [{ type: "context", lines: 1 }, { type: "change", deletions: 0, additions: 1 }],
   }];
   const r = revertFrags(before, after, hunks, [{ side: "new", line: 2, offA: 0, offB: 3 }]);
-  assert.deepEqual(r.lines, ["a"]);
+  assert.deepEqual(r.lines, ["a", "def"]);
 });
 
-// 0.9.1 — el caso exacto de la prueba manual en el fixture server.ts:
-// bloque de adición pura multi-línea, pinto UNA palabra de una línea → esa
-// línea entera se va, las hermanas del bloque quedan. Antes la cirugía
-// hueca dejaba '("GET", "", async () => {' con sintaxis rota en el diff.
-test("bloque adición pura: pinto UNA palabra de una línea → esa línea entera se va, las hermanas quedan", () => {
+// 0.9.2 — el caso exacto del reporte de Damian en el fixture server.ts:
+// bloque de adición pura multi-línea, pinto UNA palabra de una línea → se
+// va SÓLO esa palabra, la línea queda (0.9.1 la eliminaba entera: el bug
+// "me rollbackea las 3 líneas no las 3 palabras").
+test("bloque adición pura: pinto UNA palabra → se va SOLO la palabra, la línea queda", () => {
   const before = ["reg(charlie);"];
   const after = [
     "reg(charlie);",
@@ -84,21 +84,22 @@ test("bloque adición pura: pinto UNA palabra de una línea → esa línea enter
   const r = revertFrags(before, after, hunks, [{ side: "new", line: 2, offA: off, offB: off + 5 }]);
   assert.deepEqual(r.lines, [
     "reg(charlie);",
+    'register("GET", "/", async () => {',
     '  return new Response("delta", { status: 200 });',
     "});",
   ]);
 });
 
-// 0.9.1 — la verde SIN pareja dentro de un bloque mixto (la "batch_size"
-// del fixture config.json): pintada → se va entera; su hermana pareada
-// (la roja modificada con su verde) no se toca.
-test("bloque mixto: la verde sin pareja pintada → línea entera fuera, la pareada queda", () => {
+// 0.9.2 — la verde SIN pareja dentro de un bloque mixto (la "batch_size"
+// del fixture config.json): quirúrgico también — se van sólo los chars
+// pintados; su hermana pareada (la roja modificada con su verde) no se toca.
+test("bloque mixto: la verde sin pareja pintada → sólo la palabra, la pareada queda", () => {
   const before = ['    "retry_count": 3'];
   const after = ['    "retry_count": 3,', '    "batch_size": 64'];
   const hunks = [{ additionStart: 1, deletionStart: 1, hunkContent: [{ type: "change", deletions: 1, additions: 2 }] }];
   const off = after[1].indexOf("batch_size");
   const r = revertFrags(before, after, hunks, [{ side: "new", line: 2, offA: off, offB: off + 11 }]);
-  assert.deepEqual(r.lines, ['    "retry_count": 3,']);
+  assert.deepEqual(r.lines, ['    "retry_count": 3,', '    ": 64']);
 });
 
 // frag degenerado (cero chars) sobre adición pura → NO se lleva la línea.
@@ -160,12 +161,12 @@ test("múltiples frags: verde en un archivo con dos cambios separados", () => {
   ];
   // pinto "100" entero de la línea 1 (la palabra cambiada — 0.9.0: la línea
   // vuelve al original, el "1" viejo INCLUÍDO) y "33" de la línea 3 (adición
-  // pura, sin pareja → 0.9.1: la línea se va ENTERA)
+  // pura, sin pareja → 0.9.2: quirúrgico, queda "z = ")
   const r = revertFrags(before, after, hunks, [
     { side: "new", line: 1, offA: 4, offB: 7 },
     { side: "new", line: 3, offA: 4, offB: 6 },
   ]);
-  assert.deepEqual(r.lines, ["x = 1", "y = 2"]);
+  assert.deepEqual(r.lines, ["x = 1", "y = 2", "z = "]);
 });
 
 // 0.9.0 — el REBOTA del revert de línea: pintar la línea entera (o la
