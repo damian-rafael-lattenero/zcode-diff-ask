@@ -1,0 +1,28 @@
+{
+  "app": {
+    "name": "diff-ask-fixture",
+    "version": "1.0.0",
+    "description": "Stable fixture config for panel testing"
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "workers": 4,
+    "timeout_ms": 30000
+  },
+  "logging": {
+    "level": "info",
+    "format": "json",
+    "outputs": ["stdout", "file"]
+  },
+  "features": {
+    "alpha": true,
+    "bravo": false,
+    "charlie": true
+  },
+  "limits": {
+    "max_requests": 1000,
+    "max_payload_kb": 512,
+    "retry_count": 3
+  }
+}
