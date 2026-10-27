@@ -14,6 +14,7 @@
 //   - drag vertical en el gutter → cajitas (revert de línea por números)
 //   - Enter = ↩ quirúrgico; palabra de una línea 100% nueva → SOLO la palabra (0.9.2)
 //   - modo brocha ↩ del header: N pintadas acumuladas → UN rollback general (sin popups flotantes)
+//   - UNA fila por línea modificada: roja pareada oculta, original al hover (0.9.4)
 //   - coexistencia: dos palabras en la MISMA fila, drag multilínea multipalabra,
 //     palabra gemela pinta UNA sola, y drag LENTO (>1.5s) sigue vivo (0.9.3)
 // Uso: node tests/e2e/revert.e2e.mjs   (requiere Google Chrome instalado)
@@ -263,7 +264,9 @@ await evalJs(`(() => {
           return r.getBoundingClientRect();
         };
         const full = box(idx, idx + needle.length);
-        if (!full || full.width < 5) return { error: "rect degenerado (¿archivo colapsado?) para " + needle };
+        // fila OCULTA (la roja pareada, 0.9.4) u otro row sin geometría:
+        // saltarla y seguir con la próxima que contenga el needle
+        if (!full || full.width < 5) continue;
         const chars = [];
         for (let i = 0; i < needle.length; i++) {
           const c = box(idx + i, idx + i + 1);
@@ -659,6 +662,26 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(sf.length === 1 && sf[0].text === "Response",
     `L3: la palabra gemela pinta UNA sola ocurrencia (${JSON.stringify(sf.map((f) => f.text))})`);
   await shot("11-coexistencia-multilinea-gemelas-lento.png");
+
+  await panelStable();
+  // ============ M. UNA fila por línea modificada + original al hover (0.9.4) ============
+  const mods = await evalJs(`(() => {
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(PARSER_PY)});
+    const rows = [...e.body.querySelector("diffs-container").shadowRoot.querySelectorAll("[data-line]")].filter((r) => !r.querySelector("[data-line]"));
+    const red = rows.find((r) => (r.textContent ?? "").includes("Marker words: alpha (words)"));
+    const green = rows.find((r) => (r.dataset.daOld ?? "").includes("alpha (words)"));
+    return { redHidden: red ? getComputedStyle(red).display === "none" : null,
+             greenPaired: !!green, daOld: green?.dataset.daOld ?? null };
+  })()`);
+  check(mods.redHidden === true, "la fila ROJA pareada está OCULTA (una fila por línea)");
+  check(mods.greenPaired && (mods.daOld ?? "").includes("alpha (words)"), "la fila verde guarda el original para el hover");
+  const greenLoc = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "Marker words:")`);
+  await mouse.move((greenLoc.left + greenLoc.right) / 2, greenLoc.y);
+  const popM = await until(async () => (await evalJs(`document.querySelector(".da-old-pop")`)) !== null, 3500);
+  check(popM, "el hover sobre la línea modificada abre la burbuja del original");
+  const popText = await evalJs(`document.querySelector(".da-old-pop")?.textContent ?? ""`);
+  check(popText.includes("alpha (words)"), `la burbuja muestra la línea VIEJA (${JSON.stringify(popText.slice(0, 60))})`);
+  await shot("12-una-fila-por-linea-hover.png");
 
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));
