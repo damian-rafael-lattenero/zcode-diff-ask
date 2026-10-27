@@ -122,12 +122,36 @@ export function revertLines(beforeLines, afterLines, hunks, selOld, selNew) {
           newN++;
         }
       } else {
+        // PARES atómicos (0.9.0, spec Damian): la cajita de una línea
+        // MODIFICADA revierte la PAREJA — la verde seleccionada restaura su
+        // roja pareada (antes la línea DESAPARECÍA: el del no volvía solo —
+        // "selecciono una línea y el revert no funciona"); la roja
+        // seleccionada se lleva su verde pareada puesta. Sin pareja (adición
+        // o borrada pura) el comportamiento es el de siempre.
+        const dels = [];
+        for (let i = 0; i < c.deletions; i++) dels.push(oldN + i);
+        const adds = [];
+        for (let i = 0; i < c.additions; i++) adds.push(newN + i);
+        const restoreOld = new Set();
+        const dropNew = new Set();
+        for (let i = 0; i < dels.length; i++) {
+          if (selOld.has(dels[i])) {
+            restoreOld.add(dels[i]);
+            if (i < adds.length) dropNew.add(adds[i]);
+          }
+        }
+        for (let i = 0; i < adds.length; i++) {
+          if (selNew.has(adds[i])) {
+            dropNew.add(adds[i]);
+            if (i < dels.length) restoreOld.add(dels[i]);
+          }
+        }
         for (let i = 0; i < c.deletions; i++) {
-          if (selOld.has(oldN)) out.push(beforeLines[oldN - 1]); // restaurar
+          if (restoreOld.has(dels[i])) out.push(beforeLines[dels[i] - 1]); // restaurar
           oldN++;
         }
         for (let i = 0; i < c.additions; i++) {
-          if (!selNew.has(newN)) out.push(afterLines[newN - 1]); // conservar
+          if (!dropNew.has(adds[i])) out.push(afterLines[adds[i] - 1]); // conservar
           newN++;
         }
       }
@@ -384,7 +408,10 @@ export function revertFrags(beforeLines, afterLines, hunks, frags) {
         if (r.line !== "") out.push(r.line); // vacía → línea eliminada
       }
     }
-    flushOld(Infinity); // hunk que termina en deletion: su cola se inserta acá
+    // ojo: NO hacer flushOld(Infinity) acá — se comía frags rojas de hunks
+    // POSTERIORES (m6 en el hunk 2 lo insertaba el hunk 1 como slice). El
+    // consumo in-block de arriba ya restaura las rojas de este hunk; lo que
+    // quede sin consumir al final es inconsistencia → null.
     nIdx = newN;
   }
   if (oldSels.length) return null; // frag roja fuera de todo hunk: inconsistente
@@ -428,9 +455,18 @@ export function changedWordRanges(oldLine, newLine) {
     else j++;
   }
   const del = [];
-  oT.forEach((t, k) => { if (matchO[k] === -1 && /\S/.test(t.text)) del.push([t.start, t.end]); });
+  const delWs = [];
+  oT.forEach((t, k) => {
+    if (matchO[k] !== -1) return;
+    (/\S/.test(t.text) ? del : delWs).push([t.start, t.end]);
+  });
   const add = [];
-  nT.forEach((t, k) => { if (matchN[k] === -1 && /\S/.test(t.text)) add.push([t.start, t.end]); });
-  if (!del.length && !add.length) return null;
-  return { del: mergeRanges(del), add: mergeRanges(add) };
+  const addWs = [];
+  nT.forEach((t, k) => {
+    if (matchN[k] !== -1) return;
+    (/\S/.test(t.text) ? add : addWs).push([t.start, t.end]);
+  });
+  // ws: circulitos (spec Damian — cambio SOLO de espacios también se señala)
+  if (!del.length && !add.length && !delWs.length && !addWs.length) return null;
+  return { del: mergeRanges(del), add: mergeRanges(add), delWs: mergeRanges(delWs), addWs: mergeRanges(addWs) };
 }

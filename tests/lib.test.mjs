@@ -205,9 +205,12 @@ test("revertLines: por LÍNEA — una de un bloque de 3, borrada que vuelve, mez
     ],
   };
   // revertir SOLO la Y (nueva 3): X y Z quedan, b/c/d no vuelven
-  assert.deepEqual(revertLines(before, after, [hunk], new Set(), new Set([3])), ["a", "X", "Z", "e"]);
+  // 0.9.0 pares atómicos: la verde seleccionada restaura SU ROJA pareada
+  // (antes la línea desaparecía: el del no volvía)
+  assert.deepEqual(revertLines(before, after, [hunk], new Set(), new Set([3])), ["a", "c", "X", "Z", "e"]);
   // restaurar SOLO la c vieja (borrada): vuelve a su lugar del bloque, X/Y/Z quedan
-  assert.deepEqual(revertLines(before, after, [hunk], new Set([3]), new Set()), ["a", "c", "X", "Y", "Z", "e"]);
+  // ...y la roja seleccionada se lleva su verde pareada (línea al original)
+  assert.deepEqual(revertLines(before, after, [hunk], new Set([3]), new Set()), ["a", "c", "X", "Z", "e"]);
   // mezcla: Y fuera + c vuelve
   assert.deepEqual(revertLines(before, after, [hunk], new Set([3]), new Set([3])), ["a", "c", "X", "Z", "e"]);
   // todo el bloque = revert de bloque clásico
