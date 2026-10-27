@@ -21,6 +21,7 @@ import { Editor } from "@pierre/diffs/edit";
 import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
   compressRuns, linesLabel, quoteForRanges, revertLines, revertFrags,
+  changedWordRanges,
 } from "./lib.js";
 
 const DIFF_URI = "diff://workspace";
@@ -1730,23 +1731,19 @@ function paintFromSelection(entry, rows, text) {
 function toggleFrag(entry, frag) {
   lastPaintedEntry = entry;
   const list = fragSel.get(entry.path) ?? [];
-  const mode = fragModes.get(entry.path);
-  if (mode) {
-    // modo: toggle exacto; solapado con otro → el nuevo lo reemplaza
-    const eq = list.find((f) => f.firstRowIdx === frag.firstRowIdx && f.lastRowIdx === frag.lastRowIdx && f.offA === frag.offA && f.offB === frag.offB);
-    let next;
-    if (eq) next = list.filter((f) => f !== eq);
-    else {
-      next = list.filter((f) => f.lastRowIdx < frag.firstRowIdx || f.firstRowIdx > frag.lastRowIdx);
-      next.push(frag);
-      next.sort((a, b) => a.firstRowIdx - b.firstRowIdx);
-    }
-    if (next.length) fragSel.set(entry.path, next);
-    else fragSel.delete(entry.path);
-  } else {
-    // neutral: pintada ÚNICA y continua
-    fragSel.set(entry.path, [frag]);
+  // 中文注释：画笔永远累加（spec：选一个词再选另一个，两个都保持）。
+  // 旧 neutral 分支用单条替换（fragSel.set([frag])），用户看到的就是
+  // "选第二个词时第一个被擦掉"。模式开关只改变执行入口，不改变累加语义。
+  const eq = list.find((f) => f.firstRowIdx === frag.firstRowIdx && f.lastRowIdx === frag.lastRowIdx && f.offA === frag.offA && f.offB === frag.offB);
+  let next;
+  if (eq) next = list.filter((f) => f !== eq);
+  else {
+    next = list.filter((f) => f.lastRowIdx < frag.firstRowIdx || f.firstRowIdx > frag.lastRowIdx);
+    next.push(frag);
+    next.sort((a, b) => a.firstRowIdx - b.firstRowIdx);
   }
+  if (next.length) fragSel.set(entry.path, next);
+  else fragSel.delete(entry.path);
   renderFragUI(entry);
   renderFragBadge(entry);
   if (fragSel.get(entry.path)?.length) {
@@ -1820,6 +1817,74 @@ function renderFragRows(entry, layer, frags) {
         const c = crows[i];
         diagSel(`fila ${i} THROW ${err.message} ⟵ nodeType=${c?.nodeType} tc=${typeof c?.textContent} span=${!!c?.querySelector?.("span")} kids=${c?.childNodes?.length}`);
       }
+    }
+  }
+  layer.appendChild(frag);
+}
+
+// ---- 垫片方框：行内词级变化高亮（spec：整行全红/全绿时保持原底色，
+// 只换了个别词的行把那些词用更醒目的红/绿方框标出来）----
+// 配对单位是 hunk 内同序的 del↔add 行；没配上的行（纯新增/纯删除的
+// 余量）不标——整行新 = 整行红绿，正是 spec 要求的样子。
+function wcAddRects(frag, row, a, b, bodyRect, cls) {
+  try {
+    const rects = plainOffsetToRange(row, a, b).getClientRects();
+    for (const r of rects) {
+      if (!r.width && !r.height) continue;
+      const d = document.createElement("div");
+      d.className = cls;
+      d.style.top = `${r.top - bodyRect.top}px`;
+      d.style.left = `${r.left - bodyRect.left}px`;
+      d.style.width = `${r.width}px`;
+      d.style.height = `${r.height}px`;
+      frag.appendChild(d);
+    }
+  } catch { /* 行结构异常：跳过该标记 */ }
+}
+
+function markChangedWords(entry) {
+  // 中文注释：编辑模式是纯编辑视图（spec），不画任何 overlay。
+  if (entry.edit) return;
+  const rows = contentRowsOf(entry);
+  const bodyRect = entry.body.getBoundingClientRect();
+  let layer = entry.body.querySelector(".wc-layer");
+  if (!rows.length) { layer?.remove(); entry._wcSig = null; return; }
+  // 幂等签名：行数 + 变更行文本总长 + 宿主高度。高度很关键：文件折叠时
+  // 行 rect 全是 0（标记全部被跳过但签名已记下），展开后只有高度变化
+  // 才能让签名失效并重新计算（e2e 实测：展开后垫片永远不出现）。
+  // 另外空层也重试——签名相等但没有标记成功过，多半是布局还没就绪。
+  const host = entry.body.querySelector("diffs-container");
+  const hostH = Math.round(host?.getBoundingClientRect().height ?? -1);
+  let sig = `${rows.length}:${hostH}`;
+  for (const r of rows) if (r.dataset.lineType === "change-deletion" || r.dataset.lineType === "change-addition") sig += ":" + (r.textContent || "").length;
+  if (entry._wcSig === sig && layer && layer.childElementCount > 0) return;
+  entry._wcSig = sig;
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.className = "wc-layer";
+    entry.body.appendChild(layer);
+  }
+  layer.textContent = "";
+  // hunks：连续的 deletion 行随后连续的 addition 行
+  const groups = [];
+  let i = 0;
+  while (i < rows.length) {
+    if (rows[i]?.dataset?.lineType === "change-deletion") {
+      const dels = [];
+      const adds = [];
+      while (i < rows.length && rows[i].dataset.lineType === "change-deletion") dels.push(rows[i++]);
+      while (i < rows.length && rows[i].dataset.lineType === "change-addition") adds.push(rows[i++]);
+      if (dels.length && adds.length) groups.push({ dels, adds });
+    } else i++;
+  }
+  const frag = document.createDocumentFragment();
+  for (const g of groups) {
+    const n = Math.min(g.dels.length, g.adds.length);
+    for (let k = 0; k < n; k++) {
+      const r = changedWordRanges(g.dels[k].textContent ?? "", g.adds[k].textContent ?? "");
+      if (!r) continue;
+      for (const [a, b] of r.del) wcAddRects(frag, g.dels[k], a, b, bodyRect, "wc-del");
+      for (const [a, b] of r.add) wcAddRects(frag, g.adds[k], a, b, bodyRect, "wc-add");
     }
   }
   layer.appendChild(frag);
@@ -2024,6 +2089,10 @@ function rangeOfRow(row) {
 }
 
 function showHoverPlus(entry, row) {
+  // 中文注释：编辑模式（✏️ 按下）是纯编辑视图——spec 规定不带任何
+  // overlay。旧的 hover ＋/↩ 会照常浮出来，看起来像"选中文字的弹窗
+  // 跑进了编辑模式"。
+  if (entry.edit) return hideHoverPlus();
   if (row === hoverRow && hoverPlus?.isConnected) return;
   hideHoverPlus();
   hoverRow = row;
@@ -2191,6 +2260,7 @@ function scheduleAnchors() {
       const l = getFiletypeFromFileName(entry.fileData.oldPath ?? entry.fileData.path);
       if (l && HL_LANGS.has(l)) hlColorize(entry, l);
       if (fragSel.has(entry.path)) renderFragUI(entry); // overlays tras repaint
+      try { markChangedWords(entry); } catch { /* 词级标记失败不影响主渲染 */ }
     }
     // Al expandir un separador aparecen filas NUEVAS: re-marcar la búsqueda
     // activa sin mover el scroll (el match podía estar en el contexto
