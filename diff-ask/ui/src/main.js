@@ -1529,19 +1529,40 @@ function fragSelTotal() {
   return n;
 }
 
-// Range interno sobre el span de una fila para offsets planos [a,b): camina
-// los childNodes sumando textContent (texto + spans del highlighting).
-function plainOffsetToRange(span, a, b) {
-  const range = document.createRange();
-  let pos = 0;
-  let started = false;
-  for (const node of span.childNodes) {
-    const len = node.textContent.length;
-    if (!started && pos + len > a) { range.setStart(node, a - pos); started = true; }
-    if (started && pos + len >= b) { range.setEnd(node, b - pos); return range; }
-    pos += len;
+// Range interno sobre el span de una fila para offsets planos [a,b]. La
+// RAÍZ del 0.8.6: los offsets de CARACTERES hay que resolverlos hasta el
+// nodo de TEXTO real (los tokens de highlight son spans anidados — `código`
+// con backticks, negritas markdown — y setStart/setEnd sobre un ELEMENTO
+// interpreta el offset como ÍNDICE DE HIJO: "no child at offset N"). El
+// localizador recursivo baja por los subárboles acumulando longitud.
+function locatePlain(node, target, posRef) {
+  if (node.nodeType === 3) {
+    if (posRef.pos + node.data.length >= target) {
+      return { node, offset: Math.max(0, Math.min(target - posRef.pos, node.data.length)) };
+    }
+    posRef.pos += node.data.length;
+    return null;
   }
-  range.setEnd(span, span.childNodes.length);
+  for (const c of node.childNodes) {
+    const r = locatePlain(c, target, posRef);
+    if (r) return r;
+  }
+  return null;
+}
+
+function plainOffsetToRange(span, a, b) {
+  const len = span.textContent.length;
+  a = Math.max(0, Math.min(a, len));
+  b = Math.max(a, Math.min(b, len));
+  const A = locatePlain(span, a, { pos: 0 }) ?? { node: span, offset: span.childNodes.length };
+  const B = locatePlain(span, b, { pos: 0 }) ?? { node: span, offset: span.childNodes.length };
+  const range = document.createRange();
+  range.setStart(A.node, A.offset);
+  try {
+    range.setEnd(B.node, B.offset);
+  } catch {
+    range.setEnd(span, span.childNodes.length);
+  }
   return range;
 }
 
@@ -1573,13 +1594,15 @@ function offsetAtX(span, x) {
   if (x >= sr.right) return len;
   let lo = 0;
   let hi = len;
-  for (let i = 0; i < 18 && hi - lo > 1; i++) {
-    const mid = (lo + hi) >> 1;
-    const r = plainOffsetToRange(span, 0, mid).getBoundingClientRect();
-    if (!r.width && !r.height) { lo = mid; continue; }
-    if (r.right < x) lo = mid;
-    else hi = mid;
-  }
+  try {
+    for (let i = 0; i < 18 && hi - lo > 1; i++) {
+      const mid = (lo + hi) >> 1;
+      const r = plainOffsetToRange(span, 0, mid).getBoundingClientRect();
+      if (!r.width && !r.height) { lo = mid; continue; }
+      if (r.right < x) lo = mid;
+      else hi = mid;
+    }
+  } catch { /* binaria interrumpida: devolvemos lo mejor visto */ }
   return lo;
 }
 
