@@ -846,28 +846,46 @@ button.fedit.on {
    红/绿方框（粗描边 + 实色垫底）标出，红词在删除行、绿词在新增行。 */
 .wc-layer { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
 .file-body:has(.wc-layer) { position: relative; }
+/* spec Damian 0.9.4: caja SIN borde y relleno FUERTE — el borde fino
+   sumaba un segundo lenguaje visual encima del fondo de la fila. */
 .wc-add {
   position: absolute;
   border-radius: 3px;
-  background: color-mix(in srgb, #3fb950 34%, transparent);
-  box-shadow: inset 0 0 0 0.8px color-mix(in srgb, #3fb950 85%, transparent);
+  background: color-mix(in srgb, #3fb950 55%, transparent);
 }
 .wc-del {
   position: absolute;
   border-radius: 3px;
-  background: color-mix(in srgb, #f85149 34%, transparent);
-  box-shadow: inset 0 0 0 0.8px color-mix(in srgb, #f85149 85%, transparent);
+  background: color-mix(in srgb, #f85149 55%, transparent);
 }
-/* espacios agregados/borrados: circulito mínimo (una corrida = un punto) */
+/* espacios agregados/borrados: circulito mínimo y TENUE (una corrida = un punto) */
 .wc-ws-add, .wc-ws-del {
   position: absolute;
-  width: 4px;
-  height: 4px;
+  width: 3px;
+  height: 3px;
   border-radius: 50%;
   pointer-events: none;
 }
-.wc-ws-add { background: color-mix(in srgb, #3fb950 92%, transparent); }
-.wc-ws-del { background: color-mix(in srgb, #f85149 92%, transparent); }
+.wc-ws-add { background: color-mix(in srgb, #3fb950 45%, transparent); }
+.wc-ws-del { background: color-mix(in srgb, #f85149 45%, transparent); }
+/* burbuja de la línea ORIGINAL (hover en fila modificada — la roja está
+   oculta por "una fila por línea"): removidas marcadas en rojo */
+.da-old-pop {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  background: #161b22;
+  color: #c9d1d9;
+  font: 12px/1.6 ui-monospace, "SF Mono", Menlo, monospace;
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid #30363d;
+  max-width: min(760px, 92vw);
+  white-space: pre-wrap;
+  word-break: break-all;
+  box-shadow: 0 4px 14px #000000cc;
+}
+.da-old-pop .da-old-del { background: #f8514955; border-radius: 2px; padding: 0 1px; }
 /* 编辑模式下纯编辑视图：词级标记同样隐藏 */
 .file.editing .wc-layer { display: none; }
 /* botones ? y ↩ de modo brocha (junto a ✏️) */

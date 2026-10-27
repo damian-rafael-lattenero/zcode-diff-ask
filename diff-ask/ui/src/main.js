@@ -2029,6 +2029,22 @@ function markChangedWords(entry) {
       if (dels.length && adds.length) groups.push({ dels, adds });
     } else i++;
   }
+  // UNA fila por línea modificada (spec Damian 0.9.4: "el par rojo+verde me
+  // duplica las palabras que no cambiaron"): la fila ROJA pareada se oculta
+  // y la verde guarda el original en dataset.daOld para el hover. Las
+  // borradas PURAS (sin pareja) siguen rojas y visibles como siempre.
+  for (const r of rows) {
+    if (r._daHidden) { r.style.display = ""; delete r._daHidden; }
+    if (r.dataset.daOld) delete r.dataset.daOld;
+  }
+  for (const g of groups) {
+    const n = Math.min(g.dels.length, g.adds.length);
+    for (let k = 0; k < n; k++) {
+      g.adds[k].dataset.daOld = g.dels[k].textContent ?? "";
+      g.dels[k].style.display = "none";
+      g.dels[k]._daHidden = true;
+    }
+  }
   const frag = document.createDocumentFragment();
   for (const g of groups) {
     const n = Math.min(g.dels.length, g.adds.length);
@@ -2042,6 +2058,54 @@ function markChangedWords(entry) {
     }
   }
   layer.appendChild(frag);
+  bindOldLineHover(entry);
+}
+
+// Burbuja de la línea ORIGINAL al hover de una fila modificada (la vieja
+// está oculta por "una fila por línea"): muestra el texto before con las
+// palabras REMOVIDAS marcadas en rojo. Retardo de 250ms para que no
+// titile al pasar el mouse por encima de camino a otra cosa.
+function bindOldLineHover(entry) {
+  const host = entry.body.querySelector("diffs-container");
+  if (!host?.shadowRoot || host.__daOldHover) return;
+  host.__daOldHover = true;
+  let timer = null;
+  let pop = null;
+  const hide = () => { clearTimeout(timer); pop?.remove(); pop = null; };
+  host.shadowRoot.addEventListener("pointerover", (e) => {
+    const row = e.target?.closest?.("[data-line]");
+    if (!row?.dataset?.daOld) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      hide();
+      const oldLine = row.dataset.daOld;
+      const dels = changedWordRanges(oldLine, row.textContent ?? "")?.del ?? [];
+      pop = document.createElement("div");
+      pop.className = "da-old-pop";
+      let last = 0;
+      for (const [a, b] of dels) {
+        pop.append(oldLine.slice(last, a));
+        const s = document.createElement("span");
+        s.className = "da-old-del";
+        s.textContent = oldLine.slice(a, b);
+        pop.append(s);
+        last = b;
+      }
+      pop.append(oldLine.slice(last));
+      document.body.appendChild(pop);
+      const r = row.getBoundingClientRect();
+      const w = pop.offsetWidth;
+      const h = pop.offsetHeight;
+      pop.style.left = `${Math.round(Math.max(6, Math.min(r.left, window.innerWidth - w - 6)))}px`;
+      pop.style.top = `${Math.round(Math.max(6, r.top - h - 4))}px`;
+    }, 250);
+  });
+  host.shadowRoot.addEventListener("pointerout", (e) => {
+    const row = e.target?.closest?.("[data-line]");
+    if (row?.dataset?.daOld && !row.contains(e.relatedTarget)) hide();
+  });
+  document.addEventListener("pointerdown", hide, true);
+  document.addEventListener("scroll", () => hide(), { capture: true, passive: true });
 }
 
 function clearFrags(entry) {
