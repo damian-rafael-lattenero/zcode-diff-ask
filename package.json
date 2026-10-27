@@ -1,7 +1,7 @@
 {
   "name": "zcode-diff-ask",
   "private": true,
-  "version": "0.8.6",
+  "version": "0.8.7",
   "description": "Diff Ask — ZCode plugin: live workspace diff panel with per-line \"+\" to ask the agent at the exact line. Repo: plugin source + local dev marketplace + asar patch experiment.",
   "type": "module",
   "scripts": {
