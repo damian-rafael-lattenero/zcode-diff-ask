@@ -226,6 +226,11 @@ export function buildAskMessage(asks, scope = "") {
 //     original se restaura y su contraparte verde se va (media línea
 //     revertida es peor que la línea sin revertir). Si la roja no tiene
 //     pareja (línea puramente borrada), se restaura tal cual.
+//   - new, línea de ADICIÓN PURA (sin before pareado): la pintada se lleva
+//     la LÍNEA ENTERA — no hay original parcial al que volver, y la cirugía
+//     de chars dejaba líneas huecas con sintaxis rota que seguían en el
+//     diff (0.9.1: pintar 'register' y '/delta' por palabra en server.ts
+//     dejaba '("GET", "", async () => {').
 //   - Línea que queda vacía tras la cirugía → se elimina entera.
 // Devuelve {lines} | {noDiff:true} | null (alineamiento inconsistente).
 export function tokenizeLine(s) {
@@ -397,6 +402,14 @@ export function revertFrags(beforeLines, afterLines, hunks, frags) {
         const sels = mergeRanges(newSels.get(N));
         const beforeLine = dels[i] !== undefined ? beforeLines[dels[i] - 1] : null;
         const afterLine = afterLines[N - 1];
+        // ADICIÓN PURA pintada: no hay original parcial al que volver — la
+        // pintada se lleva la línea ENTERA (0.9.1, espejo del lado rojo:
+        // media adición revertida es peor que la adición intacta). Frag de
+        // ancho cero no cuenta (no nuklear líneas por gestos degenerados).
+        if (beforeLine === null && sels.some(([a, b]) => a < b)) {
+          changed = true;
+          continue;
+        }
         if (beforeLine !== null && beforeLine !== afterLine && coversFullChange(sels, beforeLine, afterLine)) {
           changed = true;
           if (beforeLine !== "") out.push(beforeLine);
