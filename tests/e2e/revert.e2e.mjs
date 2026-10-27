@@ -12,7 +12,8 @@
 //   - drag derecha→izquierda → mismo rango, normalizado
 //   - drag de UNA letra
 //   - drag vertical en el gutter → cajitas (revert de línea por números)
-//   - doble-click en palabra de una línea 100% NUEVA → la línea se va ENTERA (0.9.1)
+//   - Enter = ↩ quirúrgico; palabra de una línea 100% nueva → SOLO la palabra (0.9.2)
+//   - modo brocha ↩ del header: N pintadas acumuladas → UN rollback general (sin popups flotantes)
 // Uso: node tests/e2e/revert.e2e.mjs   (requiere Google Chrome instalado)
 
 import { spawn, execFileSync } from "node:child_process";
@@ -232,15 +233,22 @@ await evalJs(`(() => {
         });
         const at = (target) => {
           const pos = { n: 0 };
+          let lastText = null;
           const walk = (node) => {
             if (node.nodeType === 3) {
+              lastText = node;
               if (pos.n + node.data.length > target) return { node, offset: Math.max(0, Math.min(target - pos.n, node.data.length)) };
               pos.n += node.data.length; return null;
             }
             for (const c of node.childNodes) { const r = walk(c); if (r) return r; }
             return null;
           };
-          return walk(row);
+          const hit = walk(row);
+          if (hit) return hit;
+          // target == fin EXACTO del texto de la fila: rango válido al final
+          // del último nodo de texto (needles que terminan con la fila)
+          if (lastText && pos.n === target) return { node: lastText, offset: lastText.data.length };
+          return null;
         };
         const box = (a, b) => {
           const A = at(a), B = at(b);
@@ -494,27 +502,101 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   await shot("07-tras-revert-cajitas-gutter.png");
 
   await panelStable();
-  // ============ J. palabra en línea de ADICIÓN PURA → la línea ENTERA se va (0.9.1) ============
-  // El caso de la prueba manual: pintar 'delta' (doble-click) dentro de la
-  // línea nueva 'register("GET", "/delta", async () => {' tiene que eliminar
-  // la línea COMPLETA — antes la cirugía hueca dejaba '("GET", "", async…'
-  // con sintaxis rota que seguía en el diff.
+  // ============ J. Enter + palabra en línea de ADICIÓN PURA: quirúrgico (0.9.2) ============
+  // El reporte de Damian: "elijo 3 palabras de 3 filas, aprieto enter en el
+  // rollback y me rollbackea las 3 LÍNEAS". Enter ahora ES el atajo del ↩
+  // quirúrgico, y pintar una palabra de una línea 100% nueva borra SOLO la
+  // palabra — la línea queda (0.9.1 la eliminaba entera).
   loc = await evalJs(`__E2E.locate(${JSON.stringify(SERVER_TS)}, "/delta", "change-addition")`);
   check(loc && !loc.error, "localizo la línea nueva de la ruta /delta", loc?.error ?? "");
   await dblclick((loc.left + loc.right) / 2, loc.y);
   await waitPaint(SERVER_TS, 1);
   frags = await evalJs(`__E2E.frags(${JSON.stringify(SERVER_TS)})`);
   check(frags.length === 1 && frags[0].text === "delta", `doble-click pinta 'delta' en la línea nueva (${JSON.stringify(frags.map((f) => f.text))})`);
-  await clickRevert();
-  await waitDisk(SERVER_TS, (c) => !c.includes('register("GET", "/delta"'), "línea /delta eliminada");
+  await evalJs("document.activeElement?.blur?.()");
+  await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await waitDisk(SERVER_TS, (c) => c.includes('register("GET", "/", async () => {'), "palabra delta removida quirúrgicamente");
   const afterJ = readDisk(SERVER_TS);
-  check(!afterJ.includes('register("GET", "/delta"') && !afterJ.includes('("GET", ""'),
-    "git/disco: la línea 100% nueva se fue ENTERA (sin hueco de sintaxis rota)");
-  check(afterJ.includes('return new Response("delta", { status: 200 });'),
-    "la línea hermana del bloque de adición NO se tocó");
+  check(afterJ.includes('register("GET", "/", async () => {') && !afterJ.includes('"/delta"'),
+    "git/disco: se fue SOLO la palabra 'delta' — la línea nueva SIGUE en el archivo");
+  check(afterJ.includes('return new Response("delta", { status: 200 });') && afterJ.includes("});"),
+    "las líneas hermanas del bloque NO se tocaron");
   check(await until(async () => !(await evalJs(`__E2E.hasRowText(${JSON.stringify(SERVER_TS)}, "/delta")`))),
-    "panel recargado: la fila /delta desapareció del diff");
-  await shot("09-tras-revert-adicion-pura-por-palabra.png");
+    "panel recargado: la palabra /delta desapareció del diff");
+  await shot("09-tras-enter-quirurgico-adicion-pura.png");
+
+  await panelStable();
+  // ============ K. modo brocha ↩: pintar de TODO y UN rollback general (spec Damian) ============
+  // "pinto 6 palabras seguidas, 4 palabras en otra línea, doble-click una
+  // palabra en otra, 3 letras en otra → aprieto el rollback general y se
+  // revierten todos esos chars" — sin popups flotantes en el modo.
+  const TYPES_GO = "tests/diffs/types.go";
+  await expandFile(TYPES_GO);
+  const revBtn = await evalJs(`(() => {
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(TYPES_GO)});
+    e.section.querySelector(".file-head").scrollIntoView({ block: "start" });
+    const b = e.section.querySelector(".fmode-rev");
+    const r = b.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`);
+  await click(revBtn.x, revBtn.y); // entra al modo brocha ↩
+  await sleep(150);
+  check(await evalJs(`__DA.fragModes.get(${JSON.stringify(TYPES_GO)})`) === "rev", "modo brocha ↩ activo");
+
+  // un gesto por vez, con trace completo si no pinta
+  let kCount = 0;
+  const kGesture = async (tag, fn) => {
+    await evalJs("window.__evts.length = 0");
+    await fn();
+    await sleep(800); // respaldo pointerup = 180ms + margen
+    const now = (await evalJs(`__E2E.frags(${JSON.stringify(TYPES_GO)})`)).length;
+    if (now <= kCount) {
+      console.error(`    [${tag}] evts: ${(await evalJs("window.__evts")).join(" ")}`);
+      console.error(`    [${tag}] sel:   ${JSON.stringify(await evalJs("String(document.getSelection())"))}`);
+      console.error(`    [${tag}] dragP: ${JSON.stringify(await evalJs("(() => { const d = __DA.dragPath; return d ? { x0: d.x0, y0: d.y0, age: Date.now() - d.at, detail: d.detail } : null; })()"))}`);
+      console.error(`    [${tag}] uiPtr: ${JSON.stringify(await evalJs("window.__DA ? (__DA.lastUiPointerRef ? __DA.lastUiPointerRef.value : 'n/a') : 'n/a'"))}`);
+      console.error(`    [${tag}] diag:  ${await evalJs("(document.querySelector('.diag-chip')?.__log ?? []).slice(-6).join(' ⏐ ')")}`);
+    }
+    check(now > kCount, `${tag}: el gesto pintó`);
+    kCount = now;
+  };
+
+  // K1: 5 palabras seguidas del comentario nuevo (drag)
+  loc = await evalJs(`__E2E.locate(${JSON.stringify(TYPES_GO)}, "Render formats the record as one", "change-addition")`);
+  check(loc && !loc.error, "K1 localizo las 5 palabras del comentario", loc?.error ?? "");
+  if (loc && !loc.error) await kGesture("K1-drag-5-palabras", () => drag(loc.chars[0].left + 1, loc.y, loc.chars[loc.chars.length - 1].right + 1.5, loc.y));
+
+  // K2: doble-click UNA palabra ("Render" de la firma)
+  loc = await evalJs(`__E2E.locate(${JSON.stringify(TYPES_GO)}, "Record) Render() string", "change-addition")`);
+  check(loc && !loc.error, "K2 localizo la firma del Render", loc?.error ?? "");
+  if (loc && !loc.error) {
+    const rw = await evalJs(`__E2E.locate(${JSON.stringify(TYPES_GO)}, "Render() string", "change-addition")`);
+    await kGesture("K2-dblclick-palabra", () => dblclick((rw.chars[2].left + rw.chars[2].right) / 2, rw.y));
+  }
+
+  // K3: 3 letras de "Title" en el return nuevo (drag)
+  loc = await evalJs(`__E2E.locate(${JSON.stringify(TYPES_GO)}, "return r.Title", "change-addition")`);
+  check(loc && !loc.error, "K3 localizo el return r.Title", loc?.error ?? "");
+  if (loc && !loc.error) await kGesture("K3-drag-3-letras", () => drag(loc.chars[loc.chars.length - 3].left + 1, loc.y, loc.chars[loc.chars.length - 1].right + 1.5, loc.y));
+
+  // K4: una palabra de la línea MODIFICADA (doble-click "Heading")
+  loc = await evalJs(`__E2E.locate(${JSON.stringify(TYPES_GO)}, "Heading string", "change-addition")`);
+  check(loc && !loc.error, "K4 localizo la línea modificada Heading", loc?.error ?? "");
+  if (loc && !loc.error) await kGesture("K4-dblclick-Heading", () => dblclick((loc.chars[3].left + loc.chars[3].right) / 2, loc.y));
+
+  check(kCount === 4, `las CUATRO pintadas acumulan juntas (${kCount})`, "");
+  check(await evalJs(`document.querySelector(".sel-pop") === null`), "SIN popup flotante en modo brocha");
+
+  await click(revBtn.x, revBtn.y); // el rollback GENERAL: ejecuta todo lo pintado
+  await waitDisk(TYPES_GO, (c) => c.includes("\tTitle string"), "Title string restaurado");
+  const afterK = readDisk(TYPES_GO);
+  check(afterK.includes("\tTitle string"), "K4: palabra de línea modificada → línea al original (Title)");
+  check(!afterK.includes("formats the record") && afterK.includes("line."), "K1: las 5 palabras del comentario se fueron quirúrgicamente");
+  check(afterK.includes("func (r Record) () string {"), "K2: SOLO la palabra 'Render' removida de la firma");
+  check(afterK.includes("return r.Ti") && !afterK.includes("return r.Title"), "K3: SOLO las 3 letras 'tle' removidas del return");
+  check(await until(async () => (await evalJs(`__E2E.frags(${JSON.stringify(TYPES_GO)})`)).length === 0), "frags despintados tras el rollback general");
+  await shot("10-tras-rollback-general-modo-brocha.png");
 
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));

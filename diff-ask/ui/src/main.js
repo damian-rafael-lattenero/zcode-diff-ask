@@ -953,6 +953,23 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// Enter = el ↩ del popup cuando hay palabras pintadas (spec Damian 27/10:
+// "aprieto enter en el rollback" — confirmar el quirúrgico sin ir a buscar
+// el botón flotante). Si el foco está en un control (input, botón,
+// composer, findbar), Enter hace lo suyo y acá no se toca nada.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  if (e.target?.closest?.("input, textarea, select, button, [contenteditable], .composer, #findbar")) return;
+  if (document.querySelector(".composer")) return;
+  const fb = document.getElementById("findbar");
+  if (fb && !fb.hidden) return;
+  const entry = lastPaintedEntry && rendered.get(lastPaintedEntry.path) ? lastPaintedEntry : null;
+  if (!entry || entry.edit || !fragSel.get(entry.path)?.length) return;
+  e.preventDefault();
+  hideSelPop("enter");
+  revertPainted(entry);
+});
+
 // -------------------------------------------------------------- composer
 // Span DOM de un rango: el del gesto si "hasta" no se tocó; si se extendió
 // a mano, se re-ancla first/last por número DEL LADO (la extensión es
@@ -1805,6 +1822,11 @@ function toggleFrag(entry, frag) {
   else fragSel.delete(entry.path);
   renderFragUI(entry);
   renderFragBadge(entry);
+  // En modo brocha (?/↩) NO hay popup flotante: el botón del header ES el
+  // ejecutor y Enter también (spec Damian 27/10: los botones flotantes de
+  // pregunta y rollback no deben estar en el modo de pintar). Sin modo:
+  // pintada única + popup inmediato.
+  if (fragModes.get(entry.path)) return hideSelPop("modo brocha");
   if (fragSel.get(entry.path)?.length) {
     const rows = contentRowsOf(entry);
     const f = fragSel.get(entry.path).at(-1);
@@ -2549,7 +2571,9 @@ function renderFileInner(f) {
     head.querySelector(".fplus").after(editBtn);
   }
   // Modos brocha (0.8.0): ? acumula fragmentos para PREGUNTAR, ↩ para
-  // REVERTIR quirúrgico. Sin modo: pintada única con popup inmediato.
+  // REVERTIR quirúrgico. Volver a apretar el botón con pintadas = EJECUTAR
+  // sobre todo lo pintado. En modo no hay popup flotante; sin modo:
+  // pintada única con popup inmediato.
   if (!f.binary) {
     const askBtn = document.createElement("button");
     askBtn.className = "ghost fmode fmode-ask";
