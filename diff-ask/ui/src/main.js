@@ -2939,8 +2939,22 @@ async function boot() {
   await refresh();
 }
 
-window.addEventListener('error', (e) => { const d=document.createElement('div'); d.className='state error'; d.textContent='ONERROR: '+(e.message||e.error); document.body.appendChild(d); });
-window.addEventListener('unhandledrejection', (e) => { const d=document.createElement('div'); d.className='state error'; d.textContent='REJECT: '+(e.reason?.message||e.reason); document.body.appendChild(d); });
+// errores con STACK visible (0.8.3): el mensaje solo no alcanza para ubicar
+// la bomba — el primer frame del stack dice el archivo/función exactos.
+window.addEventListener('error', (e) => {
+  const stack = String(e.error?.stack ?? '').split('\n').slice(0, 4).join(' ⏐ ');
+  const d = document.createElement('div');
+  d.className = 'state error';
+  d.textContent = 'ONERROR: ' + (e.message || e.error) + (stack ? ` ⟵ ${stack}` : '');
+  document.body.appendChild(d);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const stack = String(e.reason?.stack ?? '').split('\n').slice(0, 4).join(' ⏐ ');
+  const d = document.createElement('div');
+  d.className = 'state error';
+  d.textContent = 'REJECT: ' + (e.reason?.message || e.reason) + (stack ? ` ⟵ ${stack}` : '');
+  document.body.appendChild(d);
+});
 
 ensureShell();
 if (window.__DA_TEST__) {
