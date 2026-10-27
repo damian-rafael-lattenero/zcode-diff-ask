@@ -12,6 +12,7 @@
 //   - drag derecha→izquierda → mismo rango, normalizado
 //   - drag de UNA letra
 //   - drag vertical en el gutter → cajitas (revert de línea por números)
+//   - doble-click en palabra de una línea 100% NUEVA → la línea se va ENTERA (0.9.1)
 // Uso: node tests/e2e/revert.e2e.mjs   (requiere Google Chrome instalado)
 
 import { spawn, execFileSync } from "node:child_process";
@@ -491,6 +492,29 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(readDisk(SERVER_TS).includes('status: "running"') && !readDisk(SERVER_TS).includes('"ready"'),
     "git/disco: cajitas del gutter revierten la línea de server.ts");
   await shot("07-tras-revert-cajitas-gutter.png");
+
+  await panelStable();
+  // ============ J. palabra en línea de ADICIÓN PURA → la línea ENTERA se va (0.9.1) ============
+  // El caso de la prueba manual: pintar 'delta' (doble-click) dentro de la
+  // línea nueva 'register("GET", "/delta", async () => {' tiene que eliminar
+  // la línea COMPLETA — antes la cirugía hueca dejaba '("GET", "", async…'
+  // con sintaxis rota que seguía en el diff.
+  loc = await evalJs(`__E2E.locate(${JSON.stringify(SERVER_TS)}, "/delta", "change-addition")`);
+  check(loc && !loc.error, "localizo la línea nueva de la ruta /delta", loc?.error ?? "");
+  await dblclick((loc.left + loc.right) / 2, loc.y);
+  await waitPaint(SERVER_TS, 1);
+  frags = await evalJs(`__E2E.frags(${JSON.stringify(SERVER_TS)})`);
+  check(frags.length === 1 && frags[0].text === "delta", `doble-click pinta 'delta' en la línea nueva (${JSON.stringify(frags.map((f) => f.text))})`);
+  await clickRevert();
+  await waitDisk(SERVER_TS, (c) => !c.includes('register("GET", "/delta"'), "línea /delta eliminada");
+  const afterJ = readDisk(SERVER_TS);
+  check(!afterJ.includes('register("GET", "/delta"') && !afterJ.includes('("GET", ""'),
+    "git/disco: la línea 100% nueva se fue ENTERA (sin hueco de sintaxis rota)");
+  check(afterJ.includes('return new Response("delta", { status: 200 });'),
+    "la línea hermana del bloque de adición NO se tocó");
+  check(await until(async () => !(await evalJs(`__E2E.hasRowText(${JSON.stringify(SERVER_TS)}, "/delta")`))),
+    "panel recargado: la fila /delta desapareció del diff");
+  await shot("09-tras-revert-adicion-pura-por-palabra.png");
 
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));
