@@ -1415,7 +1415,7 @@ function paintCurrentSelection() {
     return;
   }
   // 1) drag conocido → entry por hit-test del punto inicial, frag por carets
-  if (dragPath && Date.now() - dragPath.at < 1500) {
+  if (dragPath && Date.now() - dragPath.live < 1500) {
     const A = pointToRowInfo(dragPath.x0, dragPath.y0, true);
     diagSel(`caret A=${A?.fail ?? A?.entry?.path.slice(-18) + "@" + A?.idx ?? "fuera"} drag=${dragPath.x0},${dragPath.y0}`);
     const entry = A?.entry && rendered.get(A.entry.path) ? A.entry : null;
@@ -1615,7 +1615,11 @@ document.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
   // detail: 1=single, 2=doble (palabra), 3+=triple (línea) — el gesto NATIVO
   // del mouse define la semántica del pintado, igual que en un editor.
-  dragPath = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, at: Date.now(), detail: e.detail || 1 };
+  // "at" = nacimiento del gesto (id estable para el dedupe de toggle);
+  // "live" = última actividad — un drag humano multilínea tarda >1.2s y el
+  // camino geométrico no puede morir a mitad de gesto (caía al fallback de
+  // texto: gemelas pintadas + "cuesta seleccionar").
+  dragPath = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, at: Date.now(), live: Date.now(), detail: e.detail || 1 };
   dragActive = true;
   lastFragPaint = null;
   lastUiPointer = !!e.target?.closest?.(".sel-pop, .hover-plus, .big-plus, .fmode, .composer, button");
@@ -1627,11 +1631,11 @@ document.addEventListener("click", (e) => {
   if (e.detail > 1 && dragPath) dragPath.detail = Math.max(dragPath.detail || 1, e.detail);
 }, true);
 document.addEventListener("pointerup", (e) => {
-  if (e.button === 0) dragActive = false;
+  if (e.button === 0) { dragActive = false; if (dragPath) dragPath.live = Date.now(); }
 }, true);
 document.addEventListener("pointercancel", () => { dragActive = false; }, true);
 document.addEventListener("pointermove", (e) => {
-  if (dragPath && (e.buttons & 1)) { dragPath.x1 = e.clientX; dragPath.y1 = e.clientY; }
+  if (dragPath && (e.buttons & 1)) { dragPath.x1 = e.clientX; dragPath.y1 = e.clientY; dragPath.live = Date.now(); }
 }, true);
 
 // frag geométrico: hit-test de los extremos del drag contra el shadow DOM
@@ -1699,7 +1703,7 @@ function pointToRowInfo(x, y, why = false) {
 }
 
 function caretFrag(entry) {
-  if (!dragPath || Date.now() - dragPath.at > 1200) return null;
+  if (!dragPath || Date.now() - dragPath.live > 1200) return null; // frescura = actividad, no nacimiento
   const A = pointToRowInfo(dragPath.x0, dragPath.y0);
   const B = pointToRowInfo(dragPath.x1, dragPath.y1);
   if (!A || !B || A.entry !== entry || B.entry !== entry) {
@@ -1777,16 +1781,44 @@ function paintFromSelection(entry, rows, text) {
   // "endsWith('')" que mandaría el offset al otro extremo)
   const firstLine = lines[0] ?? "";
   const lastLine = lines[lines.length - 1] ?? "";
+  // OCURRENCIA por GEOMETRÍA, no por orden de texto: si la palabra se
+  // repite en la fila, indexOf/endsWith pintan una gemela cualquiera ("me
+  // selecciona todas las palabras idénticas"). Elegimos la ocurrencia cuyo
+  // rect queda más cerca del punto donde soltaste el mouse.
+  const occurrenceAt = (rowEl, line, nearX) => {
+    const t = rowEl?.textContent ?? "";
+    const hits = [];
+    let i = t.indexOf(line);
+    while (i >= 0 && hits.length < 64) { hits.push(i); i = t.indexOf(line, i + Math.max(1, line.length)); }
+    if (hits.length <= 1) return hits[0] ?? -1;
+    if (!Number.isFinite(nearX)) return hits[0];
+    let best = hits[0];
+    let bestD = Infinity;
+    for (const h of hits) {
+      try {
+        const r = plainOffsetToRange(rowEl, h, h + line.length).getBoundingClientRect();
+        if (!r.width && !r.height) continue;
+        const d = nearX < r.left ? r.left - nearX : nearX > r.right ? nearX - r.right : 0;
+        if (d < bestD) { bestD = d; best = h; }
+      } catch { /* rect degenerado: probamos las demás */ }
+    }
+    return best;
+  };
+  const nearX = selPopAt?.x;
   let offA = 0;
-  if (firstLine) offA = firstText.endsWith(firstLine) ? firstText.length - firstLine.length : Math.max(0, firstText.indexOf(firstLine));
+  if (firstLine) {
+    const hit = occurrenceAt(crows[first], firstLine, nearX);
+    offA = hit >= 0 ? hit : (firstText.endsWith(firstLine) ? firstText.length - firstLine.length : Math.max(0, firstText.indexOf(firstLine)));
+  }
   let offB = lastText.length;
   if (rows.length === 1) {
     if (lastLine) {
-      const idx = firstText.indexOf(lastLine, offA);
-      offB = idx >= 0 ? idx + lastLine.length : firstText.length;
+      const hit2 = occurrenceAt(crows[last], lastLine, nearX);
+      offB = hit2 >= 0 ? hit2 + lastLine.length : firstText.length;
     } else offB = firstText.length;
   } else if (lastLine) {
-    offB = lastText.startsWith(lastLine) ? lastLine.length : Math.max(0, lastText.indexOf(lastLine)) + lastLine.length;
+    const hit3 = occurrenceAt(crows[last], lastLine, nearX);
+    offB = hit3 >= 0 ? hit3 + lastLine.length : (lastText.startsWith(lastLine) ? lastLine.length : Math.max(0, lastText.indexOf(lastLine)) + lastLine.length);
   }
   if (offB <= offA) offB = firstText.length;
   const frag = { firstRowIdx: first, lastRowIdx: last, offA, offB, text };
@@ -1811,12 +1843,32 @@ function toggleFrag(entry, frag) {
   // 旧 neutral 分支用单条替换（fragSel.set([frag])），用户看到的就是
   // "选第二个词时第一个被擦掉"。模式开关只改变执行入口，不改变累加语义。
   const eq = list.find((f) => f.firstRowIdx === frag.firstRowIdx && f.lastRowIdx === frag.lastRowIdx && f.offA === frag.offA && f.offB === frag.offB);
+  // COEXISTENCIA por chars (spec Damian 27/10: "se despinta lo pintado al
+  // pintar lo nuevo" + "3 palabras separadas en una línea tienen que quedar
+  // las 3"): el filtro viejo descartaba cualquier frag que tocara una de
+  // las FILAS del nuevo — dos palabras en la misma fila, o una pintada
+  // suelta tras un drag multilínea, se comían la anterior. Ahora sólo se
+  // reemplaza lo que SOLAPA caracteres con lo nuevo (pintar sobre la misma
+  // franja = reemplazo; firma exacta = toggle-off a propósito).
+  const segsOf = (f) => {
+    const rows = contentRowsOf(entry);
+    const out = [];
+    for (let i = f.firstRowIdx; i <= f.lastRowIdx; i++) {
+      const len = (rows[i]?.textContent ?? "").length;
+      const a = i === f.firstRowIdx ? f.offA : 0;
+      const b = i === f.lastRowIdx ? Math.min(f.offB, len) : len;
+      if (b > a) out.push([i, a, b]);
+    }
+    return out;
+  };
+  const fSegs = segsOf(frag);
+  const overlaps = (f) => fSegs.some(([i, a, b]) => segsOf(f).some(([j, c, d]) => i === j && a < d && c < b));
   let next;
   if (eq) next = list.filter((f) => f !== eq);
   else {
-    next = list.filter((f) => f.lastRowIdx < frag.firstRowIdx || f.firstRowIdx > frag.lastRowIdx);
+    next = list.filter((f) => !overlaps(f));
     next.push(frag);
-    next.sort((a, b) => a.firstRowIdx - b.firstRowIdx);
+    next.sort((a, b) => a.firstRowIdx - b.firstRowIdx || a.offA - b.offA);
   }
   if (next.length) fragSel.set(entry.path, next);
   else fragSel.delete(entry.path);
