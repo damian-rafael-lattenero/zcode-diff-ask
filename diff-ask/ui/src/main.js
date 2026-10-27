@@ -1383,7 +1383,7 @@ function paintCurrentSelection() {
   // 1) drag conocido → entry por hit-test del punto inicial, frag por carets
   if (dragPath && Date.now() - dragPath.at < 1500) {
     const A = pointToRowInfo(dragPath.x0, dragPath.y0, true);
-    diagSel(`caret A=${A?.fail ?? A.entry.path.slice(-18) + "@" + A.idx} drag=${dragPath.x0},${dragPath.y0}`);
+    diagSel(`caret A=${A?.fail ?? A?.entry?.path.slice(-18) + "@" + A?.idx ?? "fuera"} drag=${dragPath.x0},${dragPath.y0}`);
     const entry = A?.entry && rendered.get(A.entry.path) ? A.entry : null;
     if (entry && !entry.edit) {
       const byCaret = caretFrag(entry);
@@ -1562,6 +1562,27 @@ document.addEventListener("pointermove", (e) => {
 // (shadowRoot.elementFromPoint SÍ devuelve el elemento interno — y los spans
 // del highlighting son tokens, así que la suma de hermanos previos da offset
 // con precisión de palabra). caretRangeFromPoint NO sirve: retargetea.
+// offset de carácter dentro del span cuya posición horizontal ≈ x, por
+// búsqueda binaria sobre getBoundingClientRect de ranges internos (los rects
+// del shadow SÍ son geometría real aunque la Selection retargetee).
+function offsetAtX(span, x) {
+  const len = span.textContent.length;
+  if (!len) return 0;
+  const sr = span.getBoundingClientRect();
+  if (x <= sr.left) return 0;
+  if (x >= sr.right) return len;
+  let lo = 0;
+  let hi = len;
+  for (let i = 0; i < 18 && hi - lo > 1; i++) {
+    const mid = (lo + hi) >> 1;
+    const r = plainOffsetToRange(span, 0, mid).getBoundingClientRect();
+    if (!r.width && !r.height) { lo = mid; continue; }
+    if (r.right < x) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
 function pointToRowInfo(x, y, why = false) {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return why ? { fail: "coords" } : null;
   for (const e of rendered.values()) {
@@ -1594,10 +1615,10 @@ function pointToRowInfo(x, y, why = false) {
         }
       }
     } else if (span) {
-      // el punto no tocó texto (padding/fin de línea corta): por posición
-      // horizontal — derecha del texto = fin, izquierda = principio
-      const sr = span.getBoundingClientRect();
-      off = x > sr.right ? spanText.length : x < sr.left ? 0 : Math.round(spanText.length / 2);
+      // el punto no tocó un TOKEN (línea sin highlight o padding): binaria
+      // de rects sobre ranges internos para el offset de carácter exacto —
+      // antes esto daba 0/mitad/fin y una palabra se volvía línea entera.
+      off = offsetAtX(span, x);
     }
     return { entry: e, idx, off };
   }
@@ -1612,14 +1633,28 @@ function caretFrag(entry) {
     diagSel(`caretFrag ✗ A=${A ? A.entry.path.slice(-14) : "null"} B=${B ? B.entry.path.slice(-14) : "null"} (cae al match por texto)`);
     return null;
   }
-  if (A.idx === B.idx && B.off <= A.off) return null; // degenerado (doble-click)
+  if (A.idx === B.idx && B.off <= A.off) {
+    // doble-click / click sin arrastre: PALABRA bajo el caret (spec Damian —
+    // antes esto caía al fallback de texto y pintaba la LÍNEA ENTERA)
+    const rowText = contentRowsOf(entry)[A.idx]?.querySelector("span")?.textContent ?? "";
+    const isWord = (ch) => /[\wáéíóúñÁÉÍÓÚÑ]/.test(ch);
+    let a = Math.min(A.off, rowText.length);
+    let b = a;
+    while (a > 0 && isWord(rowText[a - 1])) a--;
+    while (b < rowText.length && isWord(rowText[b])) b++;
+    if (b <= a) return null;
+    return { firstRowIdx: A.idx, lastRowIdx: A.idx, offA: a, offB: b, text: rowText.slice(a, b) };
+  }
   const first = A.idx <= B.idx ? A : B;
   const last = A.idx <= B.idx ? B : A;
   const rows = contentRowsOf(entry);
   const rowText = (i) => rows[i]?.querySelector("span")?.textContent ?? rows[i]?.textContent ?? "";
   // drag VERTICAL (el gesto natural para "estas líneas enteras"): filas
   // completas — la componente horizontal no discrimina nada útil
-  const vertical = Math.abs(dragPath.y1 - dragPath.y0) > 3 * Math.abs(dragPath.x1 - dragPath.x0);
+  // vertical = gesto claramente de líneas enteras: bajó media línea (14px) o
+  // más y casi sin componente horizontal. Diagonales cortas de palabra ya no
+  // clasifican (antes pintaban la fila entera).
+  const vertical = Math.abs(dragPath.y1 - dragPath.y0) >= 14 && Math.abs(dragPath.x1 - dragPath.x0) < 8;
   const offA = vertical ? 0 : Math.min(first.off, rowText(first.idx).length);
   const offB = vertical ? rowText(last.idx).length : Math.min(last.off, rowText(last.idx).length);
   const parts = [];
