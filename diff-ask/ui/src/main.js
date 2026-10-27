@@ -1134,6 +1134,10 @@ function matchRowsToLines(rows, lines, near = -1) {
   if (!real.length || real.length > rows.length) return null;
   const match1 = (line, row) => {
     const rowText = (row.textContent ?? "").trim();
+    // 中文注释：空行绝不是通配符。旧行为 line.includes("") 恒为 true，
+    // 任何一行文本都能匹配到空行上（e2e 实测：双击中文 ADR 行最终把
+    // frag 钉在空行上）。空行不参与文本匹配。
+    if (!rowText || !line) return false;
     return rowText === line || rowText.includes(line) || line.includes(rowText);
   };
   const runs = [];
@@ -1624,24 +1628,19 @@ function pointToRowInfo(x, y, why = false) {
     const rows = contentRowsOf(e);
     const idx = rows.indexOf(node);
     if (idx < 0) return why ? { fail: "idx -1 en " + e.path.slice(-16) } : null;
-    const span = node.querySelector("span");
-    const spanText = span?.textContent ?? "";
-    let off = spanText.length;
-    if (span && inner !== node && inner !== span) {
-      let n = inner;
-      while (n && n.parentElement !== span) n = n.parentElement;
-      if (n) {
+    // 中文注释：偏移量必须按整行文本计算。0.8.6 之前 offset 相对第一个
+    // span/token 计算：双击落在后续 token（如 **加粗**、反引号）时 walk 找
+    // 不到第一个 span 的直接子节点，offset 被钉死在第一个 token 的末尾，
+    // caretFrag 得到 a==b 直接失败。locatePlain/offsetAtX 本来就递归下探
+    // 整棵子树，直接对 row 做二分即可拿到整行坐标系下的精确字符偏移。
+    const rowText = node.textContent ?? "";
+    let off = 0;
+    if (rowText.trim()) {
+      try {
+        off = offsetAtX(node, x);
+      } catch {
         off = 0;
-        for (const c of span.childNodes) {
-          if (c === n) break;
-          off += c.textContent.length;
-        }
       }
-    } else if (span) {
-      // el punto no tocó un TOKEN (línea sin highlight o padding): binaria
-      // de rects sobre ranges internos para el offset de carácter exacto —
-      // antes esto daba 0/mitad/fin y una palabra se volvía línea entera.
-      off = offsetAtX(span, x);
     }
     return { entry: e, idx, off };
   }
@@ -1659,8 +1658,10 @@ function caretFrag(entry) {
   if (A.idx === B.idx && B.off <= A.off) {
     // doble-click / click sin arrastre: PALABRA bajo el caret (spec Damian —
     // antes esto caía al fallback de texto y pintaba la LÍNEA ENTERA)
-    const rowText = contentRowsOf(entry)[A.idx]?.querySelector("span")?.textContent ?? "";
-    const isWord = (ch) => /[\wáéíóúñÁÉÍÓÚÑ]/.test(ch);
+    // 中文注释：rowText 取整行 textContent（跨 token），词边界用 Unicode 类
+    // （\p{L} 覆盖中日韩与带重音字母），否则中文行永远选不出词。
+    const rowText = contentRowsOf(entry)[A.idx]?.textContent ?? "";
+    const isWord = (ch) => /[\p{L}\p{N}_]/u.test(ch);
     let a = Math.min(A.off, rowText.length);
     let b = a;
     while (a > 0 && isWord(rowText[a - 1])) a--;
@@ -1671,7 +1672,7 @@ function caretFrag(entry) {
   const first = A.idx <= B.idx ? A : B;
   const last = A.idx <= B.idx ? B : A;
   const rows = contentRowsOf(entry);
-  const rowText = (i) => rows[i]?.querySelector("span")?.textContent ?? rows[i]?.textContent ?? "";
+  const rowText = (i) => rows[i]?.textContent ?? "";
   // drag VERTICAL (el gesto natural para "estas líneas enteras"): filas
   // completas — la componente horizontal no discrimina nada útil
   // vertical = gesto claramente de líneas enteras: bajó media línea (14px) o
@@ -1700,8 +1701,8 @@ function paintFromSelection(entry, rows, text) {
   const last = idxOf.get(rows[rows.length - 1]);
   if (first == null || last == null || last < first) return;
   const lines = text.split("\n");
-  const firstText = crows[first]?.querySelector("span")?.textContent ?? crows[first]?.textContent ?? "";
-  const lastText = crows[last]?.querySelector("span")?.textContent ?? crows[last]?.textContent ?? "";
+  const firstText = crows[first]?.textContent ?? "";
+  const lastText = crows[last]?.textContent ?? "";
   // línea vacía = la selección nace/muere EN el borde de la fila (no un
   // "endsWith('')" que mandaría el offset al otro extremo)
   const firstLine = lines[0] ?? "";
@@ -1792,15 +1793,14 @@ function renderFragRows(entry, layer, frags) {
       try {
         const row = crows[i];
         if (!row) continue;
-        const rt = row.querySelector("span")?.textContent ?? row.textContent ?? "";
+        // 中文注释：行文本与高亮矩形都按整行计算（offset 坐标系一致）；
+        // 空行没有字符 rect，回退整行矩形——选中跨空行时视觉不断层。
+        const rt = row.textContent ?? "";
         const a = i === f.firstRowIdx ? f.offA : 0;
         const b = i === f.lastRowIdx ? Math.min(f.offB, rt.length) : rt.length;
-        if (b <= a) continue;
+        if (b <= a && rt.trim()) continue;
         let rects;
-        const span = row.querySelector("span");
-        if (span) {
-          try { rects = [...plainOffsetToRange(span, a, b).getClientRects()]; } catch { rects = []; }
-        }
+        try { rects = [...plainOffsetToRange(row, a, Math.max(a, b)).getClientRects()]; } catch { rects = []; }
         if (!rects.length) rects = [row.getBoundingClientRect()];
         for (const r of rects) {
           if (!r.width && !r.height) continue;
@@ -1867,7 +1867,9 @@ function fragsToLib(entry) {
     for (let i = f.firstRowIdx; i <= f.lastRowIdx; i++) {
       const row = crows[i];
       if (!row) continue;
-      const rt = row.querySelector("span")?.textContent ?? row.textContent ?? "";
+      // 中文注释：与 renderFragRows 同一坐标系——整行 textContent，
+      // 保证 revert 的 offA/offB 与所见即所改一致。
+      const rt = row.textContent ?? "";
       const a = i === f.firstRowIdx ? f.offA : 0;
       const b = i === f.lastRowIdx ? Math.min(f.offB, rt.length) : rt.length;
       if (b <= a) continue;
