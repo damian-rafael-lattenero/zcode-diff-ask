@@ -1,0 +1,25 @@
+# Fixture records for the diff-ask panel suite.
+app:
+  name: diff-ask-fixture
+  labels:
+    - alpha
+    - bravo
+    - charlie
+
+records:
+  - id: 1
+    kind: note
+    title: "First record"
+    tags: [alpha, delta]
+  - id: 2
+    kind: task
+    title: "Second record"
+    tags: [bravo, echo]
+  - id: 3
+    kind: note
+    title: "Third record"
+    tags: [charlie, foxtrot]
+
+limits:
+  max_open: 10
+  max_archive: 100
