@@ -1138,6 +1138,10 @@ function matchRowsToLines(rows, lines, near = -1) {
     // 任何一行文本都能匹配到空行上（e2e 实测：双击中文 ADR 行最终把
     // frag 钉在空行上）。空行不参与文本匹配。
     if (!rowText || !line) return false;
+    // 中文注释：单行短内容 + includes 方向 = 随机命中（e2e 实测：选中
+    // 文件头文本时，1~3 字符的短行全是文件名的子串，凭空长出幽灵 frag
+    // 且 Esc 只清当前文件清不掉）。多行匹配本身已是强信号，不设限。
+    if (real.length === 1 && rowText.length < 8 && line.length >= 8) return rowText === line;
     return rowText === line || rowText.includes(line) || line.includes(rowText);
   };
   const runs = [];
@@ -1980,6 +1984,10 @@ document.addEventListener("keydown", (e) => {
   if (fb && !fb.hidden) { closeFindbar(); return; }
   const entry = lastPaintedEntry && rendered.get(lastPaintedEntry.path) ? lastPaintedEntry : null;
   if (entry && (fragSel.get(entry.path)?.length || fragModes.get(entry.path))) {
+    // 中文注释：Esc 顺手收起原生选区——不收起的话，选区会变僵尸：之后
+    // 任何 selectionchange（点文件头/按钮）都会让文本匹配把旧词重新
+    // 画出来（e2e 实测："señal"在另一个文件里复活成幽灵 frag）。
+    try { document.getSelection()?.removeAllRanges(); } catch { /* 选区只读时无所谓 */ }
     clearFrags(entry);
     fragModes.delete(entry.path);
     renderFragBadge(entry);
