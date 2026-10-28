@@ -883,14 +883,8 @@ button.fedit.on {
 /* 编辑模式下纯编辑视图：词级标记同样隐藏 */
 .file.editing .wc-layer { display: none; }
 /* botones ? y ↩ de modo brocha (junto a ✏️) */
-button.fmode { padding: 2px 7px; font-weight: 700; }
-button.fmode-ask.on { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); }
-button.fmode-rev.on { border-color: var(--warn); background: var(--warn); color: #fff; }
-/* ↩ DOBLE apilada del rollback multilínea (spec Damian 28/10): dos flechas
-   iguales una bajo la otra — se distingue del rollback de ARCHIVO (↩ sola) */
-button.fmode-rev { display: inline-flex; align-items: center; padding: 1px 7px; }
-button.fmode-rev .dbl { display: block; line-height: 0.8; font-size: 12px; }
-button.fmode-rev .ok { margin-left: 2px; font-size: 10px; }
+/* (Los botones de modo brocha ? y ↩↩ se ELIMINARON en 0.9.17 — spec Damian:
+   el popup ＋/↩ tras pintar y Enter para ejecutar reemplazan los modos.) */
 /* mini aviso efímero ("no diff selected") */
 .mini-notice {
   position: fixed;

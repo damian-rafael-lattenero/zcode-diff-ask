@@ -839,14 +839,19 @@ async function sendAllPending() {
 }
 
 // span = {first, last} índices DOM de las filas EXACTAS que cubrió el gesto
-// (drag/hover/selección) — se pintan esas y ninguna más.
-function queueQuestion(path, range, quoteLines, question, span) {
+// (drag/hover/selección) — se pintan esas y ninguna más. spans = lista de
+// spans para preguntas de VARIOS fragmentos (el pincel): se marcan las filas
+// EXACTAS de cada frag, no todo el rango intermedio (bug Damian 28/10).
+function queueQuestion(path, range, quoteLines, question, span, spans, labelOverride) {
   if (!range) {
     // Pregunta anclada al archivo entero: la "cita" es su mini-resumen.
     pendingAsks.push({ kind: "file", path, label: "archivo", quoteLines, question });
   } else {
     const { side, lines, label } = rangeLabel(range);
-    pendingAsks.push({ kind: "line", path, start: range.start, end: range.end, lines, label, side, quoteLines, question, span });
+    pendingAsks.push({
+      kind: "line", path, start: range.start, end: range.end, lines,
+      label: labelOverride ?? label, side, quoteLines, question, span, spans,
+    });
   }
   renderPile();
   renderAnchors();
@@ -2393,7 +2398,20 @@ async function openFragComposer(entry) {
       if (i) quote.push("⋯");
       quote.push(...f.text.split("\n"));
     });
-    queueQuestion(entry.path, range ?? { start: 1, end: 1, side: "additions" }, quote, q, null);
+    // MARCAS EXACTAS (bug Damian 28/10: dos palabras de filas lejanas
+    // subrayaban TODAS las intermedias): el anclado lleva las filas EXACTAS
+    // de cada frag (spans) y el nombra las líneas una por una — el rango
+    // min-max queda sólo como fallback numérico.
+    const rows = contentRowsOf(entry);
+    const spans = frags.map((f) => ({ first: f.firstRowIdx, last: f.lastRowIdx }));
+    const labelLines = spans
+      .map((s) => {
+        const a = parseInt(rows[s.first]?.dataset.line ?? "0", 10);
+        const b = parseInt(rows[s.last]?.dataset.line ?? String(a), 10);
+        return a === b ? String(a) : `${a}-${b}`;
+      })
+      .join(", ");
+    queueQuestion(entry.path, range ?? { start: 1, end: 1, side: "additions" }, quote, q, null, spans, `líneas ${labelLines}`);
     close();
   };
   card.querySelector(".ask").onclick = submit;
@@ -2863,27 +2881,10 @@ function renderFileInner(f) {
     entry.editBtn = editBtn;
     head.querySelector(".fplus").after(editBtn);
   }
-  // Modos brocha (0.8.0): ? acumula fragmentos para PREGUNTAR, ↩ para
-  // REVERTIR quirúrgico. Volver a apretar el botón con pintadas = EJECUTAR
-  // sobre todo lo pintado. En modo no hay popup flotante; sin modo:
-  // pintada única con popup inmediato.
-  if (!f.binary) {
-    const askBtn = document.createElement("button");
-    askBtn.className = "ghost fmode fmode-ask";
-    askBtn.textContent = "?";
-    const revBtn = document.createElement("button");
-    revBtn.className = "ghost fmode fmode-rev";
-    // ↩↩ apiladas: el rollback multilínea se distingue del de archivo (↩ sola)
-    revBtn.innerHTML = '<span class="dbl">↩</span><span class="dbl">↩</span>';
-    askBtn.onclick = (e) => { e.stopPropagation(); setFragMode(entry, "ask"); };
-    revBtn.onclick = (e) => { e.stopPropagation(); setFragMode(entry, "rev"); };
-    entry.fragAskBtn = askBtn;
-    entry.fragRevBtn = revBtn;
-    // orden del toolbar (spec Damian 28/10): ↩ archivo · ＋ · ✏️ · ? · ↩
-    // multilínea — van después del ✏️ si existe, si no después del ＋
-    (entry.editBtn ?? head.querySelector(".fplus")).after(askBtn, revBtn);
-    renderFragBadge(entry);
-  }
+  // (Los botones de modo brocha "?" y "↩↩" se ELIMINARON — spec Damian
+  // 28/10. Los flujos siguen: pintar acumula con coexistencia por chars, el
+  // popup ＋/↩ aparece tras cada pintada, Enter ejecuta el revert de todo lo
+  // pintado y el ＋ del popup pregunta por los fragmentos pintados.)
   // ↩ revert de TODO el archivo (sólo modificados con before completo)
   if (typeof f.before === "string" && f.status !== "A" && f.status !== "?") {
     const revBtn = document.createElement("button");
