@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mergeWords, mergedOffToNew, newRangeToMergedSegs, revertFrags, restoreOldWords,
+  mergeWords, mergedOffToNew, newRangeToMergedSegs, revertFrags, restoreOldWords, wordRanges,
 } from "../diff-ask/ui/src/lib.js";
 
 // mergeWords: la secuencia intercalada que alimenta los tachados inline de
@@ -174,4 +174,18 @@ test("old quirúrgico: la palabra restaurada queda pegada al texto nuevo con su 
 test("restoreOldWords puro: región sin pintar no cambia; línea idéntica no cambia", () => {
   assert.equal(restoreOldWords("b", "a", [[0, 0]]).noChange, true); // nada pintado
   assert.equal(restoreOldWords("x", "x", [[0, 1]]).noChange, true); // iguales
+});
+
+// ---- UNA CAJA POR PALABRA (spec 28/10: "muchas palabras → boxes
+// superpuestos y difícil leer"; el rango mergeado cubre todo junto) ----
+
+test("wordRanges: parte el rango en palabras, espacios afuera", () => {
+  // "uno dos tres" cambió entero: el rango mergeado [0,12) → 3 cajas
+  assert.deepEqual(wordRanges("uno dos tres", 0, 12), [[0, 3], [4, 7], [8, 12]]);
+});
+
+test("wordRanges: recorta a los bordes del rango y tolera solo-espacios", () => {
+  assert.deepEqual(wordRanges("hola que tal", 2, 9), [[2, 4], [5, 8]]); // bordes parciales
+  assert.deepEqual(wordRanges("a  b", 1, 3), []); // rango de puros espacios → sin cajas
+  assert.deepEqual(wordRanges("solo", 0, 4), [[0, 4]]); // una palabra entera
 });

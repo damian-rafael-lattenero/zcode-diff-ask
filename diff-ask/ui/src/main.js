@@ -21,7 +21,7 @@ import { Editor } from "@pierre/diffs/edit";
 import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
   compressRuns, linesLabel, quoteForRanges, revertLines, revertFrags,
-  changedWordRanges, mergedOffToNew, newRangeToMergedSegs,
+  changedWordRanges, mergedOffToNew, newRangeToMergedSegs, wordRanges,
 } from "./lib.js";
 
 const DIFF_URI = "diff://workspace";
@@ -2158,9 +2158,10 @@ function wcAddRects(frag, row, a, b, bodyRect, cls) {
       if (!r.width && !r.height) continue;
       const d = document.createElement("div");
       d.className = cls;
-      // 2px de aire por lado (spec Damian): la línea del recuadro no toca
-      // las letras — el rect del char es exacto, el box se agranda un toque.
-      const padX = 2;
+      // 1px de aire por lado: con UNA CAJA POR PALABRA y el espacio limpio
+      // entre ellas, las cajas vecinas ya no se tocan (padX 2 las superponía
+      // 4px cuando cambiaban muchas palabras — spec 28/10 "difícil leer")
+      const padX = 1;
       const padY = 1.5;
       d.style.top = `${Math.max(0, r.top - bodyRect.top - padY)}px`;
       d.style.left = `${Math.max(0, r.left - bodyRect.left - padX)}px`;
@@ -2245,15 +2246,20 @@ function markChangedWords(entry) {
   layer.textContent = "";
   // GitHub-style: la fila ROJA lleva su palabra removida resaltada en rojo,
   // la fila VERDE su palabra agregada en verde (changedWordRanges por pareja
-  // del mismo cambio). Offsets de cada lado sobre SU fila (sin mezcla).
+  // del mismo cambio). UNA CAJA POR PALABRA (spec 28/10): el rango mergeado
+  // cubre "word1 word2 word3" entero = un bloque continuo difícil de leer
+  // cuando cambian muchas palabras; partiendo por palabra, el espacio queda
+  // limpio entre cajas y la línea se lee.
   const frag = document.createDocumentFragment();
   for (const g of groups) {
     const n = Math.min(g.dels.length, g.adds.length);
     for (let k = 0; k < n; k++) {
-      const r = changedWordRanges(g.dels[k].textContent ?? "", g.adds[k].textContent ?? "");
+      const redText = g.dels[k].textContent ?? "";
+      const greenText = g.adds[k].textContent ?? "";
+      const r = changedWordRanges(redText, greenText);
       if (!r) continue;
-      for (const [a, b] of r.del) wcAddRects(frag, g.dels[k], a, b, bodyRect, "wc-del");
-      for (const [a, b] of r.add) wcAddRects(frag, g.adds[k], a, b, bodyRect, "wc-add");
+      for (const [a, b] of r.del) for (const [wa, wb] of wordRanges(redText, a, b)) wcAddRects(frag, g.dels[k], wa, wb, bodyRect, "wc-del");
+      for (const [a, b] of r.add) for (const [wa, wb] of wordRanges(greenText, a, b)) wcAddRects(frag, g.adds[k], wa, wb, bodyRect, "wc-add");
       for (const [a, b] of r.delWs ?? []) wcAddDot(frag, g.dels[k], a, b, bodyRect, "wc-ws-del");
       for (const [a, b] of r.addWs ?? []) wcAddDot(frag, g.adds[k], a, b, bodyRect, "wc-ws-add");
     }

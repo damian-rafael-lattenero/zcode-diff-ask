@@ -746,8 +746,8 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     `texto EXACTO de cada fila — la roja con (words), la verde con (tokens)`);
   check(mods.delBoxes > 0 && mods.addBoxes > 0,
     `la palabra removida va resaltada en ROJO (cajas .wc-del=${mods.delBoxes}) y la agregada en VERDE (.wc-add=${mods.addBoxes})`);
-  check(mods.delBg.includes("0.58") && mods.addBg.includes("0.58"),
-    `relleno BRILLANTE programático (oklch relativo, alpha 0.58): del=${JSON.stringify(mods.delBg.slice(0, 40))} add=${JSON.stringify(mods.addBg.slice(0, 40))}`);
+  check(mods.delBg.includes("0.42") && mods.addBg.includes("0.42"),
+    `relleno programático legible (oklch relativo, alpha 0.42): del=${JSON.stringify(mods.delBg.slice(0, 40))} add=${JSON.stringify(mods.addBg.slice(0, 40))}`);
   check(mods.tachados === 0, "sin tachados inline ni mezcla de versiones en una sola fila");
   await shot("12-diff-clasico-github.png");
 

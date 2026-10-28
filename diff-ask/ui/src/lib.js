@@ -529,6 +529,24 @@ export function mergeWords(oldLine, newLine) {
   return out;
 }
 
+// Parte un rango [a,b) de una línea en rangos por PALABRA (las corridas de
+// espacios quedan afuera). changedWordRanges devuelve rangos MERGEADOS que
+// cubren "word1 word2 word3" entero — una sola caja gigante; con una caja
+// por palabra y el espacio limpio entre ellas, un cambio de muchas palabras
+// se sigue leyendo (spec Damian 28/10: "muchas palabras → boxes superpuestos
+// y difícil leer").
+export function wordRanges(text, a, b) {
+  const out = [];
+  const re = /\S+/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const s = Math.max(a, m.index);
+    const e = Math.min(b, m.index + m[0].length);
+    if (e > s) out.push([s, e]);
+  }
+  return out;
+}
+
 // ---- cortes de espacio merged↔new (fila verde con runs tachados) ----
 // Puro y sin DOM para poder testear: `dels` es la lista de runs tachados con
 // su rango merged [mStart,mEnd) (rowSpaces en main.js la arma del DOM real).
