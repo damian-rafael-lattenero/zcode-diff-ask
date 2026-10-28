@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Diff Ask</title>
-    <script>window.__DA_BUILD="0.9.11";</script>
+    <script>window.__DA_BUILD="0.9.12";</script>
     <style>:root {
   --bg: #f7f7f8;
   --card: #ffffff;
@@ -853,21 +853,21 @@ button.fedit.on {
    红/绿方框（粗描边 + 实色垫底）标出，红词在删除行、绿词在新增行。 */
 .wc-layer { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
 .file-body:has(.wc-layer) { position: relative; }
-/* spec Damian 0.9.6: la cajita usa el VERDE REAL del diff (muestreado de
-   la fila por JS en --wc-green/--wc-red) y es apenas un 25% más fuerte que
-   el fondo de la fila — el 55% fijo lavaba el texto ("con esos colores no
-   veo nada"). */
+/* La cajita usa el VERDE/ROJO REAL del diff (muestreado de la fila por JS en
+   --wc-green/--wc-red). Spec Damian 28/10 (0.9.12): "las palabras diferentes
+   sobresalidas, recuadradas en color 50% más brillante o fuerte" — el
+   relleno pasa del 25% al 50% de la fila: la palabra cambiada RESALTA. */
 .wc-add {
   position: absolute;
   border-radius: 3px;
   background: var(--wc-green, #3fb950);
-  opacity: 0.25;
+  opacity: 0.5;
 }
 .wc-del {
   position: absolute;
   border-radius: 3px;
   background: var(--wc-red, #f85149);
-  opacity: 0.25;
+  opacity: 0.5;
 }
 /* espacios agregados/borrados: circulito mínimo y TENUE (una corrida = un punto) */
 .wc-ws-add, .wc-ws-del {
