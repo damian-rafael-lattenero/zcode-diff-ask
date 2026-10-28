@@ -21,7 +21,7 @@ import { Editor } from "@pierre/diffs/edit";
 import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
   compressRuns, linesLabel, quoteForRanges, revertLines, revertFrags,
-  changedWordRanges,
+  changedWordRanges, mergeWords, mergedOffToNew, newRangeToMergedSegs,
 } from "./lib.js";
 
 const DIFF_URI = "diff://workspace";
@@ -1608,6 +1608,83 @@ function plainOffsetToRange(span, a, b) {
   return range;
 }
 
+// ----------------------------------------------------- espacios de fila
+// La fila verde de una pareja lleva los REMOVIDOS tachados inline (spans
+// [data-da-del], spec 0.9.8 "quiero leer también lo que había antes"): su
+// textContent ya NO es la línea del archivo. Dos espacios de offset conviven:
+//   merged = textContent entero (lo que miden los hit-tests y locatePlain)
+//   new    = texto SIN los tachados — la línea en disco; los frags lado new
+//            y la cirugía del revert SIEMPRE hablan este idioma
+// rowSpaces mapea cada run tachado a su rango merged [mStart,mEnd).
+function rowSpaces(row) {
+  let txt = "";
+  const dels = [];
+  const walk = (node) => {
+    for (const c of node.childNodes) {
+      if (c.nodeType === 3) txt += c.data;
+      else if (c.nodeType === 1) {
+        const s = txt.length;
+        walk(c);
+        if (c.hasAttribute?.("data-da-del")) dels.push({ el: c, mStart: s, mEnd: txt.length, text: txt.slice(s) });
+      }
+    }
+  };
+  walk(row);
+  return { merged: txt, dels };
+}
+const isDelEl = (n) => n.nodeType === 1 && n.hasAttribute?.("data-da-del");
+// texto nuevo de la fila (sin los runs tachados)
+function rowNewText(row) {
+  const { merged, dels } = rowSpaces(row);
+  if (!dels.length) return merged;
+  let out = "";
+  let cur = 0;
+  for (const d of dels) { out += merged.slice(cur, d.mStart); cur = d.mEnd; }
+  return out + merged.slice(cur);
+}
+// merged → new (offset de cirugía): restar los chars tachados previos a mOff
+function mergedToNew(row, mOff) {
+  return mergedOffToNew(rowSpaces(row).dels, mOff);
+}
+// new [a,b) → segmentos merged (partidos por los runs tachados intermedios):
+// franjas y cajas pintan el texto nuevo SIN invadir los tachados
+function newToMergedSegs(row, a, b) {
+  const { merged, dels } = rowSpaces(row);
+  return newRangeToMergedSegs(dels, merged.length, a, b);
+}
+function locatePlainNS(node, target, posRef) {
+  if (node.nodeType === 3) {
+    if (posRef.pos + node.data.length >= target) {
+      return { node, offset: Math.max(0, Math.min(target - posRef.pos, node.data.length)) };
+    }
+    posRef.pos += node.data.length;
+    return null;
+  }
+  if (isDelEl(node)) return null; // el run tachado no existe en espacio new
+  for (const c of node.childNodes) {
+    const r = locatePlainNS(c, target, posRef);
+    if (r) return r;
+  }
+  return null;
+}
+// Range sobre offsets en espacio NEW: en filas sin tachados es idéntico a
+// plainOffsetToRange (por eso las cajitas/dots usan SIEMPRE este)
+function plainOffsetToRangeNS(span, a, b) {
+  const len = rowNewText(span).length;
+  a = Math.max(0, Math.min(a, len));
+  b = Math.max(a, Math.min(b, len));
+  const A = locatePlainNS(span, a, { pos: 0 }) ?? { node: span, offset: span.childNodes.length };
+  const B = locatePlainNS(span, b, { pos: 0 }) ?? { node: span, offset: span.childNodes.length };
+  const range = document.createRange();
+  range.setStart(A.node, A.offset);
+  try {
+    range.setEnd(B.node, B.offset);
+  } catch {
+    range.setEnd(span, span.childNodes.length);
+  }
+  return range;
+}
+
 // Camino del drag de texto: punto inicial y final del gesto. Con el
 // retargeting de Chromium ni el rango ni (a veces) los newlines de
 // String(sel) son confiables — caretRangeFromPoint sobre ESTOS puntos sí
@@ -1724,14 +1801,22 @@ function caretFrag(entry) {
     // antes esto caía al fallback de texto y pintaba la LÍNEA ENTERA)
     // 中文注释：rowText 取整行 textContent（跨 token），词边界用 Unicode 类
     // （\p{L} 覆盖中日韩与带重音字母），否则中文行永远选不出词。
-    const rowText = contentRowsOf(entry)[A.idx]?.textContent ?? "";
+    const row = contentRowsOf(entry)[A.idx];
+    const sp = rowSpaces(row ?? document.createElement("div"));
+    const rowText = sp.merged;
     const isWord = (ch) => /[\p{L}\p{N}_]/u.test(ch);
+    // el walk NO puede cruzar el borde de un run tachado: "beta̶gamma" (del
+    // pegado al add) sería UNA sola palabra y el doble-click pintaría los
+    // DOS lados juntos (restaurar + borrar a la vez)
+    const edge = (x) => sp.dels.some((d) => d.mStart === x || d.mEnd === x);
     let a = Math.min(A.off, rowText.length);
     let b = a;
-    while (a > 0 && isWord(rowText[a - 1])) a--;
-    while (b < rowText.length && isWord(rowText[b])) b++;
+    while (a > 0 && !edge(a) && isWord(rowText[a - 1])) a--;
+    while (b < rowText.length && !edge(b) && isWord(rowText[b])) b++;
     if (b <= a) return null;
-    return { firstRowIdx: A.idx, lastRowIdx: A.idx, offA: a, offB: b, text: rowText.slice(a, b) };
+    const run = sp.dels.find((d) => d.mStart <= a && b <= d.mEnd);
+    if (run) return [oldFragOf(entry, A.idx, row, run)]; // palabra TACHADA → restaurar
+    return [{ side: "new", firstRowIdx: A.idx, lastRowIdx: A.idx, offA: mergedToNew(row, a), offB: mergedToNew(row, b), text: rowText.slice(a, b) }];
   }
   const first = A.idx <= B.idx ? A : B;
   const last = A.idx <= B.idx ? B : A;
@@ -1757,14 +1842,62 @@ function caretFrag(entry) {
     offA = Math.min(first.off, rowText(first.idx).length);
     offB = Math.min(last.off, rowText(last.idx).length);
   }
-  const parts = [];
-  for (let i = first.idx; i <= last.idx; i++) {
-    const rt = rowText(i);
-    parts.push(rt.slice(i === first.idx ? offA : 0, i === last.idx ? offB : rt.length));
+  return fragsFromMergedRange(entry, first.idx, last.idx, offA, offB);
+}
+
+// frag lado OLD de un run tachado de la fila idx: pintarlo restaura la línea
+// ORIGINAL y saca a su pareja verde (semántica pareja atómica de revertFrags:
+// "roja pintada → pareja completa"). offA/offB en la línea VIEJA; line = el
+// número de línea del ARCHIVO viejo (dataset.daOldLine, fijado al parear).
+function oldFragOf(entry, idx, row, run) {
+  const oldLine = row.dataset.daOld ?? "";
+  let offA = oldLine.indexOf(run.text);
+  if (offA < 0) offA = 0;
+  return {
+    side: "old", firstRowIdx: idx, lastRowIdx: idx,
+    line: parseInt(row.dataset.daOldLine || row.dataset.line || "1", 10),
+    offA, offB: offA + run.text.length, text: run.text,
+    m0: run.mStart, m1: run.mEnd,
+  };
+}
+
+// Selección merged [offA,offB) de las filas firstIdx..lastIdx → LISTA de
+// frags: el texto no-tachado es UN frag new (offsets de cirugía, espacios
+// new por fila) y cada run tachado cubierto aporta su frag old. Un drag que
+// abarca tachados y nuevos pinta AMBOS lados (coexistencia, spec 0.9.3).
+function fragsFromMergedRange(entry, firstIdx, lastIdx, offA, offB) {
+  const rows = contentRowsOf(entry);
+  const out = [];
+  const newParts = [];
+  let nFirst = -1;
+  let nLast = -1;
+  let nA = 0;
+  let nB = 0;
+  for (let i = firstIdx; i <= lastIdx; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const sp = rowSpaces(row);
+    const mA = i === firstIdx ? Math.min(offA, sp.merged.length) : 0;
+    const mB = i === lastIdx ? Math.min(offB, sp.merged.length) : sp.merged.length;
+    for (const d of sp.dels) {
+      if (d.mStart < mB && d.mEnd > mA && d.text.trim()) out.push(oldFragOf(entry, i, row, d));
+    }
+    const nt = rowNewText(row);
+    const a = mergedToNew(row, mA);
+    const b = mergedToNew(row, mB);
+    const s = i === firstIdx ? a : 0;
+    const e = i === lastIdx ? b : nt.length;
+    if (e > s) {
+      if (nFirst < 0) { nFirst = i; nA = s; }
+      nLast = i;
+      nB = e;
+      newParts.push(nt.slice(s, e));
+    }
   }
-  const t = parts.join("\n");
-  if (!t.trim()) return null;
-  return { firstRowIdx: first.idx, lastRowIdx: last.idx, offA, offB, text: t };
+  if (newParts.length) out.unshift({ side: "new", firstRowIdx: nFirst, lastRowIdx: nLast, offA: nA, offB: nB, text: newParts.join("\n") });
+  // selección de puros espacios (o vacía tras partir por tachados): no pinta
+  // (mismo criterio que tenía el drag: !t.trim() → null)
+  return out.some((f) => f.text.trim()) ? out : [];
 }
 
 // Selección → frag. PRIMERO geometría (camino del drag + carets, exacto);
@@ -1825,12 +1958,14 @@ function paintFromSelection(entry, rows, text) {
     offB = hit3 >= 0 ? hit3 + lastLine.length : (lastText.startsWith(lastLine) ? lastLine.length : Math.max(0, lastText.indexOf(lastLine)) + lastLine.length);
   }
   if (offB <= offA) offB = firstText.length;
-  const frag = { firstRowIdx: first, lastRowIdx: last, offA, offB, text };
-  toggleFrag(entry, frag);
+  const frags = fragsFromMergedRange(entry, first, last, offA, offB);
+  if (frags.length) toggleFrag(entry, frags);
 }
 
 let lastFragPaint = null; // {gesture} — un gesto pinta UNA vez
-function toggleFrag(entry, frag) {
+function toggleFrag(entry, fragsIn) {
+  const fragList = Array.isArray(fragsIn) ? fragsIn : [fragsIn];
+  if (!fragList.length) return;
   // Un mismo gesto genera VARIAS selectionchange (release → settle) y cada
   // una puede re-pintar: mismo frag lo despintaba (toggle), frag DISTINTO
   // (caret vs fallback por texto) dejaba strays (e2e: "them"+"cit" del mismo
@@ -1840,38 +1975,49 @@ function toggleFrag(entry, frag) {
   const gesture = dragPath?.at ?? 0;
   if (lastFragPaint?.gesture === gesture) return;
   lastFragPaint = { gesture };
-  diagSel(`toggle [${frag.firstRowIdx}-${frag.lastRowIdx} @${frag.offA}-${frag.offB}] "${frag.text.slice(0, 12)}" g=${gesture}`);
+  diagSel(`toggle ${fragList.map((f) => `[${f.side ?? "new"} ${f.firstRowIdx}-${f.lastRowIdx} @${f.offA}-${f.offB}] "${f.text.slice(0, 10)}"`).join(" ")} g=${gesture}`);
   lastPaintedEntry = entry;
   const list = fragSel.get(entry.path) ?? [];
   // 中文注释：画笔永远累加（spec：选一个词再选另一个，两个都保持）。
   // 旧 neutral 分支用单条替换（fragSel.set([frag])），用户看到的就是
   // "选第二个词时第一个被擦掉"。模式开关只改变执行入口，不改变累加语义。
-  const eq = list.find((f) => f.firstRowIdx === frag.firstRowIdx && f.lastRowIdx === frag.lastRowIdx && f.offA === frag.offA && f.offB === frag.offB);
   // COEXISTENCIA por chars (spec Damian 27/10: "se despinta lo pintado al
   // pintar lo nuevo" + "3 palabras separadas en una línea tienen que quedar
-  // las 3"): el filtro viejo descartaba cualquier frag que tocara una de
-  // las FILAS del nuevo — dos palabras en la misma fila, o una pintada
-  // suelta tras un drag multilínea, se comían la anterior. Ahora sólo se
-  // reemplaza lo que SOLAPA caracteres con lo nuevo (pintar sobre la misma
-  // franja = reemplazo; firma exacta = toggle-off a propósito).
-  const segsOf = (f) => {
+  // las 3"): sólo se reemplaza lo que SOLAPA caracteres con lo nuevo — y el
+  // solape se mide en espacio MERGED (tachados incluidos como territorio
+  // propio: el frag old de un run no comparte chars con el frag new que lo
+  // rodea, así un drag mixto no se come a sus propios hermanos).
+  const mSegsOf = (f) => {
     const rows = contentRowsOf(entry);
     const out = [];
     for (let i = f.firstRowIdx; i <= f.lastRowIdx; i++) {
-      const len = (rows[i]?.textContent ?? "").length;
+      const row = rows[i];
+      if (!row) continue;
+      if (f.side === "old") {
+        if (i !== f.firstRowIdx) continue;
+        const oldLine = row.dataset.daOld ?? "";
+        for (const d of rowSpaces(row).dels) {
+          const at = oldLine.indexOf(d.text);
+          if (at >= 0 && at < f.offB && at + d.text.length > f.offA) out.push([i, d.mStart, d.mEnd]);
+        }
+        continue;
+      }
+      const nt = rowNewText(row);
       const a = i === f.firstRowIdx ? f.offA : 0;
-      const b = i === f.lastRowIdx ? Math.min(f.offB, len) : len;
-      if (b > a) out.push([i, a, b]);
+      const b = i === f.lastRowIdx ? Math.min(f.offB, nt.length) : nt.length;
+      if (b > a) for (const [s, e] of newToMergedSegs(row, a, b)) out.push([i, s, e]);
     }
     return out;
   };
-  const fSegs = segsOf(frag);
-  const overlaps = (f) => fSegs.some(([i, a, b]) => segsOf(f).some(([j, c, d]) => i === j && a < d && c < b));
+  const fSegs = fragList.flatMap(mSegsOf);
+  const overlaps = (f) => fSegs.some(([i, a, b]) => mSegsOf(f).some(([j, c, d]) => i === j && a < d && c < b));
+  const sameFrag = (f, g) => !!f && !!g && f.side === g.side && f.firstRowIdx === g.firstRowIdx && f.lastRowIdx === g.lastRowIdx && f.offA === g.offA && f.offB === g.offB;
   let next;
-  if (eq) next = list.filter((f) => f !== eq);
+  const eqs = fragList.map((g) => list.find((f) => sameFrag(f, g)));
+  if (eqs.length && eqs.every(Boolean)) next = list.filter((f) => !eqs.includes(f)); // repintar lo MISMO a propósito = despintar
   else {
     next = list.filter((f) => !overlaps(f));
-    next.push(frag);
+    next.push(...fragList);
     next.sort((a, b) => a.firstRowIdx - b.firstRowIdx || a.offA - b.offA);
   }
   if (next.length) fragSel.set(entry.path, next);
@@ -1933,12 +2079,30 @@ function renderFragRows(entry, layer, frags) {
         if (!row) continue;
         // 中文注释：行文本与高亮矩形都按整行计算（offset 坐标系一致）；
         // 空行没有字符 rect，回退整行矩形——选中跨空行时视觉不断层。
-        const rt = row.textContent ?? "";
-        const a = i === f.firstRowIdx ? f.offA : 0;
-        const b = i === f.lastRowIdx ? Math.min(f.offB, rt.length) : rt.length;
-        if (b <= a && rt.trim()) continue;
-        let rects;
-        try { rects = [...plainOffsetToRange(row, a, Math.max(a, b)).getClientRects()]; } catch { rects = []; }
+        // lado old → franja sobre el/los runs TACHADOS; lado new → segmentos
+        // merged del texto nuevo (partidos por los tachados, sin invadirlos)
+        const nt = rowNewText(row);
+        let rects = [];
+        if (f.side === "old") {
+          if (i !== f.firstRowIdx) continue;
+          const oldLine = row.dataset.daOld ?? "";
+          for (const d of rowSpaces(row).dels) {
+            const at = oldLine.indexOf(d.text);
+            if (!(at >= 0 && at < f.offB && at + d.text.length > f.offA)) continue;
+            try {
+              const r = document.createRange();
+              r.selectNodeContents(d.el);
+              rects.push(...r.getClientRects());
+            } catch { /* run desmontado: sin franja */ }
+          }
+        } else {
+          const a = i === f.firstRowIdx ? f.offA : 0;
+          const b = i === f.lastRowIdx ? Math.min(f.offB, nt.length) : nt.length;
+          if (b <= a && nt.trim()) continue;
+          for (const [s, e] of newToMergedSegs(row, Math.min(a, b), Math.max(a, b))) {
+            try { rects.push(...plainOffsetToRange(row, s, e).getClientRects()); } catch { /* segmento raro */ }
+          }
+        }
         if (!rects.length) rects = [row.getBoundingClientRect()];
         for (const r of rects) {
           if (!r.width && !r.height) continue;
@@ -1959,11 +2123,11 @@ function renderFragRows(entry, layer, frags) {
   layer.appendChild(frag);
 }
 
-// circulito de 4px para whitespace agregado/borrado (una corrida contigua
-// de espacios = un punto, no una hilera de puntos)
+// circulito de 4px para whitespace agregado (una corrida contigua
+// de espacios = un punto, no una hilera de puntos). Offsets en espacio NEW
 function wcAddDot(frag, row, a, b, bodyRect, cls) {
   try {
-    const rects = plainOffsetToRange(row, a, b).getClientRects();
+    const rects = plainOffsetToRangeNS(row, a, b).getClientRects();
     const r = rects[rects.length - 1];
     if (!r || (!r.width && !r.height)) return;
     const d = document.createElement("div");
@@ -1980,7 +2144,9 @@ function wcAddDot(frag, row, a, b, bodyRect, cls) {
 // 余量）不标——整行新 = 整行红绿，正是 spec 要求的样子。
 function wcAddRects(frag, row, a, b, bodyRect, cls) {
   try {
-    const rects = plainOffsetToRange(row, a, b).getClientRects();
+    // offsets en espacio NEW: los tachados de la fila no existen para las
+    // cajas de los agregados
+    const rects = plainOffsetToRangeNS(row, a, b).getClientRects();
     for (const r of rects) {
       if (!r.width && !r.height) continue;
       const d = document.createElement("div");
@@ -2009,10 +2175,12 @@ function markChangedWords(entry) {
   // 行 rect 全是 0（标记全部被跳过但签名已记下），展开后只有高度变化
   // 才能让签名失效并重新计算（e2e 实测：展开后垫片永远不出现）。
   // 另外空层也重试——签名相等但没有标记成功过，多半是布局还没就绪。
+  // El largo se mide en espacio NEW (sin tachados): insertar los runs del
+  // no cambia la firma — la inserción es idempotente y estable.
   const host = entry.body.querySelector("diffs-container");
   const hostH = Math.round(host?.getBoundingClientRect().height ?? -1);
   let sig = `${rows.length}:${hostH}`;
-  for (const r of rows) if (r.dataset.lineType === "change-deletion" || r.dataset.lineType === "change-addition") sig += ":" + (r.textContent || "").length;
+  for (const r of rows) if (r.dataset.lineType === "change-deletion" || r.dataset.lineType === "change-addition") sig += ":" + rowNewText(r).length;
   // UNA fila por línea + hover corren SIEMPRE, ANTES del gate de firma: el
   // componente re-crea las filas en cada render y con contenido idéntico
   // (refresh SSE duplicado) la firma no cambia — si esto quedara adentro
@@ -2034,20 +2202,35 @@ function markChangedWords(entry) {
   for (const r of rows) {
     if (r._daHidden) { r.style.display = ""; delete r._daHidden; }
     if (r.dataset.daOld) delete r.dataset.daOld;
+    if (r.dataset.daOldLine) delete r.dataset.daOldLine;
   }
+  const pairedAdds = new Set();
   for (const g of groups) {
     const n = Math.min(g.dels.length, g.adds.length);
     for (let k = 0; k < n; k++) {
       g.adds[k].dataset.daOld = g.dels[k].textContent ?? "";
+      g.adds[k].dataset.daOldLine = g.dels[k].dataset.line ?? "";
       g.dels[k].style.display = "none";
       g.dels[k]._daHidden = true;
+      pairedAdds.add(g.adds[k]);
+      insertDelRuns(g.adds[k]);
     }
   }
-  bindOldLineHover(entry);
+  // filas que DEJARON de estar pareadas (el diff cambió sin re-render):
+  // sacarles los tachados de una pasada anterior
+  for (const r of rows) {
+    if (pairedAdds.has(r)) continue;
+    if (r.querySelector?.("[data-da-del]")) {
+      r.querySelectorAll("[data-da-del]").forEach((el) => el.remove());
+      delete r.dataset.daMergeKey;
+    }
+  }
   // el color de las cajitas es el VERDE/ROJO REAL del diff: se muestrea el
   // backgroundColor de una fila (+/-) del propio componente (respeta tema
   // claro/oscuro) y se aplana a rgb sólido — la cajita sólo SUMA un 25%
-  // encima de la fila (spec Damian 0.9.6).
+  // encima de la fila (spec Damian 0.9.6). Se fija en el BODY (no sólo en
+  // la capa): los tachados .da-del viven DENTRO del shadow DOM de la fila
+  // y heredan custom properties a través del boundary.
   const solid = (row) => {
     if (!row) return null;
     const m = getComputedStyle(row).backgroundColor.match(/rgba?\(([\d.]+), ?([\d.]+), ?([\d.]+)/);
@@ -2055,6 +2238,8 @@ function markChangedWords(entry) {
   };
   const g = solid(rows.find((r) => r.dataset.lineType === "change-addition"));
   const d = solid(rows.find((r) => r.dataset.lineType === "change-deletion"));
+  if (g) entry.body.style.setProperty("--wc-green", g);
+  if (d) entry.body.style.setProperty("--wc-red", d);
   if (layer) {
     if (g) layer.style.setProperty("--wc-green", g);
     if (d) layer.style.setProperty("--wc-red", d);
@@ -2068,16 +2253,18 @@ function markChangedWords(entry) {
   }
   layer.textContent = "";
   // (groups ya está armado arriba, antes del gate de firma — el colapso
-  // de pares lo necesita en CADA render, no sólo cuando cambian los rects)
+  // de pares y los tachados corren en CADA render, no sólo cuando cambian
+  // los rects)
   const frag = document.createDocumentFragment();
   for (const g of groups) {
     const n = Math.min(g.dels.length, g.adds.length);
     for (let k = 0; k < n; k++) {
-      const r = changedWordRanges(g.dels[k].textContent ?? "", g.adds[k].textContent ?? "");
+      // los REMOVIDOS no se recuadran acá: viven TACHADOS dentro de la fila
+      // verde (insertDelRuns, spec 0.9.8). Las cajas son para los AGREGADOS,
+      // medidas en espacio NEW sobre el layout final (tachados incluidos).
+      const r = changedWordRanges(g.dels[k].textContent ?? "", rowNewText(g.adds[k]));
       if (!r) continue;
-      for (const [a, b] of r.del) wcAddRects(frag, g.dels[k], a, b, bodyRect, "wc-del");
       for (const [a, b] of r.add) wcAddRects(frag, g.adds[k], a, b, bodyRect, "wc-add");
-      for (const [a, b] of r.delWs ?? []) wcAddDot(frag, g.dels[k], a, b, bodyRect, "wc-ws-del");
       for (const [a, b] of r.addWs ?? []) wcAddDot(frag, g.adds[k], a, b, bodyRect, "wc-ws-add");
     }
   }
@@ -2085,62 +2272,58 @@ function markChangedWords(entry) {
   layer.appendChild(frag);
 }
 
-// Burbuja de la línea ORIGINAL al hover de una fila modificada (la vieja
-// está oculta por "una fila por línea"): muestra el texto before con las
-// palabras REMOVIDAS marcadas en rojo. Retardo de 250ms para que no
-// titile al pasar el mouse por encima de camino a otra cosa.
-function bindOldLineHover(entry) {
-  const host = entry.body.querySelector("diffs-container");
-  if (!host?.shadowRoot || host.__daOldHover) return;
-  host.__daOldHover = true;
-  let timer = null;
-  let pop = null;
-  const hide = () => { clearTimeout(timer); pop?.remove(); pop = null; };
-  host.shadowRoot.addEventListener("pointerover", (e) => {
-    if (e.buttons) return; // arrastrando/pintando: nada de burbujas
-    const row = e.target?.closest?.("[data-line]");
-    if (!row?.dataset?.daOld) return;
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      hide();
-      const oldLine = row.dataset.daOld;
-      const dels = changedWordRanges(oldLine, row.textContent ?? "")?.del ?? [];
-      // sin REMOVIDAS no hay nada que rescatar del antes: la fila YA es el
-      // texto final y las cajas marcan lo nuevo — una copia "antes" casi
-      // idéntica sólo DUPLICA la línea y confunde (spec Damian 27/10:
-      // "quiero leer el texto final, las palabras nuevas una única vez").
-      if (!dels.length) return;
-      pop = document.createElement("div");
-      pop.className = "da-old-pop";
-      const head = document.createElement("div");
-      head.className = "da-old-head";
-      head.textContent = "antes · línea original — removidas en rojo";
-      pop.append(head);
-      let last = 0;
-      for (const [a, b] of dels) {
-        pop.append(oldLine.slice(last, a));
-        const s = document.createElement("span");
-        s.className = "da-old-del";
-        s.textContent = oldLine.slice(a, b);
-        pop.append(s);
-        last = b;
-      }
-      pop.append(oldLine.slice(last));
-      document.body.appendChild(pop);
-      const r = row.getBoundingClientRect();
-      const w = pop.offsetWidth;
-      const h = pop.offsetHeight;
-      pop.style.left = `${Math.round(Math.max(6, Math.min(r.left, window.innerWidth - w - 6)))}px`;
-      pop.style.top = `${Math.round(Math.max(6, r.top - h - 4))}px`;
-    }, 250);
-  });
-  host.shadowRoot.addEventListener("pointerout", (e) => {
-    const row = e.target?.closest?.("[data-line]");
-    if (row?.dataset?.daOld && !row.contains(e.relatedTarget)) hide();
-  });
-  document.addEventListener("pointerdown", hide, true);
-  document.addEventListener("scroll", () => hide(), { capture: true, passive: true });
+// Los REMOVIDOS tachados DENTRO de la fila verde (spec 0.9.8: "quiero leer
+// también lo que había antes" — la burbuja de hover tapaba el después):
+// por cada run del de mergeWords se inserta un span [data-da-del] en su
+// lugar de lectura. INSERTAR (no reescribir) deja intactos los tokens de
+// sintaxis de pierre. Idempotente por firma oldLine+newLine; se re-inserta
+// si algo lo borró (p.ej. hlColorize al cambiar de tema).
+function insertDelRuns(addRow) {
+  const oldLine = addRow.dataset.daOld ?? "";
+  const newLine = rowNewText(addRow);
+  const key = oldLine.length + ":" + newLine.length + ":" + oldLine.slice(0, 12);
+  if (addRow.dataset.daMergeKey === key && addRow.querySelector("[data-da-del]")) return;
+  addRow.querySelectorAll("[data-da-del]").forEach((el) => el.remove());
+  addRow.dataset.daMergeKey = key;
+  const seq = mergeWords(oldLine, newLine);
+  if (!seq || !seq.some((it) => it.k === "del")) return;
+  // runs del con su ancla en espacio NEW (chars nuevos consumidos antes del
+  // run) — el walk de lectura del merge
+  const runs = [];
+  let nOff = 0;
+  for (const it of seq) {
+    if (it.k === "del") runs.push({ text: it.text, at: nOff });
+    else nOff += it.text.length;
+  }
+  // derecha→izquierda: las anclas new no se mueven (locatePlainNS salta los
+  // tachados) pero así los splits de text nodes nunca pisan al próximo
+  for (const run of runs.reverse()) {
+    const span = document.createElement("span");
+    span.setAttribute("data-da-del", "1");
+    span.className = "da-del";
+    // estilo INLINE: el span vive DENTRO del shadow DOM de pierre y las
+    // reglas de panel.css (light DOM) no lo alcanzan — igual que hlColorize.
+    // --wc-red se fija en el body del archivo y hereda a través del shadow
+    // boundary; atenuado + tachado: el texto FINAL manda, el antes se lee.
+    span.style.color = "var(--wc-red, #f85149)";
+    span.style.opacity = "0.62";
+    span.style.textDecoration = "line-through";
+    span.style.textDecorationThickness = "1px";
+    span.style.marginRight = "3px";
+    span.textContent = run.text;
+    const A = locatePlainNS(addRow, run.at, { pos: 0 }) ?? { node: addRow, offset: addRow.childNodes.length };
+    try {
+      const r = document.createRange();
+      r.setStart(A.node, A.offset);
+      r.collapse(true);
+      r.insertNode(span);
+    } catch { addRow.appendChild(span); }
+  }
 }
+
+// (La burbuja del "antes" al hover se ELIMINÓ en 0.9.8: se superponía a las
+// líneas de abajo y no dejaba leer antes y después juntos — los removidos
+// ahora viven tachados DENTRO de la fila verde, insertDelRuns.)
 
 function clearFrags(entry) {
   fragSel.delete(entry.path);
@@ -2185,14 +2368,22 @@ function fragsToLib(entry) {
   const crows = contentRowsOf(entry);
   const out = [];
   for (const f of fragSel.get(entry.path) ?? []) {
+    // frag old (tachado pintado): restaurar la línea vieja — line/offA/offB
+    // ya vienen en el idioma del archivo ANTES (fijados al pintar el run)
+    if (f.side === "old") {
+      if (Number.isFinite(f.line)) out.push({ side: "old", line: f.line, offA: f.offA, offB: f.offB });
+      continue;
+    }
     for (let i = f.firstRowIdx; i <= f.lastRowIdx; i++) {
       const row = crows[i];
       if (!row) continue;
-      // 中文注释：与 renderFragRows 同一坐标系——整行 textContent，
-      // 保证 revert 的 offA/offB 与所见即所改一致。
-      const rt = row.textContent ?? "";
+      // 中文注释：与 renderFragRows 同一坐标系—— offsets en espacio NEW
+      // (sin los runs tachados insertados en la fila): es el idioma de
+      // afterLines/beforeLines, lo que garantiza que el revert toque los
+      // chars QUE SE VEN pintados.
+      const nt = rowNewText(row);
       const a = i === f.firstRowIdx ? f.offA : 0;
-      const b = i === f.lastRowIdx ? Math.min(f.offB, rt.length) : rt.length;
+      const b = i === f.lastRowIdx ? Math.min(f.offB, nt.length) : nt.length;
       if (b <= a) continue;
       const line = parseInt(row.dataset.line, 10);
       const side = row.dataset.lineType === "change-deletion" ? "old" : "new";

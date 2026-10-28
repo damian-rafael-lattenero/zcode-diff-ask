@@ -512,8 +512,8 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   await panelStable();
   // ============ I. cajitas del gutter (drag vertical) → revert de línea en server.ts ============
   await expandFile(SERVER_TS);
-  loc = await evalJs(`__E2E.locate(${JSON.stringify(SERVER_TS)}, '"ready"', "change-addition")`);
-  check(loc && !loc.error, "localizo fila verde con \\\"ready\\\" en server.ts", loc?.error ?? "");
+  loc = await evalJs(`__E2E.locate(${JSON.stringify(SERVER_TS)}, "ready", "change-addition")`);
+  check(loc && !loc.error, "localizo fila verde con \"ready\" en server.ts", loc?.error ?? "");
   check(loc.gutterX, "tengo la coordenada del gutter");
   await drag(loc.gutterX, loc.y, loc.gutterX + 2, loc.y + 9, 6);
   await until(async () => (await evalJs(`__DA.boxSel.size`)) > 0);
@@ -642,7 +642,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(loc && !loc.error, "L1 localizo la línea Marker", loc?.error ?? "");
   await dblclick((loc.chars[2].left + loc.chars[2].right) / 2, loc.y); // "Marker"
   await sleep(500);
-  const locAlpha = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "alpha (tokens)")`);
+  const locAlpha = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "alpha (word")`);
   await dblclick((locAlpha.chars[2].left + locAlpha.chars[2].right) / 2, locAlpha.y); // "alpha"
   await sleep(500);
   let pf = await pFrags();
@@ -687,61 +687,96 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   await shot("11-coexistencia-multilinea-gemelas-lento.png");
 
   await panelStable();
-  // ============ M. UNA fila por línea modificada + original al hover (0.9.4) ============
+  // ============ M. fila única + REMOVIDOS tachados inline (0.9.8) ============
+  // "las líneas en rojo y verde se superponen, quiero leer TAMBIÉN lo que
+  // había antes" — el antes ya no vive en una burbuja que tapa el después:
+  // los runs removidos están TACHADOS dentro de la fila verde, en su lugar.
   const mods = await evalJs(`(() => {
     const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(PARSER_PY)});
     const rows = [...e.body.querySelector("diffs-container").shadowRoot.querySelectorAll("[data-line]")].filter((r) => !r.querySelector("[data-line]"));
     const red = rows.find((r) => (r.textContent ?? "").includes("Marker words: alpha (words)"));
     const green = rows.find((r) => (r.dataset.daOld ?? "").includes("alpha (words)"));
-    return { redHidden: red ? getComputedStyle(red).display === "none" : null,
-             greenPaired: !!green, daOld: green?.dataset.daOld ?? null };
+    const tach = green?.querySelector("[data-da-del]");
+    const cs = tach ? getComputedStyle(tach) : null;
+    return {
+      redHidden: red ? getComputedStyle(red).display === "none" : null,
+      greenPaired: !!green,
+      tachText: tach?.textContent ?? null,
+      tachStruck: cs ? cs.display !== "none" && (cs.textDecorationLine ?? "").includes("line-through") : false,
+      merged: green?.textContent ?? null,
+    };
   })()`);
-  check(mods.redHidden === true, "la fila ROJA pareada está OCULTA (una fila por línea)");
-  check(mods.greenPaired && (mods.daOld ?? "").includes("alpha (words)"), "la fila verde guarda el original para el hover");
+  check(mods.redHidden === true, "la fila ROJA pareada sigue OCULTA (una fila por línea)");
+  check(mods.greenPaired, "la fila verde sigue pareada con su original (dataset.daOld)");
+  check(mods.tachText === "words" && mods.tachStruck,
+    `el REMOVIDO 'words' vive tachado y VISIBLE dentro de la fila verde (${JSON.stringify(mods.tachText)} struck=${mods.tachStruck})`);
+  check(mods.merged === "Marker words: alpha (wordstokens), bravo (numbers), charlie (symbols).",
+    `la fila se lee antes+después en su lugar: ~~words~~tokens (${JSON.stringify((mods.merged ?? "").slice(0, 42))})`);
   const greenLoc = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "Marker words:")`);
-  // hover LIMPIO: buttons 0 — mouse.move lleva buttons:1 (para drags) y el
-  // panel ignora pointerover con botón apretado (no burbujas al pintar)
   await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: (greenLoc.left + greenLoc.right) / 2, y: greenLoc.y, button: "none", buttons: 0 });
-  const popM = await until(async () => (await evalJs(`document.querySelector(".da-old-pop")`)) !== null, 3500);
-  check(popM, "el hover sobre la línea modificada abre la burbuja del original");
-  const popText = await evalJs(`document.querySelector(".da-old-pop")?.textContent ?? ""`);
-  check(popText.includes("alpha (words)"), `la burbuja muestra la línea VIEJA (${JSON.stringify(popText.slice(0, 60))})`);
-  check(popText.includes("antes"), "la burbuja está ETIQUETADA como el antes (no es una copia más)");
-  await shot("12-una-fila-por-linea-hover.png");
-  // re-render con contenido idéntico (refresh): la roja pareada NO puede
-  // reaparecer — el gate de firma saltaba el colapso y la duplicaba (bug
-  // reportado por Damian: "const payload ... se duplica")
+  await sleep(600);
+  check((await evalJs(`document.querySelector(".da-old-pop")`)) === null, "SIN burbuja superpuesta: el antes se lee sin hover");
+  await shot("12-fila-unica-tachados-inline.png");
+
+  // pintar el TACHADO = restaurar: doble-click en ~~words~~ → frag old →
+  // la línea vuelve AL ORIGINAL (pareja atómica) y sale del diff
+  await evalJs(`__DA.fragSel.delete(${JSON.stringify(PARSER_PY)})`); // suelto las pintadas de L
+  const tachLoc = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "(words")`);
+  check(tachLoc && !tachLoc.error, "localizo el run tachado en la fila verde", tachLoc?.error ?? "");
+  await dblclick((tachLoc.chars[2].left + tachLoc.chars[2].right) / 2, tachLoc.y);
+  await waitPaint(PARSER_PY, 1);
+  pf = await pFrags();
+  check(pf.length === 1 && pf[0].text === "words", `doble-click en el TACHADO pinta el frag de restaurar (${JSON.stringify(pf.map((f) => f.text))})`);
+  await evalJs("document.activeElement?.blur?.()");
+  await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await waitDisk(PARSER_PY, (c) => c.includes("alpha (words)"), "la línea modificada vuelve al original");
+  const afterM = readDisk(PARSER_PY);
+  check(afterM.includes("Marker words: alpha (words), bravo (numbers), charlie (symbols)."),
+    "pintar el tachado RESTAURÓ la línea original (chars de 'words' de vuelta)");
+  check(afterM.includes("def render(tokens):"), "y el resto del diff de parser.py quedó intacto");
+  check(await until(async () => !(await evalJs(`__E2E.hasRowText(${JSON.stringify(PARSER_PY)}, "(wordstokens")`))),
+    "la fila modificada desapareció del diff (volvió a HEAD)");
+
+  // re-render con contenido idéntico (refresh): la pareja NO puede
+  // reaparecer (gate de firma) y el TACHADO de otra pareja sobrevive — el
+  // re-inserto idempotente lo devuelve si algo lo borró
+  const CFG = "tests/diffs/config.json";
   await evalJs("__DA.refresh(true)");
   await panelStable();
   const mods2 = await evalJs(`(() => {
-    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(PARSER_PY)});
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(CFG)});
     const rows = [...e.body.querySelector("diffs-container").shadowRoot.querySelectorAll("[data-line]")].filter((r) => !r.querySelector("[data-line]"));
-    const redVisible = rows.some((r) => (r.textContent ?? "").includes("alpha (words)") && getComputedStyle(r).display !== "none");
-    const green = rows.find((r) => (r.dataset.daOld ?? "").includes("alpha (words)"));
-    return { redVisible, greenPaired: !!green };
+    const red = rows.find((r) => (r.textContent ?? "").includes('"port": 8080'));
+    const green = rows.find((r) => (r.dataset.daOld ?? "").includes('"port": 8080'));
+    const tach = green?.querySelector("[data-da-del]");
+    return { redVisible: red ? getComputedStyle(red).display !== "none" : null,
+             greenPaired: !!green, tach: tach?.textContent ?? null };
   })()`);
   check(mods2.redVisible === false, "tras un refresh idéntico la roja pareada SIGUE oculta (no se duplica)");
-  check(mods2.greenPaired, "y la verde sigue pareada con su original");
+  check(mods2.greenPaired && mods2.tach === "8080", `y el tachado de la pareja port sobrevive el refresh (${JSON.stringify(mods2.tach)})`);
 
   await panelStable();
-  // ============ N. hlColorize NO duplica el texto de la fila (0.9.7) ============
-  // Bug visto EN LA APP: escribir los tokens de la línea en el PRIMER span
-  // dejaba los tokens restantes de pierre = "kind: note: note". Texto EXACTO.
-  const PARSER_ROW = "Marker words: alpha (tokens), bravo (numbers), charlie (symbols).";
+  // ============ N. texto EXACTO de la fila con tachados + hl (0.9.8) ============
+  // La fila verde de una pareja ya no es la línea del archivo: es la línea
+  // NUEVA con los runs VIEJOS tachados insertados. El texto exacto tiene
+  // que ser el merged — una sola vez cada palabra (la lección 0.9.7: texto
+  // duplicado por hlColorize pasaba inadvertido con aserciones por subcadena).
+  const CFG_ROW = '    "port": 80809090,';
   const exactRow = async () => await evalJs(`(() => {
-    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(PARSER_PY)});
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(CFG)});
     const rows = [...e.body.querySelector("diffs-container").shadowRoot.querySelectorAll("[data-line]")].filter((r) => !r.querySelector("[data-line]"));
     // la roja PAREADA vive oculta (display:none) ANTES en el DOM: sin este
     // filtro el find agarra la fila original y el texto EXACTO nunca cierra
-    const m = rows.find((r) => (r.textContent ?? "").includes("Marker words") && getComputedStyle(r).display !== "none");
+    const m = rows.find((r) => (r.textContent ?? "").includes('"port"') && getComputedStyle(r).display !== "none");
     return m ? m.textContent : null;
   })()`);
   let rowTxt = await exactRow();
-  check(rowTxt === PARSER_ROW, `fila con texto EXACTO tras colorizar: ${JSON.stringify((rowTxt ?? "").slice(0, 44))}`);
+  check(rowTxt === CFG_ROW, `fila con texto EXACTO merged (tachado+hl): ${JSON.stringify((rowTxt ?? "").slice(0, 40))}`);
   await evalJs("__DA.refresh(true)");
   await panelStable();
   rowTxt = await exactRow();
-  check(rowTxt === PARSER_ROW, `texto EXACTO tras refresh + re-colorizar: ${JSON.stringify((rowTxt ?? "").slice(0, 44))}`);
+  check(rowTxt === CFG_ROW, `texto EXACTO tras refresh + re-colorizar + re-insertar tachados: ${JSON.stringify((rowTxt ?? "").slice(0, 40))}`);
 
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));
