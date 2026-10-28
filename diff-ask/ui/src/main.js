@@ -2211,6 +2211,31 @@ function markChangedWords(entry) {
     if (r.dataset.daOld) delete r.dataset.daOld;
     if (r.dataset.daOldLine) delete r.dataset.daOldLine;
   }
+  // el color de las cajitas y de los tachados es el VERDE/ROJO REAL del
+  // diff: se muestrea el backgroundColor de una fila (+/-) del propio
+  // componente (respeta tema claro/oscuro). Pierre expone el color en
+  // sintaxis MODERNA (lab(...) — visto en el e2e) y NINGUNA normalización
+  // clásica lo aplana: en vez de parsear, el RESALTADO se arma con
+  // color-mix (el navegador resuelve la conversión): "25% del color de la
+  // fila encima de transparente" (spec Damian 0.9.6 y 28/10: "las palabras
+  // resaltadas un 25% más"). Se fija en el BODY (no sólo en la capa): los
+  // tachados .da-del viven DENTRO del shadow DOM de la fila y heredan
+  // custom properties a través del boundary. Muestrear ANTES del pareo:
+  // insertDelRuns necesita el lavado ya resuelto.
+  const solid = (row) => {
+    if (!row) return null;
+    const raw = getComputedStyle(row).backgroundColor;
+    return raw && raw !== "transparent" && raw !== "rgba(0, 0, 0, 0)" ? raw : null;
+  };
+  const g = solid(rows.find((r) => r.dataset.lineType === "change-addition"));
+  const d = solid(rows.find((r) => r.dataset.lineType === "change-deletion"));
+  if (g) entry.body.style.setProperty("--wc-green", g);
+  if (d) entry.body.style.setProperty("--wc-red", d);
+  if (layer) {
+    if (g) layer.style.setProperty("--wc-green", g);
+    if (d) layer.style.setProperty("--wc-red", d);
+  }
+  const washOf = (raw, frac) => (raw ? `color-mix(in srgb, ${raw} ${Math.round(frac * 100)}%, transparent)` : null);
   const pairedAdds = new Set();
   for (const g of groups) {
     const n = Math.min(g.dels.length, g.adds.length);
@@ -2220,7 +2245,7 @@ function markChangedWords(entry) {
       g.dels[k].style.display = "none";
       g.dels[k]._daHidden = true;
       pairedAdds.add(g.adds[k]);
-      insertDelRuns(g.adds[k]);
+      insertDelRuns(g.adds[k], washOf(d, 0.25));
     }
   }
   // filas que DEJARON de estar pareadas (el diff cambió sin re-render):
@@ -2231,25 +2256,6 @@ function markChangedWords(entry) {
       r.querySelectorAll("[data-da-del]").forEach((el) => el.remove());
       delete r.dataset.daMergeKey;
     }
-  }
-  // el color de las cajitas es el VERDE/ROJO REAL del diff: se muestrea el
-  // backgroundColor de una fila (+/-) del propio componente (respeta tema
-  // claro/oscuro) y se aplana a rgb sólido — la cajita sólo SUMA un 25%
-  // encima de la fila (spec Damian 0.9.6). Se fija en el BODY (no sólo en
-  // la capa): los tachados .da-del viven DENTRO del shadow DOM de la fila
-  // y heredan custom properties a través del boundary.
-  const solid = (row) => {
-    if (!row) return null;
-    const m = getComputedStyle(row).backgroundColor.match(/rgba?\(([\d.]+), ?([\d.]+), ?([\d.]+)/);
-    return m ? `rgb(${m[1]}, ${m[2]}, ${m[3]})` : null;
-  };
-  const g = solid(rows.find((r) => r.dataset.lineType === "change-addition"));
-  const d = solid(rows.find((r) => r.dataset.lineType === "change-deletion"));
-  if (g) entry.body.style.setProperty("--wc-green", g);
-  if (d) entry.body.style.setProperty("--wc-red", d);
-  if (layer) {
-    if (g) layer.style.setProperty("--wc-green", g);
-    if (d) layer.style.setProperty("--wc-red", d);
   }
   if (entry._wcSig === sig && layer && layer.childElementCount > 0) return;
   entry._wcSig = sig;
@@ -2285,10 +2291,12 @@ function markChangedWords(entry) {
 // lugar de lectura. INSERTAR (no reescribir) deja intactos los tokens de
 // sintaxis de pierre. Idempotente por firma oldLine+newLine; se re-inserta
 // si algo lo borró (p.ej. hlColorize al cambiar de tema).
-function insertDelRuns(addRow) {
+function insertDelRuns(addRow, wash) {
   const oldLine = addRow.dataset.daOld ?? "";
   const newLine = rowNewText(addRow);
-  const key = oldLine.length + ":" + newLine.length + ":" + oldLine.slice(0, 12);
+  // el wash entra en la firma: cambia con el tema (muestreo) y tiene que
+  // re-insertar los tachados con el nuevo lavado, no sólo cuando cambia el texto
+  const key = (wash ?? "∅") + "|" + oldLine.length + ":" + newLine.length + ":" + oldLine.slice(0, 12);
   if (addRow.dataset.daMergeKey === key && addRow.querySelector("[data-da-del]")) return;
   addRow.querySelectorAll("[data-da-del]").forEach((el) => el.remove());
   addRow.dataset.daMergeKey = key;
@@ -2310,10 +2318,13 @@ function insertDelRuns(addRow) {
     span.className = "da-del";
     // estilo INLINE: el span vive DENTRO del shadow DOM de pierre y las
     // reglas de panel.css (light DOM) no lo alcanzan — igual que hlColorize.
-    // --wc-red se fija en el body del archivo y hereda a través del shadow
-    // boundary; atenuado + tachado: el texto FINAL manda, el antes se lee.
+    // RESALTADO (spec 28/10: "las palabras resaltadas un 25% más"): lavado
+    // rojo de fondo al 25% (el mismo criterio que las cajitas verdes de los
+    // agregados) + tachado en el rojo real del diff. Sin opacity global: el
+    // lavado tiene SU alpha y el texto queda legible encima.
+    if (wash) span.style.background = wash;
     span.style.color = "var(--wc-red, #f85149)";
-    span.style.opacity = "0.62";
+    span.style.borderRadius = "3px";
     span.style.textDecoration = "line-through";
     span.style.textDecorationThickness = "1px";
     span.style.marginRight = "3px";
