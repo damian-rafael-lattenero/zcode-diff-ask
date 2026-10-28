@@ -703,6 +703,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
       greenPaired: !!green,
       tachText: tach?.textContent ?? null,
       tachStruck: cs ? cs.display !== "none" && (cs.textDecorationLine ?? "").includes("line-through") : false,
+      tachWash: cs ? cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== "transparent" : false,
       merged: green?.textContent ?? null,
     };
   })()`);
@@ -710,6 +711,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(mods.greenPaired, "la fila verde sigue pareada con su original (dataset.daOld)");
   check(mods.tachText === "words" && mods.tachStruck,
     `el REMOVIDO 'words' vive tachado y VISIBLE dentro de la fila verde (${JSON.stringify(mods.tachText)} struck=${mods.tachStruck})`);
+  check(mods.tachWash, `el tachado lleva RESALTADO rojo de fondo (25% como los agregados: ${JSON.stringify(mods.tachWash)})`);
   check(mods.merged === "Marker words: alpha (wordstokens), bravo (numbers), charlie (symbols).",
     `la fila se lee antes+después en su lugar: ~~words~~tokens (${JSON.stringify((mods.merged ?? "").slice(0, 42))})`);
   const greenLoc = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "Marker words:")`);
