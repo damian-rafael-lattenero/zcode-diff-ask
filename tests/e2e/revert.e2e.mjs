@@ -749,6 +749,13 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(mods.delBg.includes("0.42") && mods.addBg.includes("0.42"),
     `relleno programático legible (oklch relativo, alpha 0.42): del=${JSON.stringify(mods.delBg.slice(0, 40))} add=${JSON.stringify(mods.addBg.slice(0, 40))}`);
   check(mods.tachados === 0, "sin tachados inline ni mezcla de versiones en una sola fila");
+  // orden del toolbar (spec Damian 28/10): ↩archivo · ＋ · ✏️ · ? · ↩multilinea
+  const btnOrder = await evalJs(`(() => {
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(PARSER_PY)});
+    return [...e.section.querySelector(".file-head").querySelectorAll("button")].map((b) => b.className.replace("ghost ", ""));
+  })()`);
+  check(JSON.stringify(btnOrder) === JSON.stringify(["frev", "fplus", "fedit", "fmode fmode-ask", "fmode fmode-rev"]),
+    `orden del toolbar: ↩archivo · ＋ · ✏️ · ? · ↩multilinea (${JSON.stringify(btnOrder)})`);
   await shot("12-diff-clasico-github.png");
 
   // pintar la palabra de la fila ROJA = restaurar: doble-click en 'words' de
