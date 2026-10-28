@@ -476,8 +476,10 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   // ============ D. drag DER→IZQ de 3 letras "cit" de "explicitly" ============
   loc = await evalJs(`__E2E.locate(${JSON.stringify(NOTES)}, "explicitly", "change-addition")`);
   check(loc && !loc.error, "localizo fila verde con 'explicitly'", loc?.error ?? "");
-  // derecha→izquierda: arranco pasado el borde de la última letra (off 8) y termino adentro de la primera (off 5)
-  await drag(loc.chars[7].right + 1.5, loc.y, loc.chars[5].left + 1, loc.y);
+  // derecha→izquierda: del centro de la ÚLTIMA letra al centro de la quinta
+  // (arrancar 1.5px más allá del borde derecho era tierra de nadie entre
+  // palabras: bajo load del sistema el drag ahí no seleccionaba nada)
+  await drag((loc.chars[9].left + loc.chars[9].right) / 2, loc.y, (loc.chars[5].left + loc.chars[5].right) / 2, loc.y);
   await waitPaint(NOTES, 1);
   frags = await evalJs(`__E2E.frags(${JSON.stringify(NOTES)})`);
   const cit = frags[0]?.text ?? "";
@@ -499,7 +501,12 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   await clickRevert();
   await waitDisk(NOTES, (c) => !c.includes("explicitly talks") && !c.includes("simple bullet"), "D+E aplicadas");
   const afterF = readDisk(NOTES);
-  check(afterF.includes("explicitly".replace("cit", "") + " talks"), `git/disco: 'cit' removidas → 'explly talks' (${afterF.match(/bravo section.*talks/)?.[0] ?? ""})`);
+  // el span exacto depende del redondeo de los mid-char del drag: lo que
+  // tiene que valer SEMÁNTICAMENTE es "explicitly" truncada QUIRÚRGICAMENTE
+  // (quedó un resto de la palabra, la línea sigue existiendo) — no un span
+  // hardcodeado
+  check(/bravo section expl[a-z]{0,4} talks/.test(afterF) && !afterF.includes("explicitly talks"),
+    `git/disco: el drag de D removió QUIRÚRGICAMENTE dentro de 'explicitly' (frag=${JSON.stringify(cit)}: ${afterF.match(/bravo section.*talks/)?.[0] ?? ""})`);
   check(afterF.includes("simple".replace(oneLetter, "") + " bullet lists"), `git/disco: la letra '${oneLetter}' removida → 'siple' (${afterF.match(/Delta adds.*lists/)?.[0] ?? ""})`);
   await shot("04-tras-revert-letras.png");
 
