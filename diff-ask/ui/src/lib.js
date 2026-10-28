@@ -476,3 +476,73 @@ export function changedWordRanges(oldLine, newLine) {
   if (!del.length && !add.length && !delWs.length && !addWs.length) return null;
   return { del: mergeRanges(del), add: mergeRanges(add), delWs: mergeRanges(delWs), addWs: mergeRanges(addWs) };
 }
+
+// Secuencia INTERCALADA de una pareja old/new — la base de la fila única con
+// los removidos visibles: items {k:"same"|"del"|"add", text} en orden de
+// lectura, con los runs contiguos fusionados y "del" ANTES de "add" cuando
+// son vecinos (se lee "era ~~alpha~~, es beta"). changedWordRanges da los
+// rangos de CADA lado por separado; esto dice dónde van unos respecto a
+// otros (spec Damian 27/10: "quiero leer también lo que había antes").
+export function mergeWords(oldLine, newLine) {
+  if (oldLine == null || newLine == null) return null;
+  const oT = tokenizeLine(oldLine);
+  const nT = tokenizeLine(newLine);
+  const n = oT.length;
+  const m = nT.length;
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = oT[i].text === nT[j].text ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const out = [];
+  const push = (k, text) => {
+    const last = out[out.length - 1];
+    if (last && last.k === k) last.text += text;
+    else out.push({ k, text });
+  };
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (oT[i].text === nT[j].text) { push("same", oT[i].text); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { push("del", oT[i].text); i++; }
+    else { push("add", nT[j].text); j++; }
+  }
+  while (i < n) push("del", oT[i++].text);
+  while (j < m) push("add", nT[j++].text);
+  return out;
+}
+
+// ---- cortes de espacio merged↔new (fila verde con runs tachados) ----
+// Puro y sin DOM para poder testear: `dels` es la lista de runs tachados con
+// su rango merged [mStart,mEnd) (rowSpaces en main.js la arma del DOM real).
+
+// offset merged → offset new (el idioma de la cirugía): restar los chars
+// tachados que quedan antes de mOff
+export function mergedOffToNew(dels, mOff) {
+  let cut = 0;
+  for (const d of dels) {
+    if (mOff <= d.mStart) break;
+    cut += Math.min(mOff, d.mEnd) - d.mStart;
+  }
+  return mOff - cut;
+}
+
+// new [a,b) → segmentos merged, PARTIDOS por los runs tachados intermedios
+// (franjitas y cajas pintan el texto nuevo sin invadir los tachados)
+export function newRangeToMergedSegs(dels, mergedLen, a, b) {
+  if (!dels.length) return [[a, b]];
+  const segs = [];
+  let n = 0; // chars nuevos contados hasta el borde izquierdo del run actual
+  let cur = 0; // posición merged del texto nuevo que sigue
+  const piece = (txtLen) => {
+    const lo = Math.max(0, a - n);
+    const hi = Math.min(txtLen, b - n);
+    if (hi > lo) segs.push([cur + lo, cur + hi]);
+    n += txtLen;
+  };
+  for (const d of dels) {
+    piece(d.mStart - cur);
+    cur = d.mEnd;
+  }
+  piece(mergedLen - cur);
+  return segs;
+}
