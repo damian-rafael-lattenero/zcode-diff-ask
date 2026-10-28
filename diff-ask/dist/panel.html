@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Diff Ask</title>
-    <script>window.__DA_BUILD="0.9.6";</script>
+    <script>window.__DA_BUILD="0.9.7";</script>
     <style>:root {
   --bg: #f7f7f8;
   --card: #ffffff;
@@ -1511,7 +1511,7 @@ ${r.join(`
 `),s=n.fileData.before.split(`
 `),c=UA(s,a,r.hunks,o,i);if(!c){zt("\u26A0 no pude reconstruir el revert (alineamiento inconsistente)");return}if(c.join(`
 `)===n.fileData.after){zt("\u26A0 esas l\xEDneas no tienen cambios para revertir");return}let d=o.size+i.size;await v2(n,c.join(`
-`),`\u21A9 ${d} l\xEDnea${d===1?"":"s"} revertida${d===1?"":"s"}`)}async function lT(e){uT(e,rc(e))}var pT=new Set(["json","yaml","python","typescript","javascript","markdown","html","css","bash","shellscript","kotlin","haskell","yml","py","ts","js","md","sh","shell","zsh","kt","hs"]),nX=()=>io==="dark"?"pierre-dark":"pierre-light";function gT(e,t){let n=globalThis.__DA_HL_READY;if(!n?.has(t))return;let r=nX(),o=typeof e.fileData?.after=="string"?n.lines(e.fileData.after,t,r):null,i=typeof e.fileData?.before=="string"?n.lines(e.fileData.before,t,r):null;if(!o&&!i)return;let s=t0(e)?.shadowRoot?.querySelector("[data-content]");if(s)for(let c of s.children){if(!c.hasAttribute("data-line")||c.dataset.hl===r)continue;let u=(c.dataset.lineType==="change-deletion"?i:o)?.[parseInt(c.dataset.line,10)-1];if(!u)continue;let l=c.querySelector("span");l&&(l.innerHTML=u.map(p=>p.color?`<span style="color:${p.color}">${oo(p.content)}</span>`:oo(p.content)).join(""),c.dataset.hl=r)}}var Ie={q:"",hits:[],cur:-1,timer:null};function oX(){if(document.getElementById("findbar"))return;let e=document.createElement("div");e.id="findbar",e.hidden=!0,e.innerHTML=`
+`),`\u21A9 ${d} l\xEDnea${d===1?"":"s"} revertida${d===1?"":"s"}`)}async function lT(e){uT(e,rc(e))}var pT=new Set(["json","yaml","python","typescript","javascript","markdown","html","css","bash","shellscript","kotlin","haskell","yml","py","ts","js","md","sh","shell","zsh","kt","hs"]),nX=()=>io==="dark"?"pierre-dark":"pierre-light";function gT(e,t){let n=globalThis.__DA_HL_READY;if(!n?.has(t))return;let r=nX(),o=typeof e.fileData?.after=="string"?n.lines(e.fileData.after,t,r):null,i=typeof e.fileData?.before=="string"?n.lines(e.fileData.before,t,r):null;if(!o&&!i)return;let s=t0(e)?.shadowRoot?.querySelector("[data-content]");if(s)for(let c of s.children){if(!c.hasAttribute("data-line")||c.dataset.hl===r)continue;let u=(c.dataset.lineType==="change-deletion"?i:o)?.[parseInt(c.dataset.line,10)-1];u&&c.querySelector("span")&&(c.innerHTML=u.map(l=>l.color?`<span style="color:${l.color}">${oo(l.content)}</span>`:oo(l.content)).join(""),c.dataset.hl=r)}}var Ie={q:"",hits:[],cur:-1,timer:null};function oX(){if(document.getElementById("findbar"))return;let e=document.createElement("div");e.id="findbar",e.hidden=!0,e.innerHTML=`
     <input id="findbar-input" type="search" placeholder="Buscar en el diff\u2026">
     <span id="findbar-count" class="count"></span>
     <button class="ghost" id="findbar-prev" title="Coincidencia anterior (\u21E7Enter)">\u2191</button>

@@ -93,7 +93,7 @@ const harness = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
   if (url.pathname === "/panel") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    res.end(PANEL.replace("<head>", `<head><script>window.__DA_TEST__={files:[],workspace:${JSON.stringify(REPO)}};window.__DA_E2E__=true;</script>`));
+    res.end(PANEL.replace("<head>", `<head><script>window.__DA_TEST__={files:[],workspace:${JSON.stringify(REPO)}};window.__DA_E2E__=true;window.__DA_HL_READY={has:()=>true,lines:(t)=>String(t).split("\\n").map((l)=>[{content:l}])};</script>`));
   } else if (url.pathname === "/events") {
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.write("data: hello\n\n");
@@ -289,6 +289,12 @@ await evalJs(`(() => {
       const h = e.body.querySelector("diffs-container");
       return [...h.shadowRoot.querySelectorAll("[data-line]")].some((r) => (r.textContent ?? "").includes(needle));
     },
+    rowAt(rel, x, y) {
+      const e = [...__DA.rendered.values()].find((x2) => x2.path === rel);
+      const host = e?.body.querySelector("diffs-container");
+      const r = host?.shadowRoot?.elementFromPoint(x, y)?.closest("[data-line]");
+      return r ? { type: r.dataset.lineType, text: (r.textContent ?? "").slice(0, 44) } : null;
+    },
     popRev() { const b = document.querySelector(".sel-pop .rev"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; },
     errors() { return [...document.querySelectorAll(".state.error")].map((d) => d.textContent); },
   };
@@ -301,6 +307,15 @@ await evalJs(`(() => {
   for (var t of ["pointerdown", "pointerup", "pointermove", "click", "dblclick"])
     document.addEventListener(t, __log(t), true);
 })()`);
+// tolerante al boot: con el stub del highlighter el bundle puede tardar un
+// poco más que el sleep fijo — esperar a que __DA exista antes del refresh
+await evalJs(`window.__daErr = []; if (!window.__daHooked) { window.__daHooked = 1; window.addEventListener("error", (e) => window.__daErr.push(String(e.message).slice(0, 200) + " @" + String(e.filename).slice(-40) + ":" + e.lineno)); }`).catch(() => {});
+for (let i = 0; i < 100 && (await evalJs(`typeof __DA`).catch(() => "x")) !== "object"; i++) await sleep(100);
+if ((await evalJs(`typeof __DA`).catch(() => "x")) !== "object") {
+  console.error("BOOT FAIL — errores de página:", await evalJs(`JSON.stringify(window.__daErr)`).catch((e) => "eval: " + e.message));
+  console.error("BOOT FAIL — body:", await evalJs(`JSON.stringify((document.body?.innerText ?? "").slice(0, 120))`).catch(() => "?"));
+  console.error("BOOT FAIL — scripts:", await evalJs(`[...document.scripts].map((s) => s.src || "inline " + (s.textContent ?? "").length).join(" | ").slice(0, 200)`).catch(() => "?"));
+}
 await evalJs(`__DA.refresh(true)`);
 await (async () => {
   const t0 = Date.now();
@@ -516,10 +531,18 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   // palabra — la línea queda (0.9.1 la eliminaba entera).
   loc = await evalJs(`__E2E.locate(${JSON.stringify(SERVER_TS)}, "/delta", "change-addition")`);
   check(loc && !loc.error, "localizo la línea nueva de la ruta /delta", loc?.error ?? "");
-  await dblclick((loc.left + loc.right) / 2, loc.y);
+  const jx = (loc.left + loc.right) / 2;
+  // diagnóstico de puntería: ¿qué fila hay bajo el punto ANTES del gesto y
+  // tras el primer click del doble? (si el panel se movió, ací se ve)
+  const jRowBefore = await evalJs(`__E2E.rowAt(${JSON.stringify(SERVER_TS)}, ${jx}, ${loc.y})`);
+  await dblclick(jx, loc.y);
+  const jRowAfter = await evalJs(`__E2E.rowAt(${JSON.stringify(SERVER_TS)}, ${jx}, ${loc.y})`);
+  const jSel = await evalJs("String(getSelection())");
   await waitPaint(SERVER_TS, 1);
   frags = await evalJs(`__E2E.frags(${JSON.stringify(SERVER_TS)})`);
-  check(frags.length === 1 && frags[0].text === "delta", `doble-click pinta 'delta' en la línea nueva (${JSON.stringify(frags.map((f) => f.text))})`);
+  check(frags.length === 1 && frags[0].text === "delta",
+    `doble-click pinta 'delta' en la línea nueva`,
+    `frags=${JSON.stringify(frags.map((f) => f.text))} sel=${JSON.stringify(jSel)} rowBefore=${JSON.stringify(jRowBefore)} rowAfter=${JSON.stringify(jRowAfter)} locRow=${JSON.stringify((loc?.rowText ?? "").slice(0, 40))}`);
   await evalJs("document.activeElement?.blur?.()");
   await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
   await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
@@ -699,6 +722,26 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   })()`);
   check(mods2.redVisible === false, "tras un refresh idéntico la roja pareada SIGUE oculta (no se duplica)");
   check(mods2.greenPaired, "y la verde sigue pareada con su original");
+
+  await panelStable();
+  // ============ N. hlColorize NO duplica el texto de la fila (0.9.7) ============
+  // Bug visto EN LA APP: escribir los tokens de la línea en el PRIMER span
+  // dejaba los tokens restantes de pierre = "kind: note: note". Texto EXACTO.
+  const PARSER_ROW = "Marker words: alpha (tokens), bravo (numbers), charlie (symbols).";
+  const exactRow = async () => await evalJs(`(() => {
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(PARSER_PY)});
+    const rows = [...e.body.querySelector("diffs-container").shadowRoot.querySelectorAll("[data-line]")].filter((r) => !r.querySelector("[data-line]"));
+    // la roja PAREADA vive oculta (display:none) ANTES en el DOM: sin este
+    // filtro el find agarra la fila original y el texto EXACTO nunca cierra
+    const m = rows.find((r) => (r.textContent ?? "").includes("Marker words") && getComputedStyle(r).display !== "none");
+    return m ? m.textContent : null;
+  })()`);
+  let rowTxt = await exactRow();
+  check(rowTxt === PARSER_ROW, `fila con texto EXACTO tras colorizar: ${JSON.stringify((rowTxt ?? "").slice(0, 44))}`);
+  await evalJs("__DA.refresh(true)");
+  await panelStable();
+  rowTxt = await exactRow();
+  check(rowTxt === PARSER_ROW, `texto EXACTO tras refresh + re-colorizar: ${JSON.stringify((rowTxt ?? "").slice(0, 44))}`);
 
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));

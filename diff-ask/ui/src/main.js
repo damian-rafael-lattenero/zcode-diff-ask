@@ -573,9 +573,13 @@ function hlColorize(entry, lang) {
     const isDel = r.dataset.lineType === "change-deletion";
     const toks = (isDel ? beforeTok : afterTok)?.[parseInt(r.dataset.line, 10) - 1];
     if (!toks) continue;
-    const span = r.querySelector("span");
-    if (!span) continue;
-    span.innerHTML = toks
+    if (!r.querySelector("span")) continue;
+    // Reemplazar el contenido de la FILA ENTERA, no del primer span: los
+    // tokens de pierre viven en VARIOS spans hermanos y escribir la línea
+    // completa en el primero dejaba los originales restantes = texto
+    // DUPLICADO ("kind: note: note", reporte de Damian en la app; el rig
+    // no lo veía porque las aserciones eran por subcadena).
+    r.innerHTML = toks
       .map((tk) => (tk.color ? `<span style="color:${tk.color}">${esc(tk.content)}</span>` : esc(tk.content)))
       .join("");
     r.dataset.hl = themeName;
