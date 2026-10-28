@@ -872,20 +872,9 @@ button.fedit.on {
 }
 .wc-ws-add { background: var(--wc-green, #3fb950); opacity: 0.45; }
 .wc-ws-del { background: var(--wc-red, #f85149); opacity: 0.45; }
-/* REMOVIDOS tachados DENTRO de la fila verde con RESALTADO rojo de fondo
-   (spec 28/10: "las palabras resaltadas un 25% más" — mismo 25% que las
-   cajitas verdes de los agregados, ambos muestreados del diff real).
-   OJO: esos spans viven en el shadow DOM de pierre y esta hoja NO los
-   alcanza — el estilo real es INLINE en insertDelRuns (main.js), igual que
-   hlColorize. Esta regla queda de referencia/para futuras filas light-DOM. */
-.da-del {
-  background: rgba(248, 81, 73, 0.25);
-  color: var(--wc-red, #f85149);
-  text-decoration: line-through;
-  text-decoration-thickness: 1px;
-  margin-right: 3px;
-  border-radius: 3px;
-}
+/* (spec final 0.9.11: diff clásico como GitHub — cajas .wc-del sobre la
+   palabra removida de la fila ROJA y .wc-add sobre la agregada de la VERDE.
+   Los tachados inline .da-del de la 0.9.8 se eliminaron.) */
 /* 编辑模式下纯编辑视图：词级标记同样隐藏 */
 .file.editing .wc-layer { display: none; }
 /* botones ? y ↩ de modo brocha (junto a ✏️) */
