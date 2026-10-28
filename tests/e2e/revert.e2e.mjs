@@ -778,6 +778,69 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   rowTxt = await exactRow();
   check(rowTxt === CFG_ROW, `texto EXACTO tras refresh + re-colorizar + re-insertar tachados: ${JSON.stringify((rowTxt ?? "").slice(0, 40))}`);
 
+  // ============ O. modo edición ✏️: el editor de pierre manda SOLO (0.9.9) ============
+  // Reporte Damian 28/10: "empiezo a editar y se pone en negro lo que
+  // escribo o borro". Sospecha: el MutationObserver del shadow dispara
+  // scheduleAnchors por cada tecla (el editor re-renderiza filas) y
+  // hlColorize reescribe filas ENTERAS con tokens del contenido VIEJO
+  // (fileData.after no se actualiza mientras se edita) — encima de las
+  // filas VIVAS del editor. En edición NO se toca nada nuestro.
+  const SHELL_SH = "tests/diffs/shell.sh";
+  await expandFile(SHELL_SH);
+  const editBtnAt = async () => await evalJs(`(() => {
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(SHELL_SH)});
+    const b = e?.section.querySelector("button.fedit");
+    if (!b) return null;
+    e.section.querySelector(".file-head").scrollIntoView({ block: "center" });
+    const r = b.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`);
+  let eb = await editBtnAt();
+  check(!!eb, "encuentro el botón ✏️ de shell.sh");
+  await click(eb.x, eb.y);
+  check(await until(async () => await evalJs(`(() => { const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(SHELL_SH)}); return !!e?.edit; })()`), 4000), "✏️ activa el modo edición");
+  await sleep(500);
+  let edLoc = await evalJs(`__E2E.locate(${JSON.stringify(SHELL_SH)}, "listing all")`);
+  check(edLoc && !edLoc.error, "localizo la fila a editar con el editor activo", edLoc?.error ?? "");
+  await click(edLoc.left - 2, edLoc.y); // caret en el borde izquierdo del needle
+  await sleep(200);
+  const hlBefore = await evalJs(`(() => { const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(SHELL_SH)}); return e?._hlRuns ?? 0; })()`);
+  await cdp("Input.insertText", { text: "BRAVO" });
+  await sleep(1200); // autosave (900ms) + el rAF del observer structural
+  const edState = await evalJs(`(() => {
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(SHELL_SH)});
+    const host = e.body.querySelector("diffs-container");
+    const rows = [...host.shadowRoot.querySelectorAll("[data-line]")].filter((r) => !r.querySelector("[data-line]"));
+    // el editor de pierre vive de ESPEJOS: SPANs en el shadow (fuera de las
+    // filas [data-line]) con el texto por línea — acá se ve lo tipado
+    const mirror = [...host.shadowRoot.querySelectorAll("span")]
+      .filter((s) => [...s.childNodes].some((tn) => tn.nodeType === 3 && tn.data.includes("BRAVO")));
+    return {
+      editOn: !!e.edit,
+      typedVisible: mirror.some((s) => (s.textContent ?? "").includes("BRAVO")),
+      typedTwice: mirror.filter((s) => (s.textContent ?? "").includes("BRAVO")).length,
+      hlRuns: e._hlRuns ?? 0,
+      delSpans: rows.reduce((n, r) => n + r.querySelectorAll("[data-da-del]").length, 0),
+      editorText: e.edit ? e.edit.editor.getText() : null,
+    };
+  })()`);
+  check(edState.typedVisible && edState.typedTwice === 1, "lo TIPADO vive en la superficie del editor (sin duplicar)");
+  check(edState.hlRuns === hlBefore, `hlColorize NO corrió durante la edición (runs ${hlBefore}→${edState.hlRuns})`);
+  check(edState.delSpans === 0, "sin tachados nuestros en el editor");
+  check((edState.editorText ?? "").includes("BRAVO"), "el documento del editor contiene lo tipado");
+  await shot("13-editando-tipado.png");
+  // BORRADO también: backspace sobre lo tipado — misma proteccion
+  await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
+  await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace" });
+  await sleep(1800); // nuevo autosave
+  const saved = await waitDisk(SHELL_SH, (c) => c.includes("BRAV"), "autosave del editor escribe en disco");
+  check(saved && readDisk(SHELL_SH).includes("BRAV"),
+    "git/disco: lo tipado llegó (BRAV presente tras el backspace)");
+  eb = await editBtnAt();
+  await click(eb.x, eb.y); // salir del modo edición (guarda)
+  check(await until(async () => await evalJs(`(() => { const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(SHELL_SH)}); return !e?.edit; })()`), 4000), "✏️ sale del modo edición");
+  await shot("14-edit-guardado.png");
+
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));
   check((await evalJs("__E2E.errors()")).length === 0, "sin carteles de error en el panel", JSON.stringify(await evalJs("__E2E.errors()")));
