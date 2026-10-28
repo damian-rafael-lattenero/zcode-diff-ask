@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Diff Ask</title>
-    <script>window.__DA_BUILD="0.9.12";</script>
+    <script>window.__DA_BUILD="0.9.13";</script>
     <style>:root {
   --bg: #f7f7f8;
   --card: #ffffff;
@@ -854,20 +854,26 @@ button.fedit.on {
 .wc-layer { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
 .file-body:has(.wc-layer) { position: relative; }
 /* La cajita usa el VERDE/ROJO REAL del diff (muestreado de la fila por JS en
-   --wc-green/--wc-red). Spec Damian 28/10 (0.9.12): "las palabras diferentes
-   sobresalidas, recuadradas en color 50% más brillante o fuerte" — el
-   relleno pasa del 25% al 50% de la fila: la palabra cambiada RESALTA. */
+   --wc-green/--wc-red) y BRILLA contra el fondo: sobre negro, un opacity
+   sólo APAGA el color (mezcla hacia negro), así que el relleno se calcula
+   PROGRAMÁTICAMENTE desde el color muestreado — mismo tono (h), luminosidad
+   +0.3 (tope 0.82) y cromo con PISO ×1.35 (mínimo 0.16, tope 0.3: los
+   colores muestreados son tenues y sin piso la caja sale casi gris, visto
+   en el rig) vía oklch relativo; alpha 0.58 para que la palabra siga
+   legible. La primera línea background es fallback si el oklch relativo no
+   existe. (Spec Damian 28/10: "rectángulo relleno más potente, más
+   brillante, teniendo en cuenta que el fondo es completamente negro".) */
 .wc-add {
   position: absolute;
   border-radius: 3px;
   background: var(--wc-green, #3fb950);
-  opacity: 0.5;
+  background: oklch(from var(--wc-green, #3fb950) min(l + 0.3, 0.82) min(max(c * 1.35, 0.16), 0.3) h / 0.58);
 }
 .wc-del {
   position: absolute;
   border-radius: 3px;
   background: var(--wc-red, #f85149);
-  opacity: 0.5;
+  background: oklch(from var(--wc-red, #f85149) min(l + 0.3, 0.82) min(max(c * 1.35, 0.16), 0.3) h / 0.58);
 }
 /* espacios agregados/borrados: circulito mínimo y TENUE (una corrida = un punto) */
 .wc-ws-add, .wc-ws-del {
