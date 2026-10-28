@@ -557,8 +557,15 @@ const HL_LANGS = new Set([
 const HL_THEME = () => (theme === "dark" ? "pierre-dark" : "pierre-light");
 
 function hlColorize(entry, lang) {
+  // En EDICIÓN el editor de pierre manda SOLO: sus filas viven re-renderizándose
+  // por tecla (con espejos SPAN colgados del host) y fileData.after queda VIEJO
+  // mientras se edita — reescribirles el innerHTML con tokens del contenido
+  // anterior corrompía el render (lo tipado se veía negro/pisado, reporte
+  // Damian 28/10). También era la raíz del viejo "edit duplicado".
+  if (entry.edit) return;
   const api = globalThis.__DA_HL_READY;
   if (!api?.has(lang)) return;
+  entry._hlRuns = (entry._hlRuns ?? 0) + 1; // telemetría del rig e2e (sección O)
   const themeName = HL_THEME();
   const afterTok =
     typeof entry.fileData?.after === "string" ? api.lines(entry.fileData.after, lang, themeName) : null;
@@ -2697,9 +2704,12 @@ function scheduleAnchors() {
   requestAnimationFrame(() => {
     anchorsScheduled = false;
     renderAnchors();
-    // filas nuevas (expansión) o motor recién listo → re-pintar sintaxis
+    // filas nuevas (expansión) o motor recién listo → re-pintar sintaxis.
+    // Archivo en EDICIÓN ✏️: NADA nuestro lo toca — el MutationObserver dispara
+    // con cada tecla del editor y nuestras capas (tokens, tachados, franjas)
+    // escribirían encima de filas vivas con contenido viejo.
     for (const entry of rendered.values()) {
-      if (!entry.fileData) continue;
+      if (!entry.fileData || entry.edit) continue;
       const l = getFiletypeFromFileName(entry.fileData.oldPath ?? entry.fileData.path);
       if (l && HL_LANGS.has(l)) hlColorize(entry, l);
       if (fragSel.has(entry.path)) renderFragUI(entry); // overlays tras repaint
