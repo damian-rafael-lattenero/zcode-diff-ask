@@ -591,22 +591,13 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   await shot("09-tras-enter-quirurgico-adicion-pura.png");
 
   await panelStable();
-  // ============ K. modo brocha ↩: pintar de TODO y UN rollback general (spec Damian) ============
+  // ============ K. pincel acumulativo + UN rollback general (spec Damian) ============
   // "pinto 6 palabras seguidas, 4 palabras en otra línea, doble-click una
-  // palabra en otra, 3 letras en otra → aprieto el rollback general y se
-  // revierten todos esos chars" — sin popups flotantes en el modo.
+  // palabra en otra, 3 letras en otra → UN rollback general y se revierten
+  // todos esos chars". 0.9.17: sin botones de modo brocha — el popup ＋/↩
+  // aparece tras cada pintada (feedback) y Enter ejecuta TODO lo pintado.
   const TYPES_GO = "tests/diffs/types.go";
   await expandFile(TYPES_GO);
-  const revBtn = await evalJs(`(() => {
-    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(TYPES_GO)});
-    e.section.querySelector(".file-head").scrollIntoView({ block: "start" });
-    const b = e.section.querySelector(".fmode-rev");
-    const r = b.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  })()`);
-  await click(revBtn.x, revBtn.y); // entra al modo brocha ↩
-  await sleep(150);
-  check(await evalJs(`__DA.fragModes.get(${JSON.stringify(TYPES_GO)})`) === "rev", "modo brocha ↩ activo");
 
   // un gesto por vez, con trace completo si no pinta
   let kCount = 0;
@@ -650,9 +641,11 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   if (loc && !loc.error) await kGesture("K4-dblclick-Heading", () => dblclick((loc.chars[3].left + loc.chars[3].right) / 2, loc.y));
 
   check(kCount === 4, `las CUATRO pintadas acumulan juntas (${kCount})`, "");
-  check(await evalJs(`document.querySelector(".sel-pop") === null`), "SIN popup flotante en modo brocha");
+  check(await evalJs(`document.querySelector(".sel-pop") !== null`), "el popup ＋/↩ aparece tras pintar (feedback, sin modo brocha)");
 
-  await click(revBtn.x, revBtn.y); // el rollback GENERAL: ejecuta todo lo pintado
+  await evalJs("document.activeElement?.blur?.()");
+  await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 }); // el rollback GENERAL: ejecuta todo lo pintado
   await waitDisk(TYPES_GO, (c) => c.includes("\tTitle string"), "Title string restaurado");
   const afterK = readDisk(TYPES_GO);
   check(afterK.includes("\tTitle string"), "K4: palabra de línea modificada → línea al original (Title)");
@@ -761,9 +754,58 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(PARSER_PY)});
     return [...e.section.querySelector(".file-head").querySelectorAll("button")].map((b) => b.className.replace("ghost ", ""));
   })()`);
-  check(JSON.stringify(btnOrder) === JSON.stringify(["frev", "fplus", "fedit", "fmode fmode-ask", "fmode fmode-rev"]),
-    `orden del toolbar: ↩archivo · ＋ · ✏️ · ? · ↩multilinea (${JSON.stringify(btnOrder)})`);
+  check(JSON.stringify(btnOrder) === JSON.stringify(["frev", "fplus", "fedit"]),
+    `orden del toolbar (3 botones, sin ? ni ↩↩): ↩archivo · ＋ · ✏️ (${JSON.stringify(btnOrder)})`);
   await shot("12-diff-clasico-github.png");
+
+  // MARCAS EXACTAS de la pregunta (bug Damian 28/10: dos palabras de filas
+  // lejanas subrayaban TODAS las intermedias): pinto "Marker" (fila 2) y
+  // "render" (fila lejana), pregunto por los fragmentos, y se marcan SOLO
+  // esas dos filas — ninguna intermedia
+  {
+    const mk1 = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "Marker words:")`);
+    await dblclick((mk1.chars[2].left + mk1.chars[2].right) / 2, mk1.y); // "Marker"
+    await sleep(500);
+    const mk2 = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "def render")`);
+    await dblclick((mk2.chars[5].left + mk2.chars[5].right) / 2, mk2.y); // "render"
+    await waitPaint(PARSER_PY, 2);
+    const askBtn = await until(async () => {
+      const b = await evalJs(`document.querySelector(".sel-pop button")`);
+      if (!b) return null;
+      const r = await evalJs(`(() => { const r = document.querySelector(".sel-pop button").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+      return r;
+    }, 3000);
+    check(!!askBtn, "aparece el popup ＋ tras pintar");
+    await click(askBtn.x, askBtn.y); // ＋ → composer de fragmentos
+    await sleep(300);
+    await cdp("Input.insertText", { text: "por que cambiaste esto?" });
+    await sleep(200);
+    const send = await evalJs(`(() => { const b = document.querySelector(".composer .ask"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    check(!!send, "abre el composer de la pregunta por fragmentos");
+    await click(send.x, send.y); // Preguntar
+    await sleep(400);
+    const marks = await evalJs(`(() => {
+      const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(PARSER_PY)});
+      const sr = e.body.querySelector("diffs-container").shadowRoot;
+      // sólo FILAS de contenido — el gutter (celda del número) también se
+      // marca y contaría doble
+      const marked = [...sr.querySelectorAll("[data-content] [data-qa]")];
+      return {
+        n: marked.length,
+        texts: marked.map((r) => (r.textContent ?? "").slice(0, 22)),
+        label: __DA.pendingAsks[0]?.label ?? null,
+      };
+    })()`);
+    check(marks.n === 2, `se marcan SOLO las dos filas preguntadas (${marks.n}): ${JSON.stringify(marks.texts)}`);
+    check(marks.texts.some((t) => t.includes("Marker words")) && marks.texts.some((t) => t.includes("def render")),
+      "las marcadas son la de 'Marker' y la de 'def render' — ninguna intermedia");
+    check(/^líneas \d+, \d+$/.test(marks.label ?? ""), `el ancla nombra las líneas exactas (${JSON.stringify(marks.label)})`);
+    // limpieza: pila vacía + refresh (las marcas se van en el próximo render)
+    await evalJs("__DA.pendingAsks.length = 0");
+    await evalJs(`__DA.fragSel.delete(${JSON.stringify(PARSER_PY)})`);
+    await evalJs("__DA.refresh(true)");
+    await panelStable();
+  }
 
   // pintar la palabra de la fila ROJA = restaurar: doble-click en 'words' de
   // la fila ROJA → frag lado old → la línea vuelve AL ORIGINAL y sale del diff
