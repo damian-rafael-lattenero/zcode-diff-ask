@@ -21,7 +21,7 @@ import { Editor } from "@pierre/diffs/edit";
 import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
   compressRuns, linesLabel, quoteForRanges, revertLines, revertFrags,
-  changedWordRanges, mergeWords, mergedOffToNew, newRangeToMergedSegs,
+  changedWordRanges, mergedOffToNew, newRangeToMergedSegs,
 } from "./lib.js";
 
 const DIFF_URI = "diff://workspace";
@@ -2188,11 +2188,11 @@ function markChangedWords(entry) {
   const hostH = Math.round(host?.getBoundingClientRect().height ?? -1);
   let sig = `${rows.length}:${hostH}`;
   for (const r of rows) if (r.dataset.lineType === "change-deletion" || r.dataset.lineType === "change-addition") sig += ":" + rowNewText(r).length;
-  // UNA fila por línea + hover corren SIEMPRE, ANTES del gate de firma: el
-  // componente re-crea las filas en cada render y con contenido idéntico
-  // (refresh SSE duplicado) la firma no cambia — si esto quedara adentro
-  // del gate, las filas NUEVAS llegaban sin colapsar y la roja pareada
-  // REAPARECÍA duplicada (bug visto en la prueba de Damian 27/10).
+  // UNA fila por línea: OBSOLETO — spec FINAL Damian 28/10: "quiero ver un
+  // diff normal, línea a línea, como en GitHub: la línea roja con la palabra
+  // en rojo resaltada, y ABAJO la línea verde con la palabra verde
+  // resaltada". AMBAS filas visibles siempre; sin tachados ni colapso. El
+  // reset sigue por si un build viejo dejó filas escondidas/tachadas.
   const groups = [];
   {
     let i = 0;
@@ -2210,18 +2210,18 @@ function markChangedWords(entry) {
     if (r._daHidden) { r.style.display = ""; delete r._daHidden; }
     if (r.dataset.daOld) delete r.dataset.daOld;
     if (r.dataset.daOldLine) delete r.dataset.daOldLine;
+    if (r.querySelector?.("[data-da-del]")) {
+      r.querySelectorAll("[data-da-del]").forEach((el) => el.remove());
+      delete r.dataset.daMergeKey;
+    }
   }
-  // el color de las cajitas y de los tachados es el VERDE/ROJO REAL del
-  // diff: se muestrea el backgroundColor de una fila (+/-) del propio
-  // componente (respeta tema claro/oscuro). Pierre expone el color en
-  // sintaxis MODERNA (lab(...) — visto en el e2e) y NINGUNA normalización
-  // clásica lo aplana: en vez de parsear, el RESALTADO se arma con
-  // color-mix (el navegador resuelve la conversión): "25% del color de la
-  // fila encima de transparente" (spec Damian 0.9.6 y 28/10: "las palabras
-  // resaltadas un 25% más"). Se fija en el BODY (no sólo en la capa): los
-  // tachados .da-del viven DENTRO del shadow DOM de la fila y heredan
-  // custom properties a través del boundary. Muestrear ANTES del pareo:
-  // insertDelRuns necesita el lavado ya resuelto.
+  // el color de las cajitas es el VERDE/ROJO REAL del diff: se muestrea el
+  // backgroundColor de una fila (+/-) del propio componente (respeta tema
+  // claro/oscuro). Pierre expone el color en sintaxis MODERNA (lab(...) —
+  // visto en el e2e) y NINGUNA normalización clásica lo aplana (canvas
+  // incluido): no se parsea nada, las cajitas usan var(--wc-*) con opacity
+  // 0.25 y el navegador resuelve (spec Damian: "la palabra resaltada, 25%
+  // más fuerte que la fila").
   const solid = (row) => {
     if (!row) return null;
     const raw = getComputedStyle(row).backgroundColor;
@@ -2235,28 +2235,6 @@ function markChangedWords(entry) {
     if (g) layer.style.setProperty("--wc-green", g);
     if (d) layer.style.setProperty("--wc-red", d);
   }
-  const washOf = (raw, frac) => (raw ? `color-mix(in srgb, ${raw} ${Math.round(frac * 100)}%, transparent)` : null);
-  const pairedAdds = new Set();
-  for (const g of groups) {
-    const n = Math.min(g.dels.length, g.adds.length);
-    for (let k = 0; k < n; k++) {
-      g.adds[k].dataset.daOld = g.dels[k].textContent ?? "";
-      g.adds[k].dataset.daOldLine = g.dels[k].dataset.line ?? "";
-      g.dels[k].style.display = "none";
-      g.dels[k]._daHidden = true;
-      pairedAdds.add(g.adds[k]);
-      insertDelRuns(g.adds[k], washOf(d, 0.25));
-    }
-  }
-  // filas que DEJARON de estar pareadas (el diff cambió sin re-render):
-  // sacarles los tachados de una pasada anterior
-  for (const r of rows) {
-    if (pairedAdds.has(r)) continue;
-    if (r.querySelector?.("[data-da-del]")) {
-      r.querySelectorAll("[data-da-del]").forEach((el) => el.remove());
-      delete r.dataset.daMergeKey;
-    }
-  }
   if (entry._wcSig === sig && layer && layer.childElementCount > 0) return;
   entry._wcSig = sig;
   if (!layer) {
@@ -2265,19 +2243,18 @@ function markChangedWords(entry) {
     entry.body.appendChild(layer);
   }
   layer.textContent = "";
-  // (groups ya está armado arriba, antes del gate de firma — el colapso
-  // de pares y los tachados corren en CADA render, no sólo cuando cambian
-  // los rects)
+  // GitHub-style: la fila ROJA lleva su palabra removida resaltada en rojo,
+  // la fila VERDE su palabra agregada en verde (changedWordRanges por pareja
+  // del mismo cambio). Offsets de cada lado sobre SU fila (sin mezcla).
   const frag = document.createDocumentFragment();
   for (const g of groups) {
     const n = Math.min(g.dels.length, g.adds.length);
     for (let k = 0; k < n; k++) {
-      // los REMOVIDOS no se recuadran acá: viven TACHADOS dentro de la fila
-      // verde (insertDelRuns, spec 0.9.8). Las cajas son para los AGREGADOS,
-      // medidas en espacio NEW sobre el layout final (tachados incluidos).
-      const r = changedWordRanges(g.dels[k].textContent ?? "", rowNewText(g.adds[k]));
+      const r = changedWordRanges(g.dels[k].textContent ?? "", g.adds[k].textContent ?? "");
       if (!r) continue;
+      for (const [a, b] of r.del) wcAddRects(frag, g.dels[k], a, b, bodyRect, "wc-del");
       for (const [a, b] of r.add) wcAddRects(frag, g.adds[k], a, b, bodyRect, "wc-add");
+      for (const [a, b] of r.delWs ?? []) wcAddDot(frag, g.dels[k], a, b, bodyRect, "wc-ws-del");
       for (const [a, b] of r.addWs ?? []) wcAddDot(frag, g.adds[k], a, b, bodyRect, "wc-ws-add");
     }
   }
@@ -2285,63 +2262,9 @@ function markChangedWords(entry) {
   layer.appendChild(frag);
 }
 
-// Los REMOVIDOS tachados DENTRO de la fila verde (spec 0.9.8: "quiero leer
-// también lo que había antes" — la burbuja de hover tapaba el después):
-// por cada run del de mergeWords se inserta un span [data-da-del] en su
-// lugar de lectura. INSERTAR (no reescribir) deja intactos los tokens de
-// sintaxis de pierre. Idempotente por firma oldLine+newLine; se re-inserta
-// si algo lo borró (p.ej. hlColorize al cambiar de tema).
-function insertDelRuns(addRow, wash) {
-  const oldLine = addRow.dataset.daOld ?? "";
-  const newLine = rowNewText(addRow);
-  // el wash entra en la firma: cambia con el tema (muestreo) y tiene que
-  // re-insertar los tachados con el nuevo lavado, no sólo cuando cambia el texto
-  const key = (wash ?? "∅") + "|" + oldLine.length + ":" + newLine.length + ":" + oldLine.slice(0, 12);
-  if (addRow.dataset.daMergeKey === key && addRow.querySelector("[data-da-del]")) return;
-  addRow.querySelectorAll("[data-da-del]").forEach((el) => el.remove());
-  addRow.dataset.daMergeKey = key;
-  const seq = mergeWords(oldLine, newLine);
-  if (!seq || !seq.some((it) => it.k === "del")) return;
-  // runs del con su ancla en espacio NEW (chars nuevos consumidos antes del
-  // run) — el walk de lectura del merge
-  const runs = [];
-  let nOff = 0;
-  for (const it of seq) {
-    if (it.k === "del") runs.push({ text: it.text, at: nOff });
-    else nOff += it.text.length;
-  }
-  // derecha→izquierda: las anclas new no se mueven (locatePlainNS salta los
-  // tachados) pero así los splits de text nodes nunca pisan al próximo
-  for (const run of runs.reverse()) {
-    const span = document.createElement("span");
-    span.setAttribute("data-da-del", "1");
-    span.className = "da-del";
-    // estilo INLINE: el span vive DENTRO del shadow DOM de pierre y las
-    // reglas de panel.css (light DOM) no lo alcanzan — igual que hlColorize.
-    // RESALTADO (spec 28/10: "las palabras resaltadas un 25% más"): lavado
-    // rojo de fondo al 25% (el mismo criterio que las cajitas verdes de los
-    // agregados) + tachado en el rojo real del diff. Sin opacity global: el
-    // lavado tiene SU alpha y el texto queda legible encima.
-    if (wash) span.style.background = wash;
-    span.style.color = "var(--wc-red, #f85149)";
-    span.style.borderRadius = "3px";
-    span.style.textDecoration = "line-through";
-    span.style.textDecorationThickness = "1px";
-    span.style.marginRight = "3px";
-    span.textContent = run.text;
-    const A = locatePlainNS(addRow, run.at, { pos: 0 }) ?? { node: addRow, offset: addRow.childNodes.length };
-    try {
-      const r = document.createRange();
-      r.setStart(A.node, A.offset);
-      r.collapse(true);
-      r.insertNode(span);
-    } catch { addRow.appendChild(span); }
-  }
-}
-
-// (La burbuja del "antes" al hover se ELIMINÓ en 0.9.8: se superponía a las
-// líneas de abajo y no dejaba leer antes y después juntos — los removidos
-// ahora viven tachados DENTRO de la fila verde, insertDelRuns.)
+// (Los tachados inline de la 0.9.8 y la burbuja de hover se ELIMINARON en
+// 0.9.11: spec final Damian — diff clásico línea a línea como GitHub, la
+// fila ROJA visible con su palabra resaltada y la VERDE debajo con la suya.)
 
 function clearFrags(entry) {
   fragSel.delete(entry.path);
