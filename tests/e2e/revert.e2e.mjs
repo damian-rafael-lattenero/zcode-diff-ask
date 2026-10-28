@@ -734,8 +734,8 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
       redBeforeGreen: !!(red && green) && (red.compareDocumentPosition(green) & Node.DOCUMENT_POSITION_FOLLOWING) > 0,
       delBoxes: e.body.querySelectorAll(".wc-layer .wc-del").length,
       addBoxes: e.body.querySelectorAll(".wc-layer .wc-add").length,
-      delOp: getComputedStyle(e.body.querySelector(".wc-layer .wc-del") ?? document.body).opacity,
-      addOp: getComputedStyle(e.body.querySelector(".wc-layer .wc-add") ?? document.body).opacity,
+      delBg: getComputedStyle(e.body.querySelector(".wc-layer .wc-del") ?? document.body).backgroundColor,
+      addBg: getComputedStyle(e.body.querySelector(".wc-layer .wc-add") ?? document.body).backgroundColor,
       tachados: rows.reduce((n, r) => n + r.querySelectorAll("[data-da-del]").length, 0),
     };
   })()`);
@@ -746,8 +746,8 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     `texto EXACTO de cada fila — la roja con (words), la verde con (tokens)`);
   check(mods.delBoxes > 0 && mods.addBoxes > 0,
     `la palabra removida va resaltada en ROJO (cajas .wc-del=${mods.delBoxes}) y la agregada en VERDE (.wc-add=${mods.addBoxes})`);
-  check(mods.delOp === "0.5" && mods.addOp === "0.5",
-    `las cajas SOBRESALEN al 50% de fuerza (del=${mods.delOp} add=${mods.addOp})`);
+  check(mods.delBg.includes("0.58") && mods.addBg.includes("0.58"),
+    `relleno BRILLANTE programático (oklch relativo, alpha 0.58): del=${JSON.stringify(mods.delBg.slice(0, 40))} add=${JSON.stringify(mods.addBg.slice(0, 40))}`);
   check(mods.tachados === 0, "sin tachados inline ni mezcla de versiones en una sola fila");
   await shot("12-diff-clasico-github.png");
 
