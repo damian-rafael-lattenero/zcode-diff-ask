@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mergeWords, mergedOffToNew, newRangeToMergedSegs, revertFrags,
+  mergeWords, mergedOffToNew, newRangeToMergedSegs, revertFrags, restoreOldWords,
 } from "../diff-ask/ui/src/lib.js";
 
 // mergeWords: la secuencia intercalada que alimenta los tachados inline de
@@ -109,4 +109,69 @@ test("old + new juntos: el drag mixto (tachado + palabra nueva) restaura y borra
     { side: "new", line: 1, offA: 12, offB: 17 },
   ]);
   assert.deepEqual(r.lines, ["alpha beta gamma"]);
+});
+
+// ---- restauración QUIRÚRGICA del lado viejo (spec 28/10: "pintar una
+// palabra de la roja restaura SOLO esa palabra en su lugar") ----
+
+// "the quick brown fox" → "the slow fox": offsets viejos de quick [4,9),
+// brown [10,15), "quick brown" [4,15)
+const ZORRO = {
+  before: ["the quick brown fox"],
+  after: ["the slow fox"],
+  hunks: [{ additionStart: 1, deletionStart: 1, hunkContent: [{ type: "change", deletions: 1, additions: 1 }] }],
+};
+
+test("old quirúrgico: pinto UNA de dos palabras removidas → vuelve y el reemplazo se mantiene", () => {
+  const r = revertFrags(ZORRO.before, ZORRO.after, ZORRO.hunks, [
+    { side: "old", line: 1, offA: 4, offB: 9 },
+  ]);
+  assert.deepEqual(r.lines, ["the quick slow fox"]);
+});
+
+test("old quirúrgico: pinto TODAS las removidas → la línea vuelve al original (swap completo)", () => {
+  const r = revertFrags(ZORRO.before, ZORRO.after, ZORRO.hunks, [
+    { side: "old", line: 1, offA: 4, offB: 15 },
+  ]);
+  assert.deepEqual(r.lines, ["the quick brown fox"]);
+});
+
+test("old quirúrgico: media palabra pintada no restaura nada (hay que pintar la palabra entera)", () => {
+  const r = revertFrags(ZORRO.before, ZORRO.after, ZORRO.hunks, [
+    { side: "old", line: 1, offA: 4, offB: 7 },
+  ]);
+  assert.equal(r.noDiff, true); // no cambió nada: la línea verde queda como está
+});
+
+test("old quirúrgico: pinturas separadas de quick y brown (sin espacios) restauran las dos", () => {
+  const r = revertFrags(ZORRO.before, ZORRO.after, ZORRO.hunks, [
+    { side: "old", line: 1, offA: 4, offB: 9 },
+    { side: "old", line: 1, offA: 10, offB: 15 },
+  ]);
+  // swap completo: todas las palabras viejas de la región vuelven, slow se va
+  assert.deepEqual(r.lines, ["the quick brown fox"]);
+});
+
+test("old quirúrgico: pintar la roja ENTERA = la vieja pareja atómica (línea original)", () => {
+  const r = revertFrags(ZORRO.before, ZORRO.after, ZORRO.hunks, [
+    { side: "old", line: 1, offA: 0, offB: 19 },
+  ]);
+  assert.deepEqual(r.lines, ["the quick brown fox"]);
+});
+
+test("old quirúrgico: la palabra restaurada queda pegada al texto nuevo con su espacio", () => {
+  // "alpha beta" → "alpha": región del " beta" al final. Pintar "beta"
+  // (sin el espacio) restaura con el espacio de pegamento: "alpha beta"
+  const r = revertFrags(
+    ["alpha beta"],
+    ["alpha"],
+    [{ additionStart: 1, deletionStart: 1, hunkContent: [{ type: "change", deletions: 1, additions: 1 }] }],
+    [{ side: "old", line: 1, offA: 6, offB: 10 }],
+  );
+  assert.deepEqual(r.lines, ["alpha beta"]);
+});
+
+test("restoreOldWords puro: región sin pintar no cambia; línea idéntica no cambia", () => {
+  assert.equal(restoreOldWords("b", "a", [[0, 0]]).noChange, true); // nada pintado
+  assert.equal(restoreOldWords("x", "x", [[0, 1]]).noChange, true); // iguales
 });

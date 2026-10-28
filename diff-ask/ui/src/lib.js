@@ -382,23 +382,41 @@ export function revertFrags(beforeLines, afterLines, hunks, frags) {
       const dels = [];
       for (let i = 0; i < c.deletions; i++) dels.push(oldN + i);
       oldN += c.deletions;
-      // frags ROJAS del bloque: la línea vieja vuelve ENTERA y su pareja
-      // verde se va (dropNew) — medio revertir deja la línea en el diff.
+      // frags ROJAS del bloque: la pareja se restaura QUIRÚRGICAMENTE (spec
+      // Damian 28/10: "pintar una palabra de la roja restaura SOLO esa
+      // palabra en su lugar"); la roja SIN pareja (línea borrada entera)
+      // sigue volviendo tal cual — no hay dónde splicearla parcialmente.
+      // Si la restauración no cambia nada (media palabra pintada), la verde
+      // sigue su camino normal, pintadas verdes incluidas.
       const dropNew = new Set();
+      const swapped = new Map(); // línea new N → texto restaurado quirúrgicamente
       for (let i = 0; i < dels.length; i++) {
         const L = dels[i];
-        if (!oldSels.some((f) => f.line === L)) continue;
+        const selsL = oldSels.filter((f) => f.line === L);
+        if (!selsL.length) continue;
         oldSels = oldSels.filter((f) => f.line !== L);
         const beforeLine = beforeLines[L - 1];
         if (beforeLine === undefined) return null;
-        if (i < c.additions) dropNew.add(addStart + i);
+        if (i < c.additions) {
+          const N = addStart + i;
+          const r = restoreOldWords(afterLines[N - 1], beforeLine, selsL.map((f) => [f.offA, f.offB]));
+          if (!r.noChange) {
+            dropNew.add(N); // sus pintadas verdes se ignoran: gana el lado viejo
+            swapped.set(N, r.line);
+            changed = true;
+          }
+          continue;
+        }
         if (beforeLine !== "") out.push(beforeLine);
         changed = true;
       }
       for (let i = 0; i < c.additions; i++) {
         const N = addStart + i;
         newN = N + 1;
-        if (dropNew.has(N)) continue;
+        if (dropNew.has(N)) {
+          if (swapped.has(N)) out.push(swapped.get(N));
+          continue;
+        }
         if (!newSels.has(N)) { out.push(afterLines[N - 1]); continue; }
         const sels = mergeRanges(newSels.get(N));
         const beforeLine = dels[i] !== undefined ? beforeLines[dels[i] - 1] : null;
@@ -545,4 +563,84 @@ export function newRangeToMergedSegs(dels, mergedLen, a, b) {
   }
   piece(mergedLen - cur);
   return segs;
+}
+
+// Restauración QUIRÚRGICA del lado viejo (spec Damian 28/10: pintar una
+// palabra de la línea ROJA restaura SOLO esa palabra en su lugar). La
+// pareja se recorre por REGIONES de cambio (tokens no-matcheados contiguos
+// entre matches del LCS), a nivel TOKEN — mergeWords fusiona los runs y
+// perdería la granularidad por palabra. Regla por región:
+//   - TODOS los tokens viejos de la región pintados (enteros) → la región
+//     vuelve al texto viejo: el run nuevo se va (swap completo — pintar la
+//     roja entera reproduce la vieja pareja atómica).
+//   - ALGUNOS pintados → los pintados vuelven a su lugar y el run nuevo
+//     SE MANTIENE ("the quick brown fox"→"the slow fox" con "quick"
+//     pintada → "the quick slow fox": aceptás la eliminación de a poco).
+//   - pintura PARCIAL de un token (media palabra) no restaura nada: hay que
+//     pintar la palabra entera (el doble-click la pinta entera) — espejo
+//     predecible de la cirugía del lado verde, que sí es por chars.
+// Los espacios: los tokens de espacio INTERIORES entre tokens pintados se
+// conservan; los saltos con el texto nuevo se rellenan con un espacio para
+// no pegar palabras.
+// Devuelve {line} | {noChange:true}.
+export function restoreOldWords(afterLine, beforeLine, sels) {
+  if (beforeLine == null || beforeLine === afterLine) return { noChange: true };
+  const oT = tokenizeLine(beforeLine);
+  const nT = tokenizeLine(afterLine);
+  const n = oT.length;
+  const m = nT.length;
+  if (!n && !m) return { noChange: true };
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = oT[i].text === nT[j].text ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  // items token a token (del lleva sus offsets EXACTOS en la línea vieja)
+  const items = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (oT[i].text === nT[j].text) { items.push({ k: "same", text: oT[i].text }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { items.push({ k: "del", text: oT[i].text, a: oT[i].start, b: oT[i].end }); i++; }
+    else { items.push({ k: "add", text: nT[j].text }); j++; }
+  }
+  while (i < n) { items.push({ k: "del", text: oT[i].text, a: oT[i].start, b: oT[i].end }); i++; }
+  while (j < m) { items.push({ k: "add", text: nT[j].text }); j++; }
+  const sel = mergeRanges(sels);
+  const full = (a, b) => sel.some(([s, e]) => s <= a && b <= e);
+  let out = "";
+  let changed = false;
+  let k = 0;
+  while (k < items.length) {
+    if (items[k].k === "same") { out += items[k].text; k++; continue; }
+    // región de cambio: items del/add contiguos
+    const dels = [];
+    let addText = "";
+    while (k < items.length && items[k].k !== "same") {
+      if (items[k].k === "del") dels.push(items[k]);
+      else addText += items[k].text;
+      k++;
+    }
+    const inc = dels.map((d) => full(d.a, d.b));
+    // swap completo cuando TODA la palabra-vieja CONTENTIVA está pintada: los
+    // tokens de espacio sin pintar no cuentan (dos doble-clicks en quick y
+    // brown pintan las palabras, no el espacio del medio — y el swap tiene
+    // que salir igual que pintar "quick brown" de una)
+    const content = dels.filter((d) => !/^\s+$/.test(d.text));
+    if (content.length && content.every((d) => full(d.a, d.b))) {
+      out += dels.map((d) => d.text).join(""); // swap completo
+      changed = true;
+    } else if (inc.some(Boolean)) {
+      // parcial: los pintados + espacios interiores; el run nuevo queda
+      let back = "";
+      dels.forEach((d, x) => {
+        if (inc[x]) back += d.text;
+        else if (/^\s+$/.test(d.text) && inc.slice(0, x).some(Boolean) && inc.slice(x + 1).some(Boolean)) back += d.text;
+      });
+      if (back && !/^\s/.test(back) && out && !/\s$/.test(out)) back = " " + back;
+      if (addText && !/^\s/.test(addText) && !/\s$/.test(back)) back += " ";
+      out += back + addText;
+      changed = true;
+    } else out += addText;
+  }
+  return changed ? { line: out } : { noChange: true };
 }

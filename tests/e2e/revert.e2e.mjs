@@ -756,7 +756,18 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   await evalJs(`__DA.fragSel.delete(${JSON.stringify(PARSER_PY)})`); // suelto las pintadas de L
   const redLoc = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "(words", "change-deletion")`);
   check(redLoc && !redLoc.error, "localizo la palabra 'words' EN LA FILA ROJA", redLoc?.error ?? "");
-  await dblclick((redLoc.chars[2].left + redLoc.chars[2].right) / 2, redLoc.y);
+  // MEDIA PALABRA de la roja no restaura nada: hay que pintar la palabra
+  // entera (regla espejo de la cirugía verde, spec quirúrgica 0.9.14)
+  await drag(redLoc.chars[1].left, redLoc.y, redLoc.chars[2].right + 0.5, redLoc.y, 6); // "wo"
+  await waitPaint(PARSER_PY, 1);
+  await evalJs("document.activeElement?.blur?.()");
+  await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await sleep(900);
+  check(readDisk(PARSER_PY).includes("alpha (tokens)") && (await evalJs(`__E2E.hasRowText(${JSON.stringify(PARSER_PY)}, "(tokens")`)),
+    "media palabra de la ROJA no restaura: la pareja queda igual (noDiff)");
+  const redLoc2 = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "(words", "change-deletion")`);
+  await dblclick((redLoc2.chars[2].left + redLoc2.chars[2].right) / 2, redLoc2.y);
   await waitPaint(PARSER_PY, 1);
   pf = await pFrags();
   check(pf.length === 1 && pf[0].text === "words", `doble-click en la fila ROJA pinta el frag de restaurar (${JSON.stringify(pf.map((f) => f.text))})`);
