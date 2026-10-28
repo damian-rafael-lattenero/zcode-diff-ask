@@ -886,6 +886,11 @@ button.fedit.on {
 button.fmode { padding: 2px 7px; font-weight: 700; }
 button.fmode-ask.on { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); }
 button.fmode-rev.on { border-color: var(--warn); background: var(--warn); color: #fff; }
+/* ↩ DOBLE apilada del rollback multilínea (spec Damian 28/10): dos flechas
+   iguales una bajo la otra — se distingue del rollback de ARCHIVO (↩ sola) */
+button.fmode-rev { display: inline-flex; align-items: center; padding: 1px 7px; }
+button.fmode-rev .dbl { display: block; line-height: 0.8; font-size: 12px; }
+button.fmode-rev .ok { margin-left: 2px; font-size: 10px; }
 /* mini aviso efímero ("no diff selected") */
 .mini-notice {
   position: fixed;

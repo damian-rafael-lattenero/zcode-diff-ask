@@ -2287,7 +2287,9 @@ function renderFragBadge(entry) {
     const active = mode === m;
     btn.classList.toggle("on", active);
     if (m === "ask") btn.textContent = active ? (n ? "?✓" : "?") : "?";
-    else btn.textContent = active ? (n ? "↩✓" : "↩") : "↩";
+    // ↩ DOBLE apilado (spec Damian 28/10): distingue el rollback MULTI-
+    // LÍNEA (quirúrgico, dos flechas) del rollback de ARCHIVO (una)
+    else btn.innerHTML = '<span class="dbl">↩</span><span class="dbl">↩</span>' + (active && n ? '<span class="ok">✓</span>' : "");
     btn.title = active
       ? (n ? `Ejecutar sobre ${n} fragmento${n === 1 ? "" : "s"} pintado${n === 1 ? "" : "s"} (Esc despinta)` : "Modo pintar para preguntar — seleccioná fragmentos")
       : m === "ask"
@@ -2871,12 +2873,15 @@ function renderFileInner(f) {
     askBtn.textContent = "?";
     const revBtn = document.createElement("button");
     revBtn.className = "ghost fmode fmode-rev";
-    revBtn.textContent = "↩";
+    // ↩↩ apiladas: el rollback multilínea se distingue del de archivo (↩ sola)
+    revBtn.innerHTML = '<span class="dbl">↩</span><span class="dbl">↩</span>';
     askBtn.onclick = (e) => { e.stopPropagation(); setFragMode(entry, "ask"); };
     revBtn.onclick = (e) => { e.stopPropagation(); setFragMode(entry, "rev"); };
     entry.fragAskBtn = askBtn;
     entry.fragRevBtn = revBtn;
-    head.querySelector(".fplus").after(askBtn, revBtn);
+    // orden del toolbar (spec Damian 28/10): ↩ archivo · ＋ · ✏️ · ? · ↩
+    // multilínea — van después del ✏️ si existe, si no después del ＋
+    (entry.editBtn ?? head.querySelector(".fplus")).after(askBtn, revBtn);
     renderFragBadge(entry);
   }
   // ↩ revert de TODO el archivo (sólo modificados con before completo)
@@ -2889,7 +2894,7 @@ function renderFileInner(f) {
       e.stopPropagation();
       revertWholeFile(entry);
     };
-    head.querySelector(".fplus").after(revBtn);
+    head.querySelector(".fplus").before(revBtn); // PRIMERO del toolbar
   }
 
   // ＋ a nivel archivo: ancla al archivo entero, cita = mini-resumen.
