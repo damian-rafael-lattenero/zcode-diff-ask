@@ -292,6 +292,52 @@ export async function setActiveWorkspace(input) {
   return { ok: true, workspace: p };
 }
 
+// Lista los repos git LOCALES bajo una carpeta (chip 📁 del panel — spec
+// Damian 28/10: "un pequeño árbol que pueda ir para arriba y me filtre solo
+// las carpetas que tengan .git"). Recursivo con tope de profundidad y
+// SKIP de pesadas (node_modules, Library, ocultas): parado en ~/Projects
+// ves TODOS tus repos de una. Un repo puede contener sub-repos: se sigue
+// bajando igual. Tope de resultados para no colgar la UI en árboles raros.
+const GIT_WALK_SKIP = new Set([
+  "node_modules", "Library", "Caches", ".Trash", "Application Support",
+  "vendor", "target", "build", "dist", "out", "venv", ".venv", "__pycache__",
+  "Coverage", "DerivedData",
+]);
+export function listGitProjects(input, maxDepth = 4, maxResults = 400) {
+  const under = path.resolve(String(input ?? "").trim().replace(/^~(?=\/|$)/, os.homedir()));
+  let stats;
+  try {
+    stats = fs.statSync(under);
+  } catch {
+    return { error: "invalid_path", message: `No existe: ${under}`, repos: [] };
+  }
+  if (!stats.isDirectory()) return { error: "invalid_path", message: `No es una carpeta: ${under}`, repos: [] };
+  const repos = [];
+  const walk = (dir, depth) => {
+    if (repos.length >= maxResults) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return; // sin permiso / desmontada: silencio
+    }
+    for (const ent of entries) {
+      if (repos.length >= maxResults) return;
+      if (!ent.isDirectory() || ent.name.startsWith(".")) continue;
+      const p = path.join(dir, ent.name);
+      try {
+        // .git puede ser dir (repo normal) o archivo (worktree/submodule)
+        if (fs.statSync(path.join(p, ".git")).isFile() || fs.statSync(path.join(p, ".git")).isDirectory())
+          repos.push({ path: p, name: ent.name, depth });
+      } catch { /* sin .git */ }
+      if (depth + 1 < maxDepth && !GIT_WALK_SKIP.has(ent.name)) walk(p, depth + 1);
+    }
+  };
+  walk(under, 0);
+  repos.sort((a, b) => a.depth - b.depth || a.name.localeCompare(b.name));
+  return { ok: true, under, repos };
+}
+
 // ------------------------------------------------- write_file (editor)
 // Autosave del editor del panel (estilo IntelliJ: siempre guarda). Política
 // de conflicto AGENTE GANA: si el archivo cambió en disco desde el contenido
@@ -1092,6 +1138,18 @@ const TOOLS = [
       required: ["path"],
     },
   },
+  {
+    name: "list_git_projects",
+    description:
+      "List local git repositories under a folder (recursive, bounded depth, skips node_modules/Library/hidden) for the panel's 📁 repo picker. Default folder: parent of the active workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        under: { type: "string", description: "Folder to scan (~ allowed). Default: parent of the active workspace." },
+        maxDepth: { type: "number", description: "Max subfolder depth to walk (default 4)." },
+      },
+    },
+  },
 ];
 
 const RESOURCES = [
@@ -1209,6 +1267,14 @@ async function handleRequest(msg) {
           return {
             structuredContent: data,
             content: [{ type: "text", text: data.ok ? `📁 Workspace activo: ${data.workspace}` : data.message }],
+          };
+        }
+        case "list_git_projects": {
+          const under = params.arguments?.under ?? path.dirname(activeWorkspace);
+          data = listGitProjects(under, params.arguments?.maxDepth);
+          return {
+            structuredContent: data,
+            content: [{ type: "text", text: data.ok ? `${data.repos.length} repos bajo ${data.under}` : data.message }],
           };
         }
         default:
