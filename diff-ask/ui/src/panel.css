@@ -703,6 +703,60 @@ button.filt.on::after {
   flex-direction: column;
   gap: 6px;
 }
+/* picker de repos del chip 📁 (0.9.18): ⬆ sube, lista solo carpetas git,
+   filtro en vivo — el árbol lo resuelve el server (list_git_projects) */
+.ws-picker {
+  position: fixed;
+  top: 44px;
+  left: 12px;
+  z-index: 31;
+  width: min(460px, calc(100vw - 24px));
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ws-picker .ie-head { display: flex; align-items: center; gap: 8px; }
+.ws-picker .crumb {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--accent);
+}
+.ws-picker input {
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+.ws-picker .ws-list { max-height: 42vh; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.ws-picker .ws-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  text-align: left;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+}
+.ws-picker .ws-row:hover { background: var(--accent-dim, rgba(127,127,127,0.12)); }
+.ws-picker .ws-row.current { border-color: var(--accent); }
+.ws-picker .ws-row.current b::after { content: " · actual"; font-weight: 400; font-size: 10px; color: var(--accent); }
+.ws-picker .ws-row span { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; opacity: 0.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-picker .ws-empty { padding: 8px; font-size: 12px; opacity: 0.6; }
 .ws-editor .ie-head { display: flex; align-items: center; gap: 8px; }
 .ws-editor .ie-head .anchor { flex: 1; font-weight: 600; color: var(--accent); }
 .ws-editor input {

@@ -946,6 +946,49 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(await until(async () => await evalJs(`(() => { const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(SHELL_SH)}); return !e?.edit; })()`), 4000), "✏️ sale del modo edición");
   await shot("14-edit-guardado.png");
 
+  // ============ P. picker de repos del chip 📁 (0.9.18) ============
+  // Spec Damian 28/10: "un pequeño árbol que yo pueda ir para arriba y me
+  // filtre solo los projects carpetas que tengan .git". Arranca en el PADRE
+  // del workspace, ⬆ sube un nivel, lista SOLO repos git (recursiva acotada,
+  // la resuelve el server) y filtro de texto en vivo.
+  const wsBtn = await evalJs(`(() => { const b = document.querySelector("button.ws"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  check(!!wsBtn, "encuentro el chip 📁 del workspace");
+  await click(wsBtn.x, wsBtn.y);
+  check(await until(async () => (await evalJs(`document.querySelector(".ws-picker")`)) !== null, 3000), "el click abre el PICKER (no el editor de ruta)");
+  await until(async () => (await evalJs(`[...document.querySelectorAll(".ws-picker .ws-row")].length`)) > 0, 10000);
+  const pk1 = await evalJs(`(() => {
+    const rows = [...document.querySelectorAll(".ws-picker .ws-row")];
+    return {
+      crumb: document.querySelector(".ws-picker .crumb")?.textContent ?? "",
+      n: rows.length,
+      hasRepo: rows.some((r) => r.textContent.includes("zcode-diff-ask")),
+      current: document.querySelector(".ws-picker .ws-row.current")?.textContent?.slice(0, 34) ?? null,
+      upDisabled: document.querySelector(".ws-picker .up")?.disabled ?? null,
+    };
+  })()`);
+  check(/Projects$/.test(pk1.crumb), `arranca en el PADRE del workspace (${JSON.stringify(pk1.crumb.slice(-26))})`);
+  check(pk1.n > 0 && pk1.hasRepo, `la lista tiene repos git, incluido el actual (${pk1.n} filas)`);
+  check((pk1.current ?? "").includes("zcode-diff-ask"), `el repo actual está marcado (${JSON.stringify(pk1.current)})`);
+  // filtro de texto en vivo: el input ya tiene el foco
+  await cdp("Input.insertText", { text: "diff-ask" });
+  await sleep(250);
+  const pkF = await evalJs(`[...document.querySelectorAll(".ws-picker .ws-row")].map((r) => r.textContent.slice(0, 26))`);
+  check(pkF.length === 1 && pkF[0].includes("zcode-diff-ask"), `el filtro en vivo deja solo el match (${JSON.stringify(pkF)})`);
+  // ⬆ sube un nivel y re-lista
+  await evalJs(`(() => { const i = document.querySelector(".ws-picker input"); if (i) { i.value = ""; i.dispatchEvent(new Event("input")); } })()`);
+  await sleep(150);
+  const upBtnP = await evalJs(`(() => { const b = document.querySelector(".ws-picker .up"); const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, disabled: b.disabled }; })()`);
+  check(upBtnP && !upBtnP.disabled, "⬆ habilitado (hay un nivel arriba)");
+  await click(upBtnP.x, upBtnP.y);
+  const upTarget = pk1.crumb.replace(/\/[^/]+$/, ""); // un ⬆ = padre del padre inicial
+  check(await until(async () => (await evalJs(`document.querySelector(".ws-picker .crumb")?.textContent ?? ""`)) === upTarget, 10000),
+    `⬆ sube un nivel (crumb ${JSON.stringify(upTarget)})`);
+  // Esc cierra sin cambiar el workspace
+  await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+  check(await until(async () => (await evalJs(`document.querySelector(".ws-picker")`)) === null, 2000), "Esc cierra el picker sin cambiar el workspace");
+  await shot("15-picker-repos.png");
+
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));
   check((await evalJs("__E2E.errors()")).length === 0, "sin carteles de error en el panel", JSON.stringify(await evalJs("__E2E.errors()")));

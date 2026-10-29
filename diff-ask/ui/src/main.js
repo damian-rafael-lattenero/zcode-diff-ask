@@ -81,7 +81,7 @@ function wsLabel() {
 }
 
 function openWorkspaceEditor() {
-  document.querySelectorAll(".ws-editor").forEach((n) => n.remove());
+  document.querySelectorAll(".ws-picker, .ws-editor").forEach((n) => n.remove());
   const card = document.createElement("div");
   card.className = "ws-editor";
   card.innerHTML = `
@@ -105,6 +105,114 @@ function openWorkspaceEditor() {
   document.body.appendChild(card);
   input.focus();
   input.select();
+}
+
+// Picker de repos del chip 📁 (spec Damian 28/10: "un pequeño árbol que yo
+// pueda ir para arriba y me filtre solo las carpetas con .git"). Arranca en
+// el PADRE del workspace actual, ⬆ sube un nivel, y en cada lado lista SOLO
+// repos git — recursivo acotado, lo resuelve el SERVER (list_git_projects:
+// el panel vive sandboxeado y no puede leer el disco). Filtro de texto en
+// vivo encima de la lista; "a mano" abre el editor de ruta de siempre.
+function wsParentOf(p) {
+  if (!p) return null;
+  const up = p.replace(/\/+$/, "").split("/").slice(0, -1).join("/");
+  return up === p ? null : (up || "/");
+}
+
+function openWorkspacePicker() {
+  document.querySelectorAll(".ws-picker, .ws-editor").forEach((n) => n.remove());
+  const card = document.createElement("div");
+  card.className = "ws-picker";
+  card.innerHTML = `
+    <div class="ie-head">
+      <button class="ghost up" title="Subir un nivel">⬆</button>
+      <span class="crumb"></span>
+      <button class="ghost close" title="Cerrar">✕</button>
+    </div>
+    <input type="text" spellcheck="false" placeholder="filtrar por nombre…">
+    <div class="ws-list"></div>
+    <div class="ie-actions">
+      <span class="hint">solo carpetas git · click cambia el diff</span>
+      <button class="ghost manual">escribir la ruta a mano…</button>
+    </div>`;
+  const list = card.querySelector(".ws-list");
+  const crumb = card.querySelector(".crumb");
+  const upBtn = card.querySelector(".up");
+  const filter = card.querySelector("input");
+  const close = () => { card.remove(); document.removeEventListener("pointerdown", outside, true); };
+  const outside = (e) => { if (!card.contains(e.target) && !e.target.closest?.("button.ws")) close(); };
+  card.querySelector(".close").onclick = close;
+  card.querySelector(".manual").onclick = () => { close(); openWorkspaceEditor(); };
+  card.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); close(); } });
+
+  let root = wsParentOf(currentWorkspace) ?? currentWorkspace ?? "~";
+  let repos = [];
+
+  const renderRows = () => {
+    const q = filter.value.trim().toLowerCase();
+    const hits = q ? repos.filter((r) => r.path.toLowerCase().includes(q)) : repos;
+    list.textContent = "";
+    if (!hits.length) {
+      const d = document.createElement("div");
+      d.className = "ws-empty";
+      d.textContent = repos.length ? "nada coincide con el filtro" : "no hay repos git acá — probá ⬆";
+      list.appendChild(d);
+      return;
+    }
+    for (const r of hits.slice(0, 120)) {
+      const b = document.createElement("button");
+      b.className = "ws-row" + (r.path === currentWorkspace ? " current" : "");
+      const name = document.createElement("b");
+      name.textContent = r.name;
+      const sub = document.createElement("span");
+      const rel = r.path.startsWith(root + "/") ? r.path.slice(root.length + 1) : r.path;
+      sub.textContent = r.depth ? `  ·${"…".repeat(Math.min(r.depth, 3))} ${rel}` : "";
+      b.append(name, sub);
+      b.onclick = () => applyWorkspace(r.path).then((ok) => { if (ok) close(); });
+      list.appendChild(b);
+    }
+    if (hits.length > 120) {
+      const d = document.createElement("div");
+      d.className = "ws-empty";
+      d.textContent = `…y ${hits.length - 120} más — afiná el filtro`;
+      list.appendChild(d);
+    }
+  };
+
+  const load = async () => {
+    crumb.textContent = root;
+    const parent = wsParentOf(root);
+    upBtn.disabled = !parent;
+    upBtn.title = parent ? `Subir a ${parent}` : "Ya estás en la raíz";
+    list.textContent = "";
+    const d = document.createElement("div");
+    d.className = "ws-empty";
+    d.textContent = "buscando repos…";
+    list.appendChild(d);
+    try {
+      const res = await app.callServerTool({ name: "list_git_projects", arguments: { under: root } });
+      const sc = res?.structuredContent;
+      if (!sc?.ok) throw new Error(sc?.message ?? "no pude listar");
+      repos = sc.repos ?? [];
+    } catch (e) {
+      repos = [];
+      chip(`⚠ ${e?.message ?? e}`);
+    }
+    renderRows();
+  };
+
+  upBtn.onclick = () => {
+    const up = wsParentOf(root);
+    if (!up || up === root) return;
+    root = up;
+    filter.value = "";
+    load();
+  };
+  filter.addEventListener("input", renderRows);
+  document.body.appendChild(card);
+  setTimeout(() => document.addEventListener("pointerdown", outside, true), 0);
+  load();
+  filter.focus();
 }
 
 async function applyWorkspace(p) {
@@ -3052,7 +3160,7 @@ function renderModebar(root) {
   ws.title = currentWorkspace
     ? `${currentWorkspace}\n(click para cambiar la carpeta del diff)`
     : "Cambiar la carpeta del diff";
-  ws.onclick = openWorkspaceEditor;
+  ws.onclick = openWorkspacePicker;
   modebar.appendChild(ws);
   root.appendChild(modebar);
 }
