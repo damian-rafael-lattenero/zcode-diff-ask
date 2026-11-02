@@ -655,6 +655,9 @@ const HL_LANGS = new Set([
   "json", "yaml", "python", "typescript", "javascript", "markdown",
   "html", "css", "bash", "shellscript", "kotlin", "haskell",
   "yml", "py", "ts", "js", "md", "sh", "shell", "zsh", "kt", "hs",
+  // nushell (0.9.19): la gramática registra los DOS ids y pierre mapea
+  // .nu → "nushell" — el panel pide por cualquiera de los dos
+  "nu", "nushell",
 ]);
 // El motor (vendor/shiki-subset) tokeniza; el RENDERER de pierre no cablea
 // esos tokens en nuestro contexto embebido — así que pintamos las filas
@@ -2917,11 +2920,30 @@ document.getElementById("root").addEventListener("scroll", () => {
 
 // --------------------------------------------------------------- render
 
+// BORRADORES que sobreviven el refresh (URGENTE Damian 28/10: "estoy
+// escribiendo y si aparece un nuevo cambio me borra la caja y lo que
+// escribí"): clearRendered destruye las secciones y con ellas los composers
+// abiertos — se guardan con su archivo y renderAll los RE-CUELGA en la
+// sección nueva, texto y foco incluidos. Escribir mientras la carpeta
+// cambia tiene que ser posible.
+let keptComposers = []; // { path, node, focus }
+function stashComposersOf(entry) {
+  for (const card of entry.section.querySelectorAll(".composer")) {
+    const ta = card.querySelector("textarea");
+    keptComposers.push({
+      path: entry.path,
+      node: card,
+      focus: document.activeElement && card.contains(document.activeElement) ? ta : null,
+    });
+  }
+}
+
 function clearRendered() {
   boxDrag = null;
   hideHoverPlus();
   for (const entry of rendered.values()) endEdit(entry, "complete");
   for (const entry of rendered.values()) {
+    stashComposersOf(entry);
     try { entry.fd?.cleanUp(); } catch { /* already gone */ }
     entry.structureObserver?.disconnect();
     entry.section.remove();
@@ -3269,6 +3291,7 @@ function renderAll() {
     clean.className = "state clean";
     clean.textContent = `Árbol limpio — sin cambios contra ${diffData.baseLabel ?? "HEAD"}.`;
     root.appendChild(clean);
+    keptComposers = []; // el diff quedó vacío: las preguntas ancladas no tienen ancla
     return;
   }
   if (diffData.truncated) {
@@ -3285,6 +3308,25 @@ function renderAll() {
   }
   for (const f of diffData.files) renderFile(f);
   applyLineFilter();
+  // BORRADORES (ver keptComposers): los composers abiertos vuelven a su
+  // sección — texto, listeners y foco intactos. Si el archivo salió del
+  // diff (se revirtió entero), la pregunta quedó sin ancla: se descarta.
+  if (keptComposers.length) {
+    const refocus = keptComposers.find((k) => k.focus);
+    for (const k of keptComposers) {
+      const e = rendered.get(k.path);
+      if (e) e.section.appendChild(k.node);
+      else k.node.remove();
+    }
+    keptComposers = [];
+    if (refocus) {
+      const ta = refocus.focus;
+      requestAnimationFrame(() => {
+        ta.focus();
+        try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch { /* input type raro */ }
+      });
+    }
+  }
   // re-render: restaurar overlays/modos de pintado (sobreviven por path)
   for (const [p] of fragSel) {
     const e = rendered.get(p);

@@ -883,6 +883,28 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(rowsN.green === CFG_ROW_GREEN && rowsN.red === CFG_ROW_RED,
     `texto EXACTO tras refresh + re-colorizar: roja=${JSON.stringify((rowsN.red ?? "").slice(0, 22))} verde=${JSON.stringify((rowsN.green ?? "").slice(0, 22))}`);
 
+  // Nushell (0.9.19): .nu colorizado por el subset REAL — pierre mapea
+  // .nu → "nushell", la gramática nu va bundleada y hlColorize la aplica
+  const NU = "tests/diffs/runner.nu";
+  await expandFile(NU);
+  const nuState = await evalJs(`(() => {
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(NU)});
+    const rows = [...e.body.querySelector("diffs-container").shadowRoot.querySelectorAll("[data-line]")].filter((r) => !r.querySelector("[data-line]"));
+    const grand = rows.find((r) => (r.textContent ?? "").includes("grand total"));
+    return {
+      hlN: rows.filter((r) => r.dataset.hl).length,
+      total: rows.length,
+      engineHasNu: typeof __DA_HL_READY?.langs === "function" ? (__DA_HL_READY.langs() ?? []).includes("nushell") : null,
+      grandHl: grand?.dataset.hl ?? null,
+      grandTxt: grand?.textContent ?? null,
+    };
+  })()`);
+  check(nuState.engineHasNu === true, `el motor REAL tiene la gramática nushell cargada (${JSON.stringify(nuState.engineHasNu)})`);
+  check(nuState.hlN > 0, `el .nu queda COLORIZADO (${nuState.hlN}/${nuState.total} filas con dataset.hl)`);
+  check(nuState.grandHl !== null && nuState.grandTxt === '  echo $"alpha grand total: ($total)"',
+    `la fila del cambio nu1 colorizada con texto EXACTO (${JSON.stringify((nuState.grandTxt ?? "").slice(0, 36))})`);
+  await shot("13-nushell-highlight.png");
+
   // ============ O. modo edición ✏️: el editor de pierre manda SOLO (0.9.9) ============
   // Reporte Damian 28/10: "empiezo a editar y se pone en negro lo que
   // escribo o borro". Sospecha: el MutationObserver del shadow dispara
@@ -988,6 +1010,55 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
   check(await until(async () => (await evalJs(`document.querySelector(".ws-picker")`)) === null, 2000), "Esc cierra el picker sin cambiar el workspace");
   await shot("15-picker-repos.png");
+
+  // ============ Q. el BORRADOR sobrevive el refresh reactivo (0.9.20) ============
+  // URGENTE Damian 28/10: escribo en el composer, llega un cambio al diff
+  // (refresh reactivo), y se borra la caja con lo escrito. El composer tiene
+  // que seguir — texto, listeners y foco — en la sección NUEVA.
+  await panelStable();
+  await expandFile(PARSER_PY);
+  await evalJs(`__DA.fragSel.delete(${JSON.stringify(PARSER_PY)})`);
+  // OJO: la sección M revierte la línea "Marker words:" a HEAD y esa fila
+  // sale del diff, así que Q se ancla a una adición que sigue viva: la
+  // función insertada `def render(tokens):` (fila verde de parser.py).
+  const qLoc = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "def render(tokens):")`);
+  check(qLoc && !qLoc.error, "Q: localizo una fila viva de parser.py (def render)", qLoc?.error ?? "");
+  if (!qLoc || qLoc.error) throw new Error("Q: parser.py no está localizable — no puedo probar el borrador");
+  await dblclick((qLoc.chars[5].left + qLoc.chars[5].right) / 2, qLoc.y); // pintar "render"
+  await waitPaint(PARSER_PY, 1);
+  const qAsk = await until(async () => (await evalJs(`(() => { const b = document.querySelector(".sel-pop button"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`)), 3000);
+  check(!!qAsk, "popup ＋ disponible para abrir el composer");
+  await click(qAsk.x, qAsk.y); // ＋ → composer de fragmentos
+  await sleep(300);
+  await cdp("Input.insertText", { text: "pregunta escrita mientras cambia la carpeta" });
+  await sleep(150);
+  // un cambio en disco dispara el refresh reactivo (fs.watch → SSE → renderAll)
+  fs.appendFileSync(path.join(REPO, "tests/diffs/notes.md"), "\n<!-- borrador: cambio reactivo -->\n");
+  await panelStable();
+  const draft = await evalJs(`(() => {
+    const card = document.querySelector(".composer");
+    const ta = card?.querySelector("textarea");
+    return {
+      alive: !!card,
+      text: ta?.value ?? null,
+      anchored: card?.closest("section.file")?.querySelector(".path")?.textContent?.slice(0, 30) ?? null,
+      focused: document.activeElement === ta,
+      caretAtEnd: ta ? ta.selectionStart === ta.value.length : null,
+    };
+  })()`);
+  check(draft.alive, "el composer SIGUE tras el refresh reactivo");
+  check(draft.text === "pregunta escrita mientras cambia la carpeta", `lo ESCRITO sobrevive (${JSON.stringify((draft.text ?? "").slice(0, 30))})`);
+  check((draft.anchored ?? "").includes("parser.py"), "y vive dentro de la sección nueva de parser.py");
+  check(draft.focused && draft.caretAtEnd, `el foco vuelve al textarea con el caret al final (focused=${draft.focused} caret=${draft.caretAtEnd})`);
+  await shot("16-borrador-sobrevive.png");
+  // limpieza: cerrar el composer y volver el fixture al estado estándar
+  const qClose = await evalJs(`(() => { const b = document.querySelector(".composer .close"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  if (qClose) await click(qClose.x, qClose.y);
+  await evalJs(`__DA.fragSel.delete(${JSON.stringify(PARSER_PY)})`);
+  execFileSync("git", ["-C", REPO, "checkout", "--", "tests/diffs/notes.md"]);
+  execFileSync("node", [path.join(HERE, "apply-fixture-mods.mjs")], { stdio: "ignore" });
+  await evalJs("__DA.refresh(true)");
+  await panelStable();
 
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));

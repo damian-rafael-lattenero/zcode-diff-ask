@@ -5,7 +5,8 @@
 // limita el panel a 4 MiB — de ahí el stub plano de 0.1.x.
 // La combinación que lo hace posible:
 //   · shiki/engine/javascript — motor de regex 100% JS, CERO wasm
-//   · 11 gramáticas (json/yaml/python/ts/js/md/html/css/bash/kotlin/haskell)
+//   · 12 gramáticas (json/yaml/python/ts/js/md/html/css/bash/kotlin/
+//     haskell/nushell — nu desde 0.9.19, pedido Damian)
 //   · createCssVariablesTheme — los tokens toman color de las VARIABLES CSS
 //     del tema del panel: light/dark sale gratis
 // Los lenguajes fuera del subconjunto renderizan plano (el fallback de
@@ -26,13 +27,16 @@ import css from "../../../node_modules/shiki/dist/langs/css.mjs";
 import bash from "../../../node_modules/shiki/dist/langs/bash.mjs";
 import kotlin from "../../../node_modules/shiki/dist/langs/kotlin.mjs";
 import haskell from "../../../node_modules/shiki/dist/langs/haskell.mjs";
+import nu from "../../../node_modules/shiki/dist/langs/nu.mjs";
 
 import { DiffsHighlighter } from "../../../node_modules/@pierre/diffs/dist/highlighter/DiffsHighlighter.js";
 import { createDiffsThemeResolver } from "../../../node_modules/@pierre/diffs/dist/highlighter/themes/themeResolver.js";
 import { ShikiEditorTokenizer } from "../../../node_modules/@pierre/diffs/dist/highlighter/shiki-editor.js";
 import { ShikiStreamTokenizer } from "../../../node_modules/@pierre/diffs/dist/highlighter/shiki-stream.js";
 
-const SUBSET = { json, yaml, python, typescript, javascript, markdown, html, css, bash, kotlin, haskell };
+// La gramática de nushell registra DOS ids ("nushell" y "nu"): pierre mapea
+// .nu → "nushell", así que el panel pide por ese — ambos cargan igual.
+const SUBSET = { json, yaml, python, typescript, javascript, markdown, html, css, bash, kotlin, haskell, nu };
 
 // Núcleo SINGLETON arrancado al importar el módulo: las dos clases lo
 // comparten. Mientras inicializa (unos ms), hasLoadedLanguages es false y

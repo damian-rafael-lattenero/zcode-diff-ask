@@ -73,6 +73,12 @@ const MODS = {
   "tests/diffs/Makefile": [
     ['@echo "nothing to clean"', '@echo "nothing to clean today"'],
   ],
+  "tests/diffs/runner.nu": [
+    // nu1 — palabra cambiada en el echo (doble-click + revert)
+    ['echo $"alpha total: ($total)"', 'echo $"alpha grand total: ($total)"'],
+    // nu2 — palabra AGREGADA en el where (drag de 3 letras)
+    ["$rows | where kind == one", "$rows | where kind != one"],
+  ],
 };
 
 let n = 0;

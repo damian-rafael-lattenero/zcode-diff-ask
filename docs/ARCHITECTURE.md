@@ -220,8 +220,8 @@ lo tipado quedaba negro/pisado. Hoy `hlColorize` y el loop del rAF saltan
 
 ## 7. Syntax highlighting
 
-11 lenguajes bundleados (json, yaml, python, ts/js, markdown, html, css,
-bash, kotlin, haskell) con el motor JS de shiki (sin wasm) — el subset entra
+12 lenguajes bundleados (json, yaml, python, ts/js, markdown, html, css,
+bash, kotlin, haskell, nushell) con el motor JS de shiki (sin wasm) — el subset entra
 en el límite de 4 MiB. El renderer embebido de pierre no cablea tokens en
 nuestro contexto, así que el PANEL pinta: `hlColorize` reemplaza el contenido
 de la fila ENTERA (`r.innerHTML`) con spans coloreados — reemplazo completo,
@@ -312,7 +312,7 @@ panel son las preguntas ancladas, colapsadas sobre su línea.
 - `fs.watch` de macOS: el watcher del server puede perder un evento
   (mitigado: firma + auto-refresh post-write; test del watcher es el único
   flaky conocido de unit).
-- Highlighting fuera del subset de 11 lenguajes → plain.
+- Highlighting fuera del subset de 12 lenguajes → plain.
 - El revert de una roja SIN pareja es atómico por diseño (no hay dónde
   splicear una palabra suelta en una línea que no existe).
 - `apply-fixture-mods.mjs` resetea `tests/diffs/` desde HEAD: los cambios
