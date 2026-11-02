@@ -130,6 +130,12 @@ const MODS = {
     // línea NUEVA en el target
     ["+clean:", ['\t@echo "rich fixture variant"']],
   ],
+  "tests/diffs/runner.nu": [
+    // nushell: palabra cambiada + una agregada + comentario nuevo
+    ['echo $"alpha total: ($total)"', 'echo $"alpha grand total: ($total)"'],
+    ["$rows | where kind == one", "$rows | where kind != one"],
+    ["+def \"main alpha\" [] {", ["  # rich nushell variant"]],
+  ],
 };
 
 let n = 0;

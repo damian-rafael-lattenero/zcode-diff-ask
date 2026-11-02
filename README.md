@@ -45,7 +45,7 @@ Documentación de profundidad:
   reales, cómo funciona el rig e2e con mouse real, y los pozos que fuimos
   aprendiendo.
 
-## Qué hay (state 0.9.16)
+## Qué hay (state 0.9.20)
 
 | Feature | Dónde |
 |---|---|
@@ -55,7 +55,8 @@ Documentación de profundidad:
 | Revert por línea (riel derecho), por selección, por archivo | `revertLines` (lib) |
 | **Pincel quirúrgico**: pintar chars/palabras, coexistencia por chars, Enter, brocha acumulativa sin popups | `revertFrags` + `surgeryLine`/`restoreOldWords` (lib) |
 | ✏️ edición en vivo (autosave 900ms, ⌘Z, ↩ descartar, agente gana) | Editor de pierre + `write_file` |
-| Syntax highlighting (11 lenguajes, shiki JS, sin wasm) | `hlColorize` (panel) |
+| Syntax highlighting (12 lenguajes, shiki JS, sin wasm — nushell desde 0.9.19) | `hlColorize` (panel) |
+| Borrador del composer sobrevive el refresh reactivo (texto, foco, caret) | `keptComposers` (panel) |
 | ⌘F, filtros ＋/−/≡, toolbar sticky, carpeta del diff | panel |
 
 ## Arquitectura en una página

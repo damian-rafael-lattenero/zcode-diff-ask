@@ -13,11 +13,11 @@ pozos que fuimos aprendiendo (para no volver a caer). Para la arquitectura,
 | Unit (lib pura) | `tests/lib.test.mjs`, `lib-frag`, `lib-merge` | tokenizadores, word-diff LCS, `revertLines`/`revertFrags`/`surgeryLine`/`restoreOldWords`, cortes de espacio, `wordRanges` | 80 en total | **~7 s** |
 | Unit (server MCP) | `tests/server-*.test.mjs` | modos del diff, turns 📸, `write_file` + conflictos/shelve, parseo — con repos git REALES en tmp | ↑ | ↑ |
 | Integración | `tests/revert-integration.test.mjs` | lib → `writeFileGuarded` → `git diff` cierra el circuito en un repo tmp real | ↑ | ↑ |
-| E2E | `tests/e2e/revert.e2e.mjs` | el panel REAL (`dist/panel.html`) + server REAL, **mouse y teclado reales** por CDP, cada revert verificado contra git | **86 checks** | **~1 min** |
+| E2E | `tests/e2e/revert.e2e.mjs` | el panel REAL (`dist/panel.html`) + server REAL, **mouse y teclado reales** por CDP, cada revert verificado contra git | **100+ checks** | **~2 min** |
 
 ```bash
 npm test          # 80/80 en ~7 s
-npm run test:e2e  # 86/86 en ~50–60 s (requiere Google Chrome instalado)
+npm run test:e2e  # 100+ checks en ~2 min (requiere Google Chrome instalado)
 ```
 
 ## Por qué esta forma
