@@ -39,6 +39,21 @@ const MAX_PATCH_BYTES = 1_500_000;
 // Archivos con before+after <= esto viajan con contenido COMPLETO en el JSON
 // (el panel diffea local y expande contexto sin red); más grandes → parche -U10.
 const CONTENT_LIMIT = 300_000;
+// Mega commits (upstream-sync merges with thousands of files): with no caps,
+// enriching before/after cost 2 git-shows PER file SERIALLY — a 5103-file
+// merge meant ~10k spawns and a panel hung for minutes. With these: content
+// only for the first N files (bounded pool), the rest rides the patch map
+// (ONE capped-output git diff), and the file list is pruned in the payload.
+const MAX_CONTENT_FILES = 250;
+const MAX_LIST_FILES = 600;
+const ENRICH_CONCURRENCY = 12;
+// Cap on captured git stdout (a mega-merge `git diff` can dump tens of MB —
+// buffering it all is pointless: the patch budget prunes it anyway).
+const GIT_OUT_CAP = 4_000_000;
+// Exported for the unit tests (tests/server-mega-commit.test.mjs).
+export {
+  MAX_CONTENT_FILES, MAX_LIST_FILES, ENRICH_CONCURRENCY, GIT_OUT_CAP,
+};
 // Árbol vacío canónico de git — el "padre" de un commit raíz, para que
 // `git diff <empty> <root>` liste el commit completo sin caso especial.
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -59,21 +74,47 @@ const log = (...a) => process.stderr.write(`[diff-ask] ${a.join(" ")}\n`);
 
 // ---------------------------------------------------------------- git
 
-function runGit(args, { cwd = activeWorkspace, expectDiffExit = false } = {}) {
+export function runGit(args, { cwd = activeWorkspace, expectDiffExit = false, maxOut = Infinity } = {}) {
   return new Promise((resolve) => {
     const p = spawn("git", ["-C", cwd, ...args], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
     let err = "";
-    p.stdout.on("data", (d) => (out += d));
+    let capped = false;
+    p.stdout.on("data", (d) => {
+      if (capped) return; // already killed: don't keep buffering past the cap
+      out += d;
+      if (out.length > maxOut) {
+        capped = true;
+        p.kill();
+      }
+    });
     p.stderr.on("data", (d) => (err += d));
     p.on("error", () => resolve({ ok: false, out: "", err: "git binary not found" }));
     p.on("close", (code) => {
-      const ok = code === 0 || (expectDiffExit && code === 1);
-      resolve({ ok, out, err });
+      // capped: we killed it on purpose — the captured output is still valid.
+      const ok = capped || code === 0 || (expectDiffExit && code === 1);
+      resolve({ ok, out, err, capped });
     });
   });
+}
+
+// Bounded-concurrency map over a list: at most `limit` fn() calls in flight
+// (worker pool, not chunked batches — a slow item doesn't stall its chunk
+// neighbours). The shared `next` cursor is safe: check+increment has no await
+// between them, so it's atomic in the event loop.
+export async function mapPool(items, limit, fn) {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () =>
+    (async () => {
+      while (next < items.length) {
+        const i = next++;
+        await fn(items[i], i);
+      }
+    })(),
+  );
+  await Promise.all(workers);
 }
 
 export function parsePorcelainZ(out) {
@@ -180,16 +221,18 @@ function readWorkFile(p, cwd) {
   }
 }
 
-// El corazón común a todos los modos "vs una base": entra la lista de archivos
-// (name-status + untracked), sale cada uno con before/after (si entran en el
-// presupuesto) o parche -U10 de fallback, más added/deleted/binary.
-async function enrichFiles({ entries, numstat, getBefore, getAfter, buildPatches, cwd }) {
+// The heart shared by every "vs a base" mode: file list in (name-status +
+// untracked), out each one with before/after (if it fits the budget) or a
+// fallback -U10 patch, plus added/deleted/binary.
+export async function enrichFiles({ entries, numstat, getBefore, getAfter, buildPatches, cwd }) {
   let truncated = false;
   let budget = MAX_PATCH_BYTES;
-  // Primero intento contenido completo (before/after): el panel diffea local
-  // con 10 líneas de contexto y separadores expandibles. Parche sólo fallback.
-  for (const f of entries) {
-    if (f.binary) continue;
+  // First, full content (before/after) for the first MAX_CONTENT_FILES
+  // non-binary files, with a bounded pool: the panel diffs locally with 10
+  // context lines and expandable separators. Patch is the fallback. The cap
+  // keeps a mega commit from costing one spawn pair per file.
+  const targets = entries.filter((f) => !f.binary).slice(0, MAX_CONTENT_FILES);
+  await mapPool(targets, ENRICH_CONCURRENCY, async (f) => {
     const before = f.status === "A" || f.status === "?" ? null : await getBefore(f);
     const after = f.status === "D" ? null : await getAfter(f);
     if (before !== null || after !== null) {
@@ -198,11 +241,11 @@ async function enrichFiles({ entries, numstat, getBefore, getAfter, buildPatches
         f.before = before ?? "";
         f.after = after ?? "";
         budget -= cost;
-        continue;
+      } else {
+        truncated = true;
       }
-      truncated = true;
     }
-  }
+  });
   const needPatch = entries.some((f) => f.before === undefined && !f.binary && f.status !== "R");
   let patchMap = new Map();
   if (needPatch && buildPatches) patchMap = await buildPatches();
@@ -243,6 +286,14 @@ async function enrichFiles({ entries, numstat, getBefore, getAfter, buildPatches
     if (f.patch && /^Binary files /m.test(f.patch)) f.binary = true;
   }
   return { files: entries, truncated };
+}
+
+// Bound the payload AND the panel render: beyond MAX_LIST_FILES the entries
+// themselves are pruned (the totals still live in fileCount). Marks truncated
+// so the panel shows its "diff too big" banner.
+function pruneList(files, truncated) {
+  if (files.length <= MAX_LIST_FILES) return { files, truncated };
+  return { files: files.slice(0, MAX_LIST_FILES), truncated: true };
 }
 
 async function repoMeta(cwd) {
@@ -462,20 +513,23 @@ export async function buildDiff({ mode = "working", includePatches = true, works
     getAfter: (f) => Promise.resolve(readWorkFile(f.path, ws)),
     buildPatches: includePatches
       ? async () => {
-          const map = splitPatch((await runGit(["diff", base, "--no-color", "-U10"], { cwd: ws })).out);
-          for (const f of untracked) {
+          const map = splitPatch((await runGit(["diff", base, "--no-color", "-U10"], { cwd: ws, maxOut: GIT_OUT_CAP })).out);
+          // Untracked files need a per-file --no-index diff: pool them too (a
+          // sea of untracked files was the same serial-spawn trap).
+          await mapPool(untracked, ENRICH_CONCURRENCY, async (f) => {
             const r = await runGit(
               ["diff", "--no-index", "--no-color", "-U10", "--", "/dev/null", f.path],
               { cwd: ws, expectDiffExit: true },
             );
             for (const [k, v] of splitPatch(r.out)) map.set(k, v);
-          }
+          });
           return map;
         }
       : null,
     cwd: ws,
   });
 
+  const pruned = pruneList(files, truncated);
   return {
     workspace: ws,
     branch: meta.branch,
@@ -486,9 +540,9 @@ export async function buildDiff({ mode = "working", includePatches = true, works
     ahead,
     behind,
     dirty: files.length > 0,
-    truncated,
+    truncated: pruned.truncated,
     fileCount: files.length,
-    files,
+    files: pruned.files,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -795,6 +849,7 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace } = {}) {
     if (n.added === "-") f.binary = true;
   }
 
+  const pruned = pruneList(entries, false);
   return {
     workspace: ws,
     branch: meta.branch,
@@ -804,9 +859,9 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace } = {}) {
     baseLabel: `turno ${rec.at.slice(11, 16)}`,
     snapshotAt: rec.at,
     dirty: entries.length > 0,
-    truncated: false,
+    truncated: pruned.truncated,
     fileCount: entries.length,
-    files: entries,
+    files: pruned.files,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -930,10 +985,11 @@ export async function buildCommitDiff(ref, { workspace = activeWorkspace } = {})
     getBefore: (f) => gitShow(parent, f.oldPath ?? f.path, ws),
     getAfter: (f) => gitShow(sha, f.path, ws),
     buildPatches: async () =>
-      splitPatch((await runGit(["diff", "--no-color", "-U10", parent, sha], { cwd: ws })).out),
+      splitPatch((await runGit(["diff", "--no-color", "-U10", parent, sha], { cwd: ws, maxOut: GIT_OUT_CAP })).out),
     cwd: ws,
   });
 
+  const pruned = pruneList(files, truncated);
   return {
     workspace: ws,
     branch: meta.branch,
@@ -943,9 +999,9 @@ export async function buildCommitDiff(ref, { workspace = activeWorkspace } = {})
     commit: commit ? { ...commit, hash: sha, isMerge, parents } : { hash: sha, short: sha.slice(0, 7), subject: "", author: "", date: "", isMerge, parents },
     isMerge,
     dirty: false,
-    truncated,
+    truncated: pruned.truncated,
     fileCount: files.length,
-    files,
+    files: pruned.files,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -1295,7 +1351,7 @@ async function handleRequest(msg) {
             type: "text",
             text: data.error
               ? data.message
-              : `${data.fileCount} archivo(s) con cambios en ${data.branch} (${data.head}) vs ${data.baseLabel}${data.truncated ? " — parches truncados" : ""}. Detalle en structuredContent.`,
+              : `${data.fileCount} archivo(s) con cambios en ${data.branch} (${data.head}) vs ${data.baseLabel}${data.truncated ? " — recortado por tamaño (parches y/o lista de archivos)" : ""}. Detalle en structuredContent.`,
           },
         ],
       };
