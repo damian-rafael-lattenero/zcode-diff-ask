@@ -3297,7 +3297,7 @@ function renderAll() {
   if (diffData.truncated) {
     const tr = document.createElement("div");
     tr.className = "state warn";
-    tr.textContent = "Diff muy grande: algunos parches se omitieron (refrescá tras los edits grandes).";
+    tr.textContent = `Diff muy grande: se muestran los primeros ${diffData.files.length} de ${diffData.fileCount} archivos y algunos parches se omitieron.`;
     root.appendChild(tr);
   }
   for (const f of diffData.files) {
@@ -3344,8 +3344,10 @@ function renderAll() {
 
 async function loadCommits(reset = false) {
   if (reset) commitsState = { query: commitsState.query, skip: 0, list: [], hasMore: false };
+  const gen = refreshGen;
   const uri = `log://commits?skip=${commitsState.skip}&limit=10&q=${encodeURIComponent(commitsState.query)}`;
-  const res = await app.readServerResource({ uri });
+  const res = await withTimeout(app.readServerResource({ uri }), "commits");
+  if (gen !== refreshGen) return; // superseded: don't render a stale list
   const data = JSON.parse(res?.contents?.[0]?.text ?? "{}");
   if (data.workspace) currentWorkspace = data.workspace;
   document.documentElement.dataset.repo = data?.error ? "no" : "yes";
@@ -3362,7 +3364,7 @@ async function loadCommits(reset = false) {
   for (const c of data.commits ?? []) if (!seen.has(c.hash)) commitsState.list.push(c);
   commitsState.skip += (data.commits ?? []).length;
   commitsState.hasMore = Boolean(data.hasMore);
-  diffData = null; // la vista activa es la lista, no un diff
+  diffData = null; // the active view is the list, not a diff
   renderCommits();
   resubscribe("log://commits");
 }
@@ -3411,7 +3413,7 @@ function renderCommits() {
     row.title = `${c.hash}\n${c.subject}`;
     row.onclick = () => {
       commitSel = c.hash;
-      refresh();
+      endAllEdits().finally(() => refresh(true));
     };
     list.appendChild(row);
   }
@@ -3433,7 +3435,9 @@ function renderCommits() {
 // confirmación inline (un click lo arma, el segundo confirma).
 
 async function loadTurns() {
-  const res = await app.readServerResource({ uri: "turn://list" });
+  const gen = refreshGen;
+  const res = await withTimeout(app.readServerResource({ uri: "turn://list" }), "turns");
+  if (gen !== refreshGen) return; // superseded: don't render a stale list
   const data = JSON.parse(res?.contents?.[0]?.text ?? "{}");
   if (data.workspace) currentWorkspace = data.workspace;
   document.documentElement.dataset.repo = data?.error ? "no" : "yes";
@@ -3587,23 +3591,58 @@ async function setMode(m) {
   document.querySelectorAll(".modebar button").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === m);
   });
-  await refresh();
+  await refresh(true);
 }
 
 let pendingRefresh = false;
 let refreshInFlight = null;
+let refreshGen = 0;
+
+// Every server read gets a hard client-side timeout: a hung read must never
+// wedge the panel — on timeout the catch below renders an error state WITH
+// the mode bar, so the next click recovers.
+const READ_TIMEOUT_MS = 25_000;
+function withTimeout(p, what) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error(`${what}: sin respuesta en ${READ_TIMEOUT_MS / 1000}s`)),
+      READ_TIMEOUT_MS,
+    );
+    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
+}
+
+// Target of the current view. refresh() only coalesces SAME-target calls; a
+// different target means the user navigated (mode/commit/workspace changed)
+// and the new run SUPERSEDES the in-flight one instead of queueing behind it.
+// Without this, one stuck read coalesced every later action into the same
+// never-resolving promise: the panel froze for good (no mode chips, no
+// folder picker, nothing responded). The workspace QUALIFIES the target: the
+// same URI string resolves to different data after set_workspace, and the
+// switch refresh must never coalesce with a read of the OLD workspace.
+function refreshTarget() {
+  const t = mode === "commits" && !commitSel ? "log://commits"
+    : mode === "turns" && !turnSel ? "turn://list"
+    : diffUriFor();
+  return `${t}@${currentWorkspace ?? ""}`;
+}
+
+const isStale = (gen) => gen !== refreshGen;
+
 async function refresh(explicit = false) {
-  // El editor no sobrevive un re-render: mientras haya edición, el refresh
-  // REACTIVO se difiere (al terminar la edición se aplica solo). El
-  // explícito (⟳, cambio de modo) guarda todo, cierra sesiones y sigue.
+  // The editor does not survive a re-render: while an edit session is open,
+  // the REACTIVE refresh is deferred (it is applied once editing ends). The
+  // explicit one (⟳, mode change) saves everything, closes sessions, goes on.
   if (!explicit && editingCount() > 0) {
     pendingRefresh = true;
     return;
   }
-  // Coalescer: dos disparos casi simultáneos (nuestra propia escritura +
-  // un cambio del agente) comparten UNA sola lectura/render. Las acciones
-  // que dependen del estado fresco (revert) esperan esta promesa.
-  if (refreshInFlight) return refreshInFlight;
+  // Coalesce: two near-simultaneous triggers (our own write + an agent
+  // change) share ONE read/render. Actions that depend on fresh state
+  // (revert) await this promise.
+  const target = refreshTarget();
+  if (refreshInFlight && refreshInFlight.target === target) return refreshInFlight;
+  const gen = ++refreshGen; // supersedes any in-flight run aimed elsewhere
   const run = (async () => {
   const root = document.getElementById("root");
   hideSelPop("re-render"); // re-render: la entrada que cierra el popup deja de existir
@@ -3615,7 +3654,8 @@ async function refresh(explicit = false) {
       await loadTurns();
     } else {
       const uri = diffUriFor();
-      const res = await app.readServerResource({ uri });
+      const res = await withTimeout(app.readServerResource({ uri }), "diff");
+      if (isStale(gen)) return; // a newer refresh owns the UI now
       const text = res?.contents?.[0]?.text ?? "{}";
       diffData = JSON.parse(text);
       if (diffData?.workspace) currentWorkspace = diffData.workspace;
@@ -3623,23 +3663,28 @@ async function refresh(explicit = false) {
       renderAll();
       resubscribe(uri);
     }
+    if (isStale(gen)) return;
     renderPile();
     renderAnchors();
   } catch (e) {
+    if (isStale(gen)) return; // the newer run renders its own state
     const err = document.createElement("div");
     err.className = "state error";
     err.textContent = `No pude leer el diff: ${e?.message ?? e}`;
     root.textContent = "";
-    // Sin barra de modos un error de transporte dejaría al usuario trabado
-    // en el modo actual (sin chips para salir).
+    // Without a mode bar a transport error would leave the user stuck in the
+    // current mode (no chips to exit with).
     renderModebar(root);
     root.appendChild(err);
   } finally {
     root.classList.remove("loading");
   }
   })();
-  refreshInFlight = run.finally(() => (refreshInFlight = null));
-  return refreshInFlight;
+  const wrapped = run.finally(() => { if (refreshInFlight === wrapped) refreshInFlight = null; });
+  wrapped.target = target;
+  wrapped.gen = gen;
+  refreshInFlight = wrapped;
+  return wrapped;
 }
 
 function applyTheme(ctx) {
