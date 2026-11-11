@@ -107,12 +107,12 @@ Decisiones clave (resumen; el detalle con el por qué en
 
 | Nivel | Qué | Cantidad | Tiempo |
 |---|---|---|---|
-| Unit | lib.js pura + server MCP (con repos git reales en tmp) | 80 | **~7 s** |
+| Unit | lib.js pura + server MCP (con repos git reales en tmp) | 93 | **~8 s** |
 | Integración | lib → `write_file` → `git diff` cierra el circuito en repo tmp real | (dentro de unit) | — |
-| E2E | Chromium real + CDP, **mouse y teclado reales**, panel dist real + server real, cada revert verificado con git | 86 checks | **~1 min** |
+| E2E | Chromium real + CDP, **mouse y teclado reales**, panel dist real + server real, cada revert verificado con git | 122 checks | **~2 min** (la sección del mega commit suma render de 600 secciones) |
 
 ```bash
-npm test          # 80 unit + integración (~7 s)
+npm test          # 93 unit + integración (~8 s)
 npm run test:e2e  # rig completo con mouse real (~2 min)
 ```
 

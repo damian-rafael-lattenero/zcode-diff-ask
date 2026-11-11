@@ -17,6 +17,8 @@
 //   - UNA fila por línea modificada: roja pareada oculta, original al hover (0.9.4)
 //   - coexistencia: dos palabras en la MISMA fila, drag multilínea multipalabra,
 //     palabra gemela pinta UNA sola, y drag LENTO (>1.5s) sigue vivo (0.9.3)
+//   - mega commit (700 files): opens fast with commit info, and right after
+//     it the mode chips + folder picker still respond — no brick (0.9.21)
 // Uso: node tests/e2e/revert.e2e.mjs   (requiere Google Chrome instalado)
 
 import { spawn, execFileSync } from "node:child_process";
@@ -230,69 +232,95 @@ await evalJs(`(() => {
       });
     },
     async locate(rel, needle, type, noScroll) {
-      const entry = [...__DA.rendered.values()].find((e) => e.path === rel);
-      if (!entry) return { error: "no entry " + rel };
-      const host = entry.body.querySelector("diffs-container");
-      if (!host?.shadowRoot) return { error: "no shadow" };
-      for (const row of host.shadowRoot.querySelectorAll("[data-line]")) {
-        if (row.querySelector("[data-line]")) continue; // wrapper, no fila real
-        const t = row.dataset.lineType ?? "";
-        if (type && t !== type) continue;
-        const text = row.textContent ?? "";
-        const idx = text.indexOf(needle);
-        if (idx < 0) continue;
+      const settle = () => new Promise((res) => {
+        const root = document.getElementById("root");
+        let last = null, same = 0, n = 0;
+        const iv = setInterval(() => {
+          const y = root.scrollTop;
+          if (y === last) { if (++same >= 2) { clearInterval(iv); res(); } }
+          else { same = 0; last = y; }
+          if (++n > 60) { clearInterval(iv); res(); }
+        }, 20);
+      });
+      const at = (row, target) => {
+        const pos = { n: 0 };
+        let lastText = null;
+        const walk = (node) => {
+          if (node.nodeType === 3) {
+            lastText = node;
+            if (pos.n + node.data.length > target) return { node, offset: Math.max(0, Math.min(target - pos.n, node.data.length)) };
+            pos.n += node.data.length; return null;
+          }
+          for (const c of node.childNodes) { const r = walk(c); if (r) return r; }
+          return null;
+        };
+        const hit = walk(row);
+        if (hit) return hit;
+        // target == fin EXACTO del texto de la fila: rango válido al final
+        // del último nodo de texto (needles que terminan con la fila)
+        if (lastText && pos.n === target) return { node: lastText, offset: lastText.data.length };
+        return null;
+      };
+      const box = (row, a, b) => {
+        const A = at(row, a), B = at(row, b);
+        if (!A || !B) return null;
+        const r = document.createRange();
+        r.setStart(A.node, A.offset);
+        try { r.setEnd(B.node, B.offset); } catch { return null; }
+        return r.getBoundingClientRect();
+      };
+      // Re-resolve entry/host on EVERY scan: a refresh can REBUILD all the
+      // sections while we're here (entry exists but its diffs-container got
+      // DETACHED with the old section — rows render zero-width rects and a
+      // captured host would scan a dead tree forever). Seen as "sin fila con
+      // X" right after a revert refresh even with the row present.
+      // skip = rows measured WITHOUT geometry (the hidden paired red row,
+      // 0.9.4) — skipped by IDENTITY across rebuilds, never by index (the
+      // index shifts on every rebuild and would skip past the only match).
+      const findFrom = (skip) => {
+        const entry = [...__DA.rendered.values()].find((e) => e.path === rel);
+        if (!entry) return null;
+        const host = entry.body.querySelector("diffs-container");
+        if (!host?.shadowRoot) return null;
+        const rows = [...host.shadowRoot.querySelectorAll("[data-line]")].filter((r) => !r.querySelector("[data-line]"));
+        for (const row of rows) {
+          if (skip?.has(row)) continue;
+          const t = row.dataset.lineType ?? "";
+          if (type && t !== type) continue;
+          const text = row.textContent ?? "";
+          const idx = text.indexOf(needle);
+          if (idx < 0) continue;
+          return { row, t, text, idx, host, isConnected: row.isConnected };
+        }
+        return null;
+      };
+      const tried = new Set();
+      let hit = findFrom(tried);
+      for (let i = 0; !hit && i < 15; i++) {
+        await new Promise((res) => setTimeout(res, 120));
+        hit = findFrom(tried);
+      }
+      while (hit) {
+        const { row, t, text, idx } = hit;
+        if (!row.isConnected) { hit = findFrom(tried); continue; } // section rebuilt mid-flight: rescan fresh
         if (!noScroll) row.scrollIntoView({ block: "center" });
         // esperar que el scroll TERMINE antes de medir (si fuera smooth,
         // medir a mitad de animación da coords que ya no valen al gestear).
         // noScroll = la fila ya está a la vista (medición doble sin invalidar
         // la primera con un scroll nuevo): medir directo.
-        if (!noScroll) await new Promise((res) => {
-          const root = document.getElementById("root");
-          let last = null, same = 0, n = 0;
-          const iv = setInterval(() => {
-            const y = root.scrollTop;
-            if (y === last) { if (++same >= 2) { clearInterval(iv); res(); } }
-            else { same = 0; last = y; }
-            if (++n > 60) { clearInterval(iv); res(); }
-          }, 20);
-        });
-        const at = (target) => {
-          const pos = { n: 0 };
-          let lastText = null;
-          const walk = (node) => {
-            if (node.nodeType === 3) {
-              lastText = node;
-              if (pos.n + node.data.length > target) return { node, offset: Math.max(0, Math.min(target - pos.n, node.data.length)) };
-              pos.n += node.data.length; return null;
-            }
-            for (const c of node.childNodes) { const r = walk(c); if (r) return r; }
-            return null;
-          };
-          const hit = walk(row);
-          if (hit) return hit;
-          // target == fin EXACTO del texto de la fila: rango válido al final
-          // del último nodo de texto (needles que terminan con la fila)
-          if (lastText && pos.n === target) return { node: lastText, offset: lastText.data.length };
-          return null;
-        };
-        const box = (a, b) => {
-          const A = at(a), B = at(b);
-          if (!A || !B) return null;
-          const r = document.createRange();
-          r.setStart(A.node, A.offset);
-          try { r.setEnd(B.node, B.offset); } catch { return null; }
-          return r.getBoundingClientRect();
-        };
-        const full = box(idx, idx + needle.length);
-        // fila OCULTA (la roja pareada, 0.9.4) u otro row sin geometría:
-        // saltarla y seguir con la próxima que contenga el needle
-        if (!full || full.width < 5) continue;
-        const chars = [];
-        for (let i = 0; i < needle.length; i++) {
-          const c = box(idx + i, idx + i + 1);
-          if (c) chars.push({ left: c.left, right: c.right });
+        if (!noScroll) await settle();
+        const full = box(row, idx, idx + needle.length);
+        if (!full || full.width < 5) {
+          tried.add(row); // genuinely hidden row: skip it for good
+          hit = findFrom(tried);
+          continue;
         }
-        const gutter = host.shadowRoot.querySelector("[data-gutter]")?.getBoundingClientRect();
+        const chars = [];
+        for (let c = 0; c < needle.length; c++) {
+          const cb = box(row, idx + c, idx + c + 1);
+          if (cb) chars.push({ left: cb.left, right: cb.right });
+        }
+        const gutter = hit.host.shadowRoot.querySelector("[data-gutter]")?.getBoundingClientRect();
         return { line: row.dataset.line, type: t, rowText: text, idx,
           left: full.left, right: full.right, top: full.top, bottom: full.bottom,
           y: (full.top + full.bottom) / 2, chars,
@@ -425,7 +453,10 @@ const expandFile = async (rel) => {
   return h2;
 };
 const clickRevert = async () => {
-  const p = await until(async () => await evalJs("__E2E.popRev()"), 3000);
+  // The ↩ popup rides the selectionchange/rAF pipeline: under load it can
+  // take a beat longer than 3s to show (flake seen twice at the ONE-LETTER
+  // drag step). Give it a wider window before giving up.
+  const p = await until(async () => await evalJs("__E2E.popRev()"), 8000);
   if (!p) throw new Error("no apareció el popup ↩");
   await click(p.x, p.y);
 };
@@ -564,6 +595,30 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   // quirúrgico, y pintar una palabra de una línea 100% nueva borra SOLO la
   // palabra — la línea queda (0.9.1 la eliminaba entera).
   loc = await evalJs(`__E2E.locate(${JSON.stringify(SERVER_TS)}, "/delta", "change-addition")`);
+  if (!loc || loc.error) {
+    // diagnostics: WHERE did /delta go — disk, diff data, or render?
+    console.error("    diag disk /delta:", readDisk(SERVER_TS).includes("/delta"));
+    console.error("    diag state:", JSON.stringify(await evalJs(`(() => {
+      const d = (__DA.diffData?.files ?? []).find((f) => f.path === ${JSON.stringify(SERVER_TS)});
+      const e = __DA.rendered.get(${JSON.stringify(SERVER_TS)});
+      const host = e?.body?.querySelector("diffs-container");
+      const rows = host?.shadowRoot
+        ? [...host.shadowRoot.querySelectorAll("[data-line]")].filter((r) => !r.querySelector("[data-line]")).map((r) => (r.dataset.lineType ?? "?") + "|" + (r.textContent ?? "").replace(/\\s+/g, " ").slice(0, 50))
+        : null;
+      return {
+        workspace: __DA.diffData?.workspace ?? null,
+        dataHasDelta: d ? ((d.after ?? "") + (d.patch ?? "")).includes("/delta") : null,
+        hasContent: d ? d.before !== undefined : null,
+        entryMatchesData: d ? e?.fileData === d : null,
+        afterLen: d?.after?.length ?? null,
+        entryAfterLen: e?.fileData?.after?.length ?? null,
+        collapsed: e?.section?.classList?.contains("collapsed") ?? null,
+        rowCount: rows?.length ?? null,
+        rows: rows,
+        gen: __DA.diffData?.generatedAt ?? null,
+      };
+    })()`)));
+  }
   check(loc && !loc.error, "localizo la línea nueva de la ruta /delta", loc?.error ?? "");
   const jx = (loc.left + loc.right) / 2;
   // diagnóstico de puntería: ¿qué fila hay bajo el punto ANTES del gesto y
@@ -988,7 +1043,8 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
       upDisabled: document.querySelector(".ws-picker .up")?.disabled ?? null,
     };
   })()`);
-  check(/Projects$/.test(pk1.crumb), `arranca en el PADRE del workspace (${JSON.stringify(pk1.crumb.slice(-26))})`);
+  const wsParent = await evalJs(`(__DA.diffData?.workspace ?? "").replace(/\\/+$/, "").split("/").slice(0, -1).join("/")`);
+  check(pk1.crumb === wsParent, `arranca en el PADRE del workspace (${JSON.stringify(pk1.crumb.slice(-26))})`);
   check(pk1.n > 0 && pk1.hasRepo, `la lista tiene repos git, incluido el actual (${pk1.n} filas)`);
   check((pk1.current ?? "").includes("zcode-diff-ask"), `el repo actual está marcado (${JSON.stringify(pk1.current)})`);
   // filtro de texto en vivo: el input ya tiene el foco
@@ -1059,6 +1115,93 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   execFileSync("node", [path.join(HERE, "apply-fixture-mods.mjs")], { stdio: "ignore" });
   await evalJs("__DA.refresh(true)");
   await panelStable();
+
+  // ============ R. mega commit: no hang, no brick (0.9.21) ============
+  // Damian's report: opening a commit from the ZCode repo (an upstream-sync
+  // merge with 5103 files) hung the server (2 git-shows PER file, serial) and
+  // bricked the panel: mode chips, folder picker, everything dead — every
+  // action coalesced into the same stuck refresh promise. Fixture: a tmp repo
+  // whose single commit touches 700 files (> MAX_LIST_FILES=600 → pruned list
+  // + banner). Workspace switch via the REAL picker flow ("a mano" editor).
+  const MEGA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "da-e2e-mega-"));
+  execFileSync("git", ["-C", MEGA_DIR, "init", "-q", "-b", "main"]);
+  execFileSync("git", ["-C", MEGA_DIR, "config", "user.email", "t@t"]);
+  execFileSync("git", ["-C", MEGA_DIR, "config", "user.name", "T"]);
+  for (let i = 0; i < 700; i++) fs.writeFileSync(path.join(MEGA_DIR, `f${i}.txt`), `mega ${i}\n`);
+  execFileSync("git", ["-C", MEGA_DIR, "add", "-A"]);
+  execFileSync("git", ["-C", MEGA_DIR, "commit", "-qm", "mega commit: 700 files"]);
+  const megaShort = execFileSync("git", ["-C", MEGA_DIR, "rev-parse", "--short", "HEAD"]).toString().trim();
+  check(megaShort.length >= 7, `R: fixture listo — repo tmp con un commit de 700 archivos (${megaShort})`);
+
+  const clickAt = async (sel) => {
+    const p = await evalJs(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    if (!p) throw new Error("sin elemento para " + sel);
+    await click(p.x, p.y);
+  };
+  // Real-click flow: chip 📁 → "escribir la ruta a mano…" → editor → type →
+  // Enter. Each step RETRIES via until (single CDP clicks race the picker's
+  // own row loading) and the WHOLE cycle retries up to 3 times: focus/typing
+  // races made the switch land late sometimes (workspace never switched
+  // within the window, then appeared right after — retry until it sticks).
+  const switchWorkspace = async (want) => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const opened = await until(async () => {
+        if (!(await evalJs(`!!document.querySelector(".ws-editor input")`))) {
+          if (!(await evalJs(`!!document.querySelector(".ws-picker")`))) {
+            await clickAt("button.ws").catch(() => {});
+            await until(async () => !!(await evalJs(`document.querySelector(".ws-picker")`)), 2500);
+            await sleep(150);
+          }
+          await clickAt(".ws-picker .manual").catch(() => {});
+          await until(async () => !!(await evalJs(`document.querySelector(".ws-editor input")`)), 2500);
+        }
+        return !!(await evalJs(`document.querySelector(".ws-editor input")`));
+      }, 12000);
+      if (!opened) throw new Error("R: el editor de ruta nunca abrió");
+      await evalJs(`(() => { const i = document.querySelector(".ws-editor input"); i.focus(); i.select(); })()`);
+      await cdp("Input.insertText", { text: want });
+      await sleep(150);
+      await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter" });
+      const ok = await until(async () => (await evalJs(`__DA.diffData?.workspace ?? null`)) === want, 6000);
+      if (ok) return true;
+    }
+    return false;
+  };
+  await clickAt("button.ws");
+  check(await until(async () => (await evalJs(`document.querySelector(".ws-picker")`)) !== null, 3000), "R: el picker 📁 abre");
+  check(await switchWorkspace(MEGA_DIR), "R: workspace cambiado al repo mega (flujo real del picker)");
+
+  await clickAt('.modebar button[data-mode="commits"]');
+  check(await until(async () => (await evalJs(`[...document.querySelectorAll(".commit-row")].length`)) > 0, 6000), "R: la lista de commits muestra el commit mega");
+  const rowR = await evalJs(`(() => { const b = document.querySelector(".commit-row"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, hash: b.querySelector(".hash-chip")?.textContent }; })()`);
+  check(rowR?.hash === megaShort, `R: el row es el commit mega (${JSON.stringify(rowR?.hash)})`);
+  const tR = Date.now();
+  await click(rowR.x, rowR.y);
+  const openedR = await until(async () => (await evalJs(`__DA.diffData?.commit?.short ?? null`)) === megaShort, 20000);
+  const dtR = Date.now() - tR;
+  check(openedR, `R: el diff del commit mega abre con la info del commit (${dtR}ms)`);
+  check(dtR < 15000, `R: el commit de 700 archivos abre en tiempo acotado (${dtR}ms < 15s)`);
+  const mdR = JSON.parse(await evalJs(`JSON.stringify({ fc: __DA.diffData?.fileCount, n: __DA.diffData?.files?.length, tr: __DA.diffData?.truncated, banner: document.querySelector(".state.warn")?.textContent ?? null, meta: document.querySelector(".header .meta")?.textContent ?? "" })`));
+  check(mdR.fc === 700 && mdR.n === 600, `R: payload podado — fileCount ${mdR.fc}, ${mdR.n} secciones en el panel`);
+  check(mdR.tr === true && (mdR.banner ?? "").includes("700"), `R: banner de recorte visible (${JSON.stringify((mdR.banner ?? "").slice(0, 70))})`);
+  check((mdR.meta ?? "").includes(megaShort), `R: el header muestra el hash y el subject del commit (${JSON.stringify((mdR.meta ?? "").slice(0, 60))})`);
+
+  // ANTI-BRICK: right after the mega commit, everything must respond. This is
+  // the exact freeze Damian hit: before the fix every later action queued
+  // behind the stuck refresh promise.
+  await clickAt('.modebar button[data-mode="working"]');
+  check(await until(async () => (await evalJs(`__DA.diffData?.mode ?? null`)) === "working", 6000), "R: ANTI-BRICK — el chip Trabajo responde justo tras el commit mega");
+  await clickAt("button.ws");
+  check(await until(async () => (await evalJs(`document.querySelector(".ws-picker")`)) !== null, 3000), "R: ANTI-BRICK — el picker 📁 sigue vivo");
+  await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+  check(await until(async () => (await evalJs(`document.querySelector(".ws-picker")`)) === null, 2000), "R: Esc cierra el picker");
+
+  // restore: back to the fixture workspace so the final health checks run on it
+  check(await switchWorkspace(REPO), "R: vuelvo al workspace del fixture");
+  try { fs.rmSync(MEGA_DIR, { recursive: true, force: true }); } catch {}
+  await shot("17-mega-commit.png");
 
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));
