@@ -346,7 +346,8 @@ export async function setActiveWorkspace(input) {
 // Lista los repos git LOCALES bajo una carpeta (chip 📁 del panel — spec
 // Damian 28/10: "un pequeño árbol que pueda ir para arriba y me filtre solo
 // las carpetas que tengan .git"). Recursivo con tope de profundidad y
-// SKIP de pesadas (node_modules, Library, ocultas): parado en ~/Projects
+// SKIP de pesadas (node_modules, Library, hidden dirs — except .worktrees):
+// parado en ~/Projects
 // ves TODOS tus repos de una. Un repo puede contener sub-repos: se sigue
 // bajando igual. Tope de resultados para no colgar la UI en árboles raros.
 const GIT_WALK_SKIP = new Set([
@@ -354,6 +355,11 @@ const GIT_WALK_SKIP = new Set([
   "vendor", "target", "build", "dist", "out", "venv", ".venv", "__pycache__",
   "Coverage", "DerivedData",
 ]);
+// Hidden dirs are skipped EXCEPT these worktree containers: ZCode's agent
+// convention is <parent>/.worktrees/<repo>-<slug> and a worktree's .git is a
+// FILE (handled below), so without this exception the picker never shows them
+// (Damian 13/11: "no se ven los de las carpetas ocultas").
+const GIT_WALK_HIDDEN_OK = new Set([".worktrees"]);
 export function listGitProjects(input, maxDepth = 4, maxResults = 400) {
   const under = path.resolve(String(input ?? "").trim().replace(/^~(?=\/|$)/, os.homedir()));
   let stats;
@@ -374,7 +380,8 @@ export function listGitProjects(input, maxDepth = 4, maxResults = 400) {
     }
     for (const ent of entries) {
       if (repos.length >= maxResults) return;
-      if (!ent.isDirectory() || ent.name.startsWith(".")) continue;
+      if (!ent.isDirectory()) continue;
+      if (ent.name.startsWith(".") && !GIT_WALK_HIDDEN_OK.has(ent.name)) continue;
       const p = path.join(dir, ent.name);
       try {
         // .git puede ser dir (repo normal) o archivo (worktree/submodule)
@@ -1197,7 +1204,7 @@ const TOOLS = [
   {
     name: "list_git_projects",
     description:
-      "List local git repositories under a folder (recursive, bounded depth, skips node_modules/Library/hidden) for the panel's 📁 repo picker. Default folder: parent of the active workspace.",
+      "List local git repositories under a folder (recursive, bounded depth, skips node_modules/Library/hidden — except .worktrees agent-worktree containers) for the panel's 📁 repo picker. Default folder: parent of the active workspace.",
     inputSchema: {
       type: "object",
       properties: {
