@@ -60,6 +60,20 @@ test("list_git_projects: skips reales — node_modules y ocultas no aparecen NI 
   assert.ok(names.includes("gamma-wt"), "el worktree dentro de la oculta .worktrees SÍ se lista");
 });
 
+test("list_git_projects: repos dentro de la oculta .worktrees salen flag worktree=container (el panel los sube)", () => {
+  const root = mkTree();
+  const r = listGitProjects(root);
+  const flags = Object.fromEntries(r.repos.map((x) => [x.path.slice(root.length + 1), x.worktree ?? false]));
+  assert.equal(flags[".worktrees/gamma-wt"], ".worktrees", "el worktree va flaggeado con el NOMBRE del contenedor");
+  assert.equal(flags["alpha"], false, "los repos normales NO van flaggeados");
+  assert.equal(flags["container/deep"], false, "los anidados en carpetas visibles NO van flaggeados");
+  // el flag es de la ruta ABSOLUTA: no depende de la carpeta donde se para el picker
+  const r2 = listGitProjects(path.join(root, ".worktrees"));
+  const names2 = r2.repos.map((x) => x.name);
+  assert.ok(names2.includes("gamma-wt"), "parado DENTRO de .worktrees el worktree se lista");
+  assert.equal(r2.repos.find((x) => x.name === "gamma-wt")?.worktree, ".worktrees", "y sigue flaggeado aunque el root SEA el contenedor");
+});
+
 test("list_git_projects: carpeta inexistente → error amigable; ~ expandido", () => {
   const r = listGitProjects(path.join(os.tmpdir(), "da-no-existe-XYZ"));
   assert.equal(r.error, "invalid_path");

@@ -385,8 +385,17 @@ export function listGitProjects(input, maxDepth = 4, maxResults = 400) {
       const p = path.join(dir, ent.name);
       try {
         // .git puede ser dir (repo normal) o archivo (worktree/submodule)
-        if (fs.statSync(path.join(p, ".git")).isFile() || fs.statSync(path.join(p, ".git")).isDirectory())
-          repos.push({ path: p, name: ent.name, depth });
+        if (fs.statSync(path.join(p, ".git")).isFile() || fs.statSync(path.join(p, ".git")).isDirectory()) {
+          // repos living inside a hidden worktree container (the agent
+          // .worktrees) get flagged with the CONTAINER NAME so the panel can
+          // surface them FIRST with a tag, whatever folder the picker is
+          // rooted at (Damian 14/11: they were there but nobody could spot
+          // them). Absolute-path check: the flag does not depend on `under`.
+          const wtSeg = p.split(path.sep).find((seg) => seg.startsWith(".") && GIT_WALK_HIDDEN_OK.has(seg));
+          const repo = { path: p, name: ent.name, depth };
+          if (wtSeg) repo.worktree = wtSeg;
+          repos.push(repo);
+        }
       } catch { /* sin .git */ }
       if (depth + 1 < maxDepth && !GIT_WALK_SKIP.has(ent.name)) walk(p, depth + 1);
     }
