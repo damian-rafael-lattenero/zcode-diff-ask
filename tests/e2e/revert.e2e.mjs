@@ -1028,6 +1028,15 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   // filtre solo los projects carpetas que tengan .git". Arranca en el PADRE
   // del workspace, ⬆ sube un nivel, lista SOLO repos git (recursiva acotada,
   // la resuelve el server) y filtro de texto en vivo.
+  // 0.9.23: fixture hermético — un worktree REAL (git = archivo) en el
+  // contenedor GLOBAL ~/Projects/.worktrees para asertar tag [.worktrees] +
+  // orden (va arriba) sin depender de los worktrees reales del usuario. Va
+  // AHÍ y no dentro del repo porque el needle del filtro es el path del
+  // workspace: un fixture anidado debajo matchearía también el filtro.
+  const WTD = path.join(os.homedir(), "Projects", ".worktrees");
+  const FXT = path.join(WTD, "e2e-picker-fixture-wt");
+  fs.mkdirSync(FXT, { recursive: true });
+  fs.writeFileSync(path.join(FXT, ".git"), "gitdir: /dev/null/e2e/main/.git/worktrees/e2e-picker-fixture-wt\n");
   const wsBtn = await evalJs(`(() => { const b = document.querySelector("button.ws"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
   check(!!wsBtn, "encuentro el chip 📁 del workspace");
   await click(wsBtn.x, wsBtn.y);
@@ -1047,8 +1056,24 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(pk1.crumb === wsParent, `arranca en el PADRE del workspace (${JSON.stringify(pk1.crumb.slice(-26))})`);
   check(pk1.n > 0 && pk1.hasRepo, `la lista tiene repos git, incluido el actual (${pk1.n} filas)`);
   check((pk1.current ?? "").includes("zcode-diff-ask"), `el repo actual está marcado (${JSON.stringify(pk1.current)})`);
-  // filtro de texto en vivo: el input ya tiene el foco
-  await cdp("Input.insertText", { text: "diff-ask" });
+  // 0.9.23: el worktree del fixture sale con tag .worktrees y ARRIBA del repo actual
+  const pkW = await evalJs(`(() => {
+    const rows = [...document.querySelectorAll(".ws-picker .ws-row")];
+    const iWt = rows.findIndex((r) => r.textContent.includes("e2e-picker-fixture-wt"));
+    return {
+      iWt,
+      tag: iWt >= 0 ? rows[iWt].querySelector(".wt")?.textContent ?? null : null,
+      iCur: rows.findIndex((r) => r.classList.contains("current")),
+      nTags: rows.filter((r) => r.querySelector(".wt")).length,
+    };
+  })()`);
+  check(pkW.iWt >= 0 && pkW.tag === ".worktrees", `el worktree del fixture sale con tag [.worktrees] (${JSON.stringify(pkW)})`);
+  check(pkW.iWt >= 0 && pkW.iWt < pkW.iCur, `el worktree va ARRIBA del repo actual (idx ${pkW.iWt} < ${pkW.iCur})`);
+  // filtro de texto en vivo: el input ya tiene el foco — needle = el PATH del
+  // workspace completo: único (solo la fila actual lo contiene) e independiente
+  // de dónde viva el checkout (master o un worktree .worktrees/*, 0.9.21/0.9.23)
+  const filterNeedle = await evalJs(`(__DA.diffData?.workspace ?? "").toLowerCase()`);
+  await cdp("Input.insertText", { text: filterNeedle });
   await sleep(250);
   const pkF = await evalJs(`[...document.querySelectorAll(".ws-picker .ws-row")].map((r) => r.textContent.slice(0, 26))`);
   check(pkF.length === 1 && pkF[0].includes("zcode-diff-ask"), `el filtro en vivo deja solo el match (${JSON.stringify(pkF)})`);
@@ -1065,6 +1090,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
   await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
   check(await until(async () => (await evalJs(`document.querySelector(".ws-picker")`)) === null, 2000), "Esc cierra el picker sin cambiar el workspace");
+  fs.rmSync(FXT, { recursive: true, force: true }); // fixture hermético fuera
   await shot("15-picker-repos.png");
 
   // ============ Q. el BORRADOR sobrevive el refresh reactivo (0.9.20) ============
@@ -1212,6 +1238,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
 } finally {
   clearInterval(drainNotifications);
   await shot("08-final.png").catch(() => {});
+  try { fs.rmSync(path.join(os.homedir(), "Projects", ".worktrees", "e2e-picker-fixture-wt"), { recursive: true, force: true }); } catch {} // fixture del picker (P)
   try { ws.close(); } catch {}
   chrome.kill("SIGKILL");
   server.kill("SIGKILL");
