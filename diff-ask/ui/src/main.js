@@ -151,17 +151,27 @@ function openWorkspacePicker() {
   const renderRows = () => {
     const q = filter.value.trim().toLowerCase();
     const hits = q ? repos.filter((r) => r.path.toLowerCase().includes(q)) : repos;
+    // agent worktrees (hidden .worktrees container) jump to the TOP with a
+    // tag: they are exactly what you come looking for and as plain rows they
+    // drowned at the bottom of the depth-1 group (0.9.23)
+    const ordered = hits.slice().sort((a, b) => (b.worktree ? 1 : 0) - (a.worktree ? 1 : 0));
     list.textContent = "";
-    if (!hits.length) {
+    if (!ordered.length) {
       const d = document.createElement("div");
       d.className = "ws-empty";
       d.textContent = repos.length ? "nada coincide con el filtro" : "no hay repos git acá — probá ⬆";
       list.appendChild(d);
       return;
     }
-    for (const r of hits.slice(0, 120)) {
+    for (const r of ordered.slice(0, 120)) {
       const b = document.createElement("button");
       b.className = "ws-row" + (r.path === currentWorkspace ? " current" : "");
+      if (r.worktree) {
+        const tag = document.createElement("i");
+        tag.className = "wt";
+        tag.textContent = r.worktree; // container name sent by the server
+        b.append(tag);
+      }
       const name = document.createElement("b");
       name.textContent = r.name;
       const sub = document.createElement("span");
@@ -171,10 +181,10 @@ function openWorkspacePicker() {
       b.onclick = () => applyWorkspace(r.path).then((ok) => { if (ok) close(); });
       list.appendChild(b);
     }
-    if (hits.length > 120) {
+    if (ordered.length > 120) {
       const d = document.createElement("div");
       d.className = "ws-empty";
-      d.textContent = `…y ${hits.length - 120} más — afiná el filtro`;
+      d.textContent = `…y ${ordered.length - 120} más — afiná el filtro`;
       list.appendChild(d);
     }
   };

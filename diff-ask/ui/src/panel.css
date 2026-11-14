@@ -756,6 +756,7 @@ button.filt.on::after {
 .ws-picker .ws-row.current { border-color: var(--accent); }
 .ws-picker .ws-row.current b::after { content: " · actual"; font-weight: 400; font-size: 10px; color: var(--accent); }
 .ws-picker .ws-row span { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; opacity: 0.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-picker .ws-row .wt { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; font-style: normal; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 4px; flex: none; }
 .ws-picker .ws-empty { padding: 8px; font-size: 12px; opacity: 0.6; }
 .ws-editor .ie-head { display: flex; align-items: center; gap: 8px; }
 .ws-editor .ie-head .anchor { flex: 1; font-weight: 600; color: var(--accent); }
