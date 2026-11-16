@@ -19,6 +19,8 @@
 //     palabra gemela pinta UNA sola, y drag LENTO (>1.5s) sigue vivo (0.9.3)
 //   - mega commit (700 files): opens fast with commit info, and right after
 //     it the mode chips + folder picker still respond — no brick (0.9.21)
+//   - dead workspace (repo deleted while open): the panel WARNS and its
+//     "Elegir otra carpeta" button leads back to a valid repo (0.9.24)
 // Uso: node tests/e2e/revert.e2e.mjs   (requiere Google Chrome instalado)
 
 import { spawn, execFileSync } from "node:child_process";
@@ -1228,6 +1230,36 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(await switchWorkspace(REPO), "R: vuelvo al workspace del fixture");
   try { fs.rmSync(MEGA_DIR, { recursive: true, force: true }); } catch {}
   await shot("17-mega-commit.png");
+
+  // ============ S. dead workspace: warn + way out (0.9.24) ============
+  // The repo can VANISH while the panel is open (deleted project/worktree).
+  // It must WARN and keep a working escape hatch to a valid repo — never
+  // brick. Report: deleting the folder left the panel stuck with no usable
+  // control.
+  const DEAD_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "da-e2e-dead-"));
+  execFileSync("git", ["-C", DEAD_DIR, "init", "-q", "-b", "main"]);
+  execFileSync("git", ["-C", DEAD_DIR, "config", "user.email", "t@t"]);
+  execFileSync("git", ["-C", DEAD_DIR, "config", "user.name", "T"]);
+  fs.writeFileSync(path.join(DEAD_DIR, "x.txt"), "x\n");
+  execFileSync("git", ["-C", DEAD_DIR, "add", "-A"]);
+  execFileSync("git", ["-C", DEAD_DIR, "commit", "-qm", "base"]);
+  check(await switchWorkspace(DEAD_DIR), "S: workspace apunta al repo efímero");
+  fs.rmSync(DEAD_DIR, { recursive: true, force: true });
+  await evalJs("__DA.refresh(true)");
+  check(await until(async () => !!(await evalJs(`document.querySelector(".state.error")`)), 6000), "S: workspace BORRADO → el panel AVISA");
+  const sBtns = await evalJs(`(() => {
+    const sw = document.querySelector(".ws-switch");
+    const wsChip = document.querySelector(".modebar button.ws");
+    return { switchBtn: !!sw, modebarChip: !!wsChip, msg: document.querySelector(".state.error")?.textContent?.slice(0, 60) ?? "" };
+  })()`);
+  check(sBtns.switchBtn, `S: el botón "Elegir otra carpeta" EXISTE (${JSON.stringify(sBtns.msg)})`);
+  check(sBtns.modebarChip, "S: la modebar con el chip 📁 sigue presente en el error");
+  const swXY = await evalJs(`(() => { const b = document.querySelector(".ws-switch"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  await click(swXY.x, swXY.y);
+  check(await until(async () => !!(await evalJs(`document.querySelector(".ws-picker")`)), 3000), "S: el botón abre el picker");
+  check(await switchWorkspace(REPO), "S: se puede volver a un repo VÁLIDO desde el estado de error");
+  check(await until(async () => !(await evalJs(`!!document.querySelector(".state.error")`)), 6000), "S: el aviso desaparece tras cambiar de carpeta (panel recuperado)");
+  await shot("18-dead-workspace.png");
 
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));
