@@ -1066,16 +1066,20 @@ function onFsEvent(_evt, file) {
 function ensureWatchers() {
   ensureInboxWatcher();
   if (worktreeWatcher) return;
+  // A dead watcher (workspace deleted/renamed under us) would otherwise stay
+  // non-null forever and block re-arming: drop it AND notify subscribers so
+  // the panel re-reads NOW and shows its "repo gone — pick another folder"
+  // state instead of a stale diff nobody can leave.
   try {
     worktreeWatcher = fs.watch(activeWorkspace, { recursive: true }, onFsEvent);
-    worktreeWatcher.on("error", () => {});
+    worktreeWatcher.on("error", () => { worktreeWatcher?.close(); worktreeWatcher = null; for (const uri of subs) sendNotification("notifications/resources/updated", { uri }); });
     worktreeWatcher.unref?.();
   } catch {
     /* recursive watch unsupported — panel still has its refresh button */
   }
   try {
     gitWatcher = fs.watch(path.join(activeWorkspace, ".git"), { recursive: true }, onFsEvent);
-    gitWatcher.on("error", () => {});
+    gitWatcher.on("error", () => { gitWatcher?.close(); gitWatcher = null; for (const uri of subs) sendNotification("notifications/resources/updated", { uri }); });
     gitWatcher.unref?.();
   } catch {
     /* .git missing or unwatchable */

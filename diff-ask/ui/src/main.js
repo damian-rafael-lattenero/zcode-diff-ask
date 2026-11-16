@@ -3197,17 +3197,32 @@ function renderModebar(root) {
   root.appendChild(modebar);
 }
 
+// Fatal workspace state (folder deleted/corrupt, read failed): WARN and always
+// leave a way out — the mode bar (with the 📁 chip) plus an explicit "pick
+// another folder" button. A dead repo must never brick the panel into a dead
+// end where no control works.
+function renderRepoError(root, message) {
+  renderModebar(root);
+  const box = document.createElement("div");
+  box.className = "state error";
+  const p = document.createElement("div");
+  p.textContent = message;
+  const b = document.createElement("button");
+  b.className = "ghost ws-switch";
+  b.textContent = "📁 Elegir otra carpeta";
+  b.title = "El workspace actual no existe o no es un repo git — cambiá a una carpeta válida";
+  b.onclick = openWorkspacePicker;
+  box.append(p, b);
+  root.appendChild(box);
+}
+
 function renderAll() {
   clearRendered();
   const root = document.getElementById("root");
   root.textContent = "";
 
   if (!diffData || diffData.error) {
-    renderModebar(root);
-    const err = document.createElement("div");
-    err.className = "state error";
-    err.textContent = diffData?.message ?? "Sin datos del diff.";
-    root.appendChild(err);
+    renderRepoError(root, diffData?.message ?? "Sin datos del diff.");
     return;
   }
 
@@ -3364,10 +3379,7 @@ async function loadCommits(reset = false) {
   if (data.error) {
     const root = document.getElementById("root");
     root.textContent = "";
-    const err = document.createElement("div");
-    err.className = "state error";
-    err.textContent = data.message ?? "No pude leer el log.";
-    root.appendChild(err);
+    renderRepoError(root, data.message ?? "No pude leer el log.");
     return;
   }
   const seen = new Set(commitsState.list.map((c) => c.hash));
@@ -3454,11 +3466,7 @@ async function loadTurns() {
   if (data.error) {
     const root = document.getElementById("root");
     root.textContent = "";
-    renderModebar(root);
-    const err = document.createElement("div");
-    err.className = "state error";
-    err.textContent = data.message ?? "No pude leer los turnos.";
-    root.appendChild(err);
+    renderRepoError(root, data.message ?? "No pude leer los turnos.");
     return;
   }
   turnsState.list = data.turns ?? [];
@@ -3678,14 +3686,10 @@ async function refresh(explicit = false) {
     renderAnchors();
   } catch (e) {
     if (isStale(gen)) return; // the newer run renders its own state
-    const err = document.createElement("div");
-    err.className = "state error";
-    err.textContent = `No pude leer el diff: ${e?.message ?? e}`;
     root.textContent = "";
     // Without a mode bar a transport error would leave the user stuck in the
     // current mode (no chips to exit with).
-    renderModebar(root);
-    root.appendChild(err);
+    renderRepoError(root, `No pude leer el diff: ${e?.message ?? e}`);
   } finally {
     root.classList.remove("loading");
   }
