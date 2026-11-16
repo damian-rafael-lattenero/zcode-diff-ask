@@ -1261,6 +1261,109 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(await until(async () => !(await evalJs(`!!document.querySelector(".state.error")`)), 6000), "S: el aviso desaparece tras cambiar de carpeta (panel recuperado)");
   await shot("18-dead-workspace.png");
 
+  // ============ T. pending asks: delete + auto-drop on edit (0.9.25) ============
+  // Report: after asking about a painted selection, once the agent edited the
+  // line the highlight could never be removed again — the pile ✕ re-rendered
+  // the pile but left the painted rows behind. Rules: ✕ removes ask AND
+  // marks, the bottom trash clears everything, and an ask auto-drops when
+  // its cited line was edited (the quote is gone from the row).
+  const askCount = async () => await evalJs(`__DA.pendingAsks.length`);
+  const markCount = async () => await evalJs(`[...document.querySelectorAll("diffs-container")].reduce((n, h) => n + (h.shadowRoot?.querySelectorAll("[data-qa]").length ?? 0), 0)`);
+  const askAbout = async (needle, note) => {
+    await panelStable();
+    await evalJs(`__DA.fragSel.delete(${JSON.stringify(PARSER_PY)})`); // fresh paint per ask
+    // reset any leftover selection state so each ask starts clean
+    await evalJs(`__DA.fragModes.delete(${JSON.stringify(PARSER_PY)})`);
+    await evalJs(`__DA.boxSel.clear()`);
+    // after a workspace switch every section is born COLLAPSED: rows exist in
+    // the shadow but measure zero, so locate would never find them
+    await expandFile(PARSER_PY);
+    const l = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, ${JSON.stringify(needle)}, "change-addition")`);
+    if (!l || l.error) {
+      console.error("    diag T state:", JSON.stringify(await evalJs(`(() => {
+        const e = __DA.rendered.get(${JSON.stringify(PARSER_PY)});
+        const host = e?.body?.querySelector("diffs-container");
+        const rows = host?.shadowRoot ? [...host.shadowRoot.querySelectorAll("[data-line]")].filter((r) => !r.querySelector("[data-line]")) : [];
+        return {
+          mode: __DA.diffData?.mode ?? null,
+          ws: __DA.diffData?.workspace ?? null,
+          files: __DA.diffData?.files?.length ?? null,
+          hasEntry: !!e,
+          after: (e?.fileData?.after ?? "").includes(${JSON.stringify(needle)}),
+          rows: rows.filter((r) => r.dataset.lineType === "change-addition").map((r) => (r.textContent ?? "").slice(0, 40)),
+        };
+      })()`)));
+      console.error("    diag T disk:", readDisk(PARSER_PY).includes(needle));
+      throw new Error("T: no localizo " + needle + " — " + (l?.error ?? "?"));
+    }
+    // Paint via the GUTTER (one deterministic drag → box selection → the
+    // ＋/↩ popup): the dblclick-on-text path toggles under load here (second
+    // click + dblclick selectionchange race), the gutter drag is the gesture
+    // clickRevert has used reliably across every run.
+    await drag(l.gutterX, l.y, l.gutterX + 2, l.y + 6, 5);
+    check(await until(async () => (await evalJs(`__DA.boxSel.size`)) > 0, 4000), "T: el drag del gutter pinta la línea");
+    const pop = await until(async () => (await evalJs(`(() => { const b = document.querySelector(".sel-pop button"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`)), 8000);
+    if (!pop) {
+      console.error("    diag T popup:", JSON.stringify(await evalJs(`(() => ({
+        boxes: __DA.boxSel.size,
+        brush: !!__DA.fragModes.get(${JSON.stringify(PARSER_PY)}),
+        selPop: !!document.querySelector(".sel-pop"),
+        sel: String(getSelection()).slice(0, 40),
+        mode: __DA.diffData?.mode ?? null,
+      }))()`)));
+      await shot("debug-T-popup.png");
+      throw new Error("T: no apareció el popup ＋");
+    }
+    await click(pop.x, pop.y);
+    await sleep(250);
+    const before = await askCount();
+    await cdp("Input.insertText", { text: note });
+    await sleep(120);
+    const okBtn = await evalJs(`(() => { const b = document.querySelector(".composer .ask"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    if (!okBtn) throw new Error("T: no hay botón Preguntar");
+    await click(okBtn.x, okBtn.y);
+    return await until(async () => ((await askCount()) === before + 1 ? true : false), 3000);
+  };
+
+  check(await askAbout("def render(tokens):", "T1: ¿esto qué hace?"), "T: la pregunta entra a la pila");
+  check((await markCount()) > 0, "T: la fila queda MARCADA (data-qa)");
+  // ✕ via DOM click: what T guards is the HANDLER's effect (pile + painted
+  // marks); the real-mouse hit-testing is already exercised all over the rig,
+  // and the pile sits under a sticky askbar that can eat the press.
+  const rmHit = await evalJs(`(() => { const b = document.querySelector("#pile .pile-item .rm"); if (!b) return false; b.click(); return true; })()`);
+  check(rmHit, "T: la ✕ de la pila existe");
+  check(await until(async () => (await askCount()) === 0, 3000), "T: la ✕ saca la pregunta de la pila");
+  check(await until(async () => (await markCount()) === 0, 3000), "T: y LIMPIA la marca pintada (antes quedaba para siempre)");
+
+  check(await askAbout("def render(tokens):", "T2: se va a editar la línea"), "T: segunda pregunta en la pila");
+  // the agent edits THAT line on disk → refresh → auto-drop (rename the def so
+  // the cited text is genuinely gone, as a real edit would do)
+  const parserDisk = readDisk(PARSER_PY);
+  fs.writeFileSync(path.join(REPO, PARSER_PY), parserDisk.replace("def render(tokens):", "def painted(tokens):"));
+  await sleep(300);
+  await evalJs("__DA.refresh(true)");
+  await panelStable();
+  check(await until(async () => (await askCount()) === 0, 6000), "T: la pregunta se BORRA SOLA cuando la línea citada fue editada");
+  check(await until(async () => (await markCount()) === 0, 3000), "T: y su marca se va con ella");
+
+  execFileSync("git", ["-C", REPO, "checkout", "--", PARSER_PY]);
+  execFileSync("node", [path.join(HERE, "apply-fixture-mods.mjs")], { stdio: "ignore" });
+  await evalJs("__DA.refresh(true)");
+  await panelStable();
+
+  // trash: two asks (one line + one free) → the bottom trash clears all marks
+  check(await askAbout("def render(tokens):", "T3: pila uno"), "T: pregunta de línea para el tacho");
+  await evalJs(`(() => { const i = document.getElementById("askbar-input"); i.value = "libre para el tacho"; i.focus(); i.dispatchEvent(new Event("input")); })()`);
+  await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter" });
+  check(await until(async () => (await askCount()) === 2, 3000), "T: hay 2 pendientes (línea + libre)");
+  const trashXY = await evalJs(`(() => { const b = document.getElementById("askbar-clear"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  check(!!trashXY, "T: el tacho 🗑 Borrar todo existe");
+  await click(trashXY.x, trashXY.y);
+  check(await until(async () => (await askCount()) === 0, 3000), "T: el tacho borra TODAS las selecciones");
+  check(await until(async () => (await markCount()) === 0, 3000), "T: y no queda ninguna marca pintada");
+  await shot("19-asks-borrables.png");
+
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));
   check((await evalJs("__E2E.errors()")).length === 0, "sin carteles de error en el panel", JSON.stringify(await evalJs("__E2E.errors()")));
