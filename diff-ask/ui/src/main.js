@@ -22,6 +22,7 @@ import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
   compressRuns, linesLabel, quoteForRanges, revertLines, revertFrags,
   changedWordRanges, mergedOffToNew, newRangeToMergedSegs, wordRanges,
+  anchorStillValid,
 } from "./lib.js";
 
 const DIFF_URI = "diff://workspace";
@@ -1012,11 +1013,25 @@ function ensureShell() {
   });
   send.onclick = () => sendAllPending();
   askbar.querySelector(".ver").textContent = `v${window.__DA_BUILD ?? "?"}`;
-  askbar.querySelector("#askbar-clear").onclick = () => {
-    pendingAsks.length = 0;
-    renderPile();
-    renderAnchors();
-  };
+  askbar.querySelector("#askbar-clear").onclick = () => clearAllAsks();
+}
+
+// One ask out, everywhere: the pile item AND its painted marks/chips. The
+// old pile ✕ only re-rendered the pile — the row highlight stayed painted
+// forever after the agent edited the code (Damian's report 16/11: a selection
+// could never be deleted again once the line had changed).
+function removeAsk(i) {
+  if (i < 0 || i >= pendingAsks.length) return;
+  pendingAsks.splice(i, 1);
+  renderPile();
+  renderAnchors();
+}
+
+// The bottom trash: drop EVERY pending ask (line/file/free) and every mark.
+function clearAllAsks() {
+  pendingAsks.length = 0;
+  renderPile();
+  renderAnchors();
 }
 
 // La pila: cada pendiente es una card editable in-place (click y escribí).
@@ -1045,10 +1060,7 @@ function renderPile() {
   head.innerHTML = `<span class="pile-title"></span><button class="ghost pile-clear">Limpiar</button>`;
   head.querySelector(".pile-title").textContent =
     `${pendingAsks.length} pregunta${pendingAsks.length === 1 ? "" : "s"} en la pila`;
-  head.querySelector(".pile-clear").onclick = () => {
-    pendingAsks.length = 0;
-    renderPile();
-  };
+  head.querySelector(".pile-clear").onclick = () => clearAllAsks();
   pile.appendChild(head);
 
   pendingAsks.forEach((a, i) => {
@@ -1072,12 +1084,34 @@ function renderPile() {
       fit();
     });
     fit();
-    card.querySelector(".rm").onclick = () => {
-      pendingAsks.splice(i, 1);
-      renderPile();
-    };
+    card.querySelector(".rm").onclick = () => removeAsk(i);
     pile.appendChild(card);
   });
+}
+
+// The agent edited the code: pending LINE asks whose quoted line no longer
+// matches the fresh content auto-drop (Damian's rule: once the line was
+// edited the anchor is dead). Only POSITIVE mismatches drop — a missing row
+// (collapsed hunk) keeps the ask and its head chip, and `free` asks never
+// drop. Runs at the end of every renderAll, so a reactive refresh right after
+// an agent write reconciles the pile by itself. ONLY in live-tree modes:
+// asks anchor the working diff, so browsing Commits/Turnos must not judge
+// (let alone drop) them against other content.
+function pruneStaleAsks() {
+  if (!pendingAsks.length) return;
+  if (diffData?.mode !== "working" && diffData?.mode !== "unpushed") return;
+  let dropped = 0;
+  for (let i = pendingAsks.length - 1; i >= 0; i--) {
+    const a = pendingAsks[i];
+    if (a.kind === "free") continue;
+    const entry = rendered.get(a.path);
+    if (!entry) { pendingAsks.splice(i, 1); dropped++; continue; } // file left the diff
+    if (a.kind !== "line") continue;
+    const row = findRow(entry, a.start, a.side);
+    if (!row) continue; // hunk collapsed / row not rendered: keep + head chip
+    if (!anchorStillValid(a.quoteLines, row.textContent)) { pendingAsks.splice(i, 1); dropped++; }
+  }
+  if (dropped) chip(`💬 ${dropped} pregunta${dropped === 1 ? "" : "s"} descartada${dropped === 1 ? "" : "s"}: la línea cambió`);
 }
 
 document.addEventListener("keydown", (e) => {
@@ -2904,11 +2938,7 @@ function openInlineEditor(i, at) {
   ta.value = a.question;
   ta.addEventListener("input", () => { a.question = ta.value; });
   const close = () => { card.remove(); renderAnchors(); };
-  card.querySelector(".ie-del").onclick = () => {
-    pendingAsks.splice(i, 1);
-    close();
-    renderPile();
-  };
+  card.querySelector(".ie-del").onclick = () => { card.remove(); removeAsk(i); };
   card.querySelector(".ie-ok").onclick = close;
   ta.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); close(); }
@@ -3357,6 +3387,9 @@ function renderAll() {
     const e = rendered.get(p);
     if (e) { renderFragUI(e); renderFragBadge(e); }
   }
+  // The agent may have just edited lines under pending asks: reconcile NOW,
+  // with the sections' fresh rows (auto-drop, see pruneStaleAsks).
+  pruneStaleAsks();
   // Si hay búsqueda activa, re-marcar sobre las filas nuevas SIN saltar el
   // scroll (el refresh reactivo no debe moverle la lectura a nadie).
   if (find.q && !document.getElementById("findbar")?.hidden) runFind(find.q, false);
