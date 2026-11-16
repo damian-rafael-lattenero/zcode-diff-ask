@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
-  compressRuns, linesLabel, quoteForRanges, revertLines,
+  compressRuns, linesLabel, quoteForRanges, revertLines, anchorStillValid,
 } from "../diff-ask/ui/src/lib.js";
 
 const PATCH = [
@@ -221,4 +221,23 @@ test("revertLines: por LÍNEA — una de un bloque de 3, borrada que vuelve, mez
   // nada seleccionado → igual; sin hunkContent → null
   assert.deepEqual(revertLines(before, after, [hunk], new Set(), new Set()), after);
   assert.equal(revertLines(before, after, [{ ...hunk, hunkContent: [] }], new Set(), new Set([3])), null);
+});
+
+test("anchorStillValid: an edited line invalidates the ask (16/11 rule)", () => {
+  // exact match survives
+  assert.equal(anchorStillValid(["const x = 1;"], "const x = 1;"), true);
+  // whitespace normalizes (rendered rows carry their own spacing)
+  assert.equal(anchorStillValid(["  const   x = 1;  "], "const x = 1;"), true);
+  // the line was EDITED → drop
+  assert.equal(anchorStillValid(["const x = 1;"], "const x = 2;"), false);
+  // painted-fragment asks carry just the painted text: contained = still there
+  assert.equal(anchorStillValid(["render"], "def render(tokens):"), true);
+  assert.equal(anchorStillValid(["render"], "def paint(tokens):"), false);
+  // multi-range asks compare against the FIRST quoted line
+  assert.equal(anchorStillValid(["a();", "b();"], "a();"), true);
+  assert.equal(anchorStillValid(["a();", "b();"], "z();"), false);
+  // nothing to compare / no row text → keep-or-drop contract
+  assert.equal(anchorStillValid([], "anything"), true);
+  assert.equal(anchorStillValid(null, "anything"), true);
+  assert.equal(anchorStillValid(["a"], null), false);
 });

@@ -81,6 +81,23 @@ export function quoteForRanges(entry, ranges, side) {
   return out;
 }
 
+// Does a pending line-ask still belong to the CURRENT content? Rule from the
+// owner (16/11/2026): once the agent EDITS the anchored line the ask must
+// auto-drop — the quote no longer matches and the stale anchor paints the
+// wrong row forever. CONTAINS, not equality: for painted fragments the quote
+// is just the painted text (a word, a partial line), so the test is "the
+// cited text still lives in that row". Whitespace-normalized. `lineText ==
+// null` (row gone) is NOT a mismatch signal — the row can be missing because
+// its hunk is collapsed, so callers keep those asks.
+export function anchorStillValid(quoteLines, lineText) {
+  if (!Array.isArray(quoteLines) || !quoteLines.length) return true; // nothing to compare: keep
+  if (lineText == null) return false;
+  const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+  const q = norm(quoteLines[0]);
+  if (!q) return true; // empty quote: nothing to verify
+  return norm(lineText).includes(q);
+}
+
 // Cita las líneas del rango: desde el contenido completo si lo hay (render
 // desde before/after — números de línea directos), sino desde el parche.
 // `verbatim` (selección de texto) gana siempre: es lo que el usuario vio.
