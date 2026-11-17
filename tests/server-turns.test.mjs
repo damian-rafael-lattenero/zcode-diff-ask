@@ -1,7 +1,7 @@
-// Tests del flujo COMPLETO de turnos: inbox de eventos (como lo escribe el
-// hook user-scope del bot) → processInbox → fotos con blobs → lista/diff/
-// delete/clear. El estado vive en un tmp (ZCODE_DIFF_ASK_STATE) para no tocar
-// el ~/.zcode real. Import dinámico DESPUÉS de setear el env.
+// Turnos v2 (0.9.26): one prompt→stop window, every repo touched, commits
+// made in the window + dirty files at the end. The tap's FSEvents stream is
+// replaced by direct noteTapPath() injection (same collector), and the state
+// lives in a tmp dir (ZCODE_DIFF_ASK_STATE) thanks to the dynamic import.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -10,83 +10,149 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const STATE = fs.mkdtempSync(path.join(os.tmpdir(), "da-state-"));
+const STATE = fs.mkdtempSync(path.join(os.tmpdir(), "da-state2-"));
 process.env.ZCODE_DIFF_ASK_STATE = STATE;
 
 const server = await import("../diff-ask/server/server.mjs");
-const { setActiveWorkspace, processInbox, listTurns, buildTurnDiff, deleteTurn, clearTurns } = server;
+const {
+  setActiveWorkspace, processInbox, listTurns, buildTurnDiff, deleteTurn, clearTurns,
+  parseTurnEvent, isTapNoise, repoRootOf, noteTapPath,
+} = server;
 
-function git(cwd, ...args) {
-  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+const INBOX = path.join(STATE, "turn-events.jsonl");
+const T0 = Date.parse("2026-11-17T10:00:00.000Z");
+
+function git(cwd, env, ...args) {
+  return execFileSync("git", ["-C", cwd, ...args], {
+    encoding: "utf8",
+    env: env ? { ...process.env, ...env } : process.env,
+  });
 }
 function makeRepo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "da-turns-"));
-  git(dir, "init", "-q", "-b", "main");
-  git(dir, "config", "user.email", "t@t");
-  git(dir, "config", "user.name", "T");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "da-turns2-"));
+  git(dir, null, "init", "-q", "-b", "main");
+  git(dir, null, "config", "user.email", "t@t");
+  git(dir, null, "config", "user.name", "T");
   return dir;
 }
-const INBOX = path.join(STATE, "turn-events.jsonl");
-function sendEvent(ws, prompt, at) {
-  fs.appendFileSync(INBOX, `${JSON.stringify({ workspace: ws, prompt, at, source: "test" })}\n`);
+function commitAt(dir, ms, file, content, msg) {
+  const iso = new Date(ms).toISOString();
+  fs.writeFileSync(path.join(dir, file), content);
+  git(dir, null, "add", "-A");
+  git(dir, { GIT_AUTHOR_DATE: iso, GIT_COMMITTER_DATE: iso }, "commit", "-qm", msg);
+}
+function sendEvent(ev) {
+  fs.appendFileSync(INBOX, `${JSON.stringify(ev)}\n`);
 }
 
-test("flujo inbox→turno: foto con blobs, diff entre turnos, en vivo, dedupe", async () => {
-  const dir = makeRepo();
-  fs.writeFileSync(path.join(dir, "a.py"), "v1\n");
-  git(dir, "add", "-A");
-  git(dir, "commit", "-qm", "base");
-  await setActiveWorkspace(dir);
+test("parseTurnEvent: prompt/stop nuevos, línea legacy del bot, basura", () => {
+  const p = parseTurnEvent(JSON.stringify({ type: "prompt", sid: "s1", cwd: "/x", prompt: "hola", at: "2026-11-17T10:00:00.000Z" }));
+  assert.deepEqual(p, { type: "prompt", sid: "s1", cwd: "/x", prompt: "hola", atMs: T0 });
+  const s = parseTurnEvent(JSON.stringify({ type: "stop", sid: "s1", cwd: "/x", reply: "listo", at: "2026-11-17T10:00:09.000Z" }));
+  assert.equal(s.type, "stop");
+  assert.equal(s.reply, "listo");
+  // legacy bot line: {workspace, prompt, at, source} → prompt event
+  const legacy = parseTurnEvent(JSON.stringify({ workspace: "/w", prompt: "viejo", at: "2026-11-17T10:00:00.000Z", source: "bot" }));
+  assert.equal(legacy.type, "prompt");
+  assert.equal(legacy.cwd, "/w");
+  assert.equal(parseTurnEvent("no-json"), null);
+  assert.equal(parseTurnEvent(JSON.stringify({ type: "prompt", prompt: "sin fecha" })), null);
+});
 
-  // prompt 1 (hora local estilo bot, sin zona)
-  sendEvent(dir, "turno uno: editá a", "2026-10-24T10:00:01");
+test("isTapNoise: caches/builds/logs/estado propio fuera; código adentro", () => {
+  assert.equal(isTapNoise("Library/Containers/x"), true);
+  assert.equal(isTapNoise("Projects/a/node_modules/p/index.js"), true);
+  assert.equal(isTapNoise("Projects/a/.venv/lib/x.py"), true);
+  assert.equal(isTapNoise("Projects/a/app.log"), true);
+  assert.equal(isTapNoise(".zcode/diff-ask/turn-events.jsonl"), true);
+  assert.equal(isTapNoise("Projects/a/src/main.rs"), false);
+  assert.equal(isTapNoise(".zcode/hooks/turn-tap.nu"), false);
+});
+
+test("repoRootOf: archivo en repo/subcarpeta → raíz; fuera de repos → null", () => {
+  const repo = makeRepo();
+  commitAt(repo, T0 - 100_000, "a.txt", "x\n", "base");
+  fs.mkdirSync(path.join(repo, "src", "deep"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "src", "deep", "f.ts"), "x\n");
+  assert.equal(repoRootOf(path.join(repo, "src", "deep", "f.ts")), repo);
+  const nope = fs.mkdtempSync(path.join(os.tmpdir(), "da-norepo-"));
+  assert.equal(repoRootOf(path.join(nope, "x.txt")), null);
+});
+
+test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async () => {
+  // repo A = session workspace; repo B = a second repo (the "worktree" case)
+  const A = makeRepo();
+  const B = makeRepo();
+  commitAt(A, T0 - 100_000, "a.py", "v1\n", "base A");
+  commitAt(B, T0 - 100_000, "x.py", "uno\n", "base B");
+  await setActiveWorkspace(A);
+
+  // prompt event opens the turn
+  sendEvent({ type: "prompt", sid: "sX", cwd: A, prompt: "hacé el trabajo", at: new Date(T0).toISOString() });
   await processInbox();
-  assert.equal(listTurns({ workspace: dir }).count, 1);
+  let list = listTurns();
+  assert.equal(list.count, 1);
+  assert.equal(list.turns[0].isLive, true);
 
-  // el agente trabaja: edita a.py y crea b.py
-  fs.writeFileSync(path.join(dir, "a.py"), "v1\nv2\n");
-  fs.writeFileSync(path.join(dir, "b.py"), "nuevo\n");
+  // the agent works: dirty edit in A, a COMMIT in B (inside the window),
+  // plus a stray non-git file
+  fs.writeFileSync(path.join(A, "a.py"), "v1\nv2\n");
+  noteTapPath(path.join(A, "a.py"));
+  commitAt(B, T0 + 30_000, "x.py", "uno\ndos\n", "feat: x avanza");
+  noteTapPath(path.join(B, "x.py"));
+  noteTapPath(path.join(B, ".git", "HEAD")); // commit marker → repo B included
+  noteTapPath(path.join(os.tmpdir(), "suelto.txt"));
 
-  // prompt 2
-  sendEvent(dir, "turno dos: seguí", "2026-10-24T10:05:00");
+  // stop event closes it
+  sendEvent({ type: "stop", sid: "sX", cwd: A, reply: "hecho: A y B tocados", at: new Date(T0 + 60_000).toISOString() });
   await processInbox();
-  assert.equal(listTurns({ workspace: dir }).count, 2);
+  list = listTurns();
+  assert.equal(list.count, 1);
+  const t = list.turns[0];
+  assert.equal(t.isLive, false);
+  assert.equal(t.prompt, "hacé el trabajo");
+  assert.equal(t.reply, "hecho: A y B tocados");
+  assert.equal(t.repoCount, 2);
+  assert.equal(t.fileCount, 2); // 1 commit (B) + 1 dirty (A)
 
-  // dedupe: la MISMA línea reprocesada (evento sintético inmediato) no crea turno
-  sendEvent(dir, "turno dos: seguí", "2026-10-24T10:05:01");
+  const d = await buildTurnDiff(t.id);
+  assert.equal(d.mode, "turn");
+  assert.equal(d.error, undefined);
+  const labelA = path.basename(A);
+  const labelB = path.basename(B);
+  const fileA = d.files.find((f) => f.path === `${labelA}/a.py`);
+  const fileB = d.files.find((f) => f.path === `${labelB}/x.py`);
+  assert.ok(fileA, "dirty de A presente y namespaced");
+  assert.ok(fileB, "commit de B presente y namespaced");
+  assert.equal(fileA.before, "v1\n");
+  assert.equal(fileA.after, "v1\nv2\n");
+  assert.equal(fileB.status, "M");
+  assert.equal(fileB.before, "uno\n");
+  assert.equal(fileB.after, "uno\ndos\n");
+  assert.equal(fileB.commit.length > 0, true);
+  assert.equal(d.turn.repos.length, 2);
+  assert.deepEqual(d.turn.repos.map((r) => r.label).sort(), [labelA, labelB].sort());
+
+  // second turn: prompt supersedes nothing (first is closed); live diff works
+  sendEvent({ type: "prompt", sid: "sX", cwd: A, prompt: "segundo", at: new Date(T0 + 120_000).toISOString() });
   await processInbox();
-  assert.equal(listTurns({ workspace: dir }).count, 2);
+  const live = await buildTurnDiff("latest");
+  assert.equal(live.turn.isLive, true);
+  assert.equal(live.turn.prompt, "segundo");
+  // an ONLY-working repo: nothing noted yet → only A's dirty shows
+  assert.ok(live.files.every((f) => f.path.startsWith(`${labelA}/`)));
 
-  // turno 1 = foto1 vs foto2: a.py M + b.py A, con contenidos de blob
-  const list = listTurns({ workspace: dir });
-  const t1 = await buildTurnDiff(list.turns[1].id, { workspace: dir });
-  assert.deepEqual(t1.files.map((f) => f.path).sort(), ["a.py", "b.py"]);
-  assert.equal(t1.files.find((f) => f.path === "a.py").before, "v1\n");
-  assert.equal(t1.files.find((f) => f.path === "a.py").after, "v1\nv2\n");
-  assert.equal(t1.files.find((f) => f.path === "b.py").status, "A");
-  assert.equal(t1.turn.prompt, "turno uno: editá a");
-
-  // evento de OTRA carpeta: no toca este índice
-  sendEvent("/no/existe", "otra carpeta", "2026-10-24T10:06:00");
+  // an unfinished turn is persisted as interrupted when a NEW prompt lands
+  sendEvent({ type: "prompt", sid: "sX", cwd: A, prompt: "tercero", at: new Date(T0 + 180_000).toISOString() });
   await processInbox();
-  assert.equal(listTurns({ workspace: dir }).count, 2);
+  list = listTurns();
+  assert.ok(list.turns.some((x) => x.interrupted && x.prompt === "segundo"), "el turno sin stop queda marcado interrumpido");
 
-  // turno 2 (latest, VIVO): commitea el trabajo → el diff en vivo sólo ve lo
-  // nuevo sin commitear
-  git(dir, "add", "-A");
-  git(dir, "commit", "-qm", "trabajo del turno 2");
-  fs.writeFileSync(path.join(dir, "c.py"), "vivo\n");
-  const t2 = await buildTurnDiff("latest", { workspace: dir });
-  assert.deepEqual(t2.files.map((f) => f.path), ["c.py"]);
-  assert.equal(t2.turn.isLatest, true);
-
-  // borrar el turno 2: el 1 pasa a ser latest y diffea contra el worktree
-  const id2 = listTurns({ workspace: dir }).turns[0].id;
-  assert.equal(deleteTurn(id2, { workspace: dir }).ok, true);
-  const t1live = await buildTurnDiff("latest", { workspace: dir });
-  assert.equal(t1live.turn.prompt, "turno uno: editá a");
-  assert.equal(t1live.turn.isLatest, true);
-
-  clearTurns({ workspace: dir });
-  assert.equal(listTurns({ workspace: dir }).count, 0);
+  // delete + clear operate on the global store
+  const victim = list.turns.find((x) => x.prompt === "hacé el trabajo");
+  assert.equal(deleteTurn(victim.id).ok, true);
+  assert.equal(deleteTurn("no-existe").error, "unknown_turn");
+  clearTurns();
+  assert.ok(listTurns().count <= 1); // only the live one may remain
+  assert.equal((await buildTurnDiff("no-existe")).error, "unknown_turn");
 });
