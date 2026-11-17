@@ -202,14 +202,6 @@ async function gitShow(ref, p, cwd) {
   return r.out;
 }
 
-// Contenido de un blob de la foto de turno. OJO al cwd: los blobs viven en
-// el .git DEL WORKSPACE de la foto — cat-file con el cwd por defecto busca
-// en otro repo y no los encuentra (null si el objeto ya no está, p.ej. gc).
-async function catBlob(sha, cwd) {
-  const r = await runGit(["cat-file", "blob", sha], { cwd });
-  return r.ok ? r.out : null;
-}
-
 // Contenido actual del archivo de trabajo (o null si no existe / muy grande).
 function readWorkFile(p, cwd) {
   try {
@@ -563,114 +555,136 @@ export async function buildDiff({ mode = "working", includePatches = true, works
   };
 }
 
-// ------------------------------------------------------- turnos (por prompt)
-// Cada mensaje del usuario corta un turno. La señal la escriben DOS
-// escritores en ~/.zcode/diff-ask/turn-events.jsonl (una línea JSON por
-// mensaje: {"workspace","prompt","at","source"}):
-//   · el BOT (Telegram/mobile) en su hook on_user_prompt
-//   · el FORK (desktop/web) en el punto de envío del renderer
-// Este server observa ese inbox CON PRIORIDAD (sin debounce: la foto hay que
-// tomarla ANTES de que el agente empiece a editar) y para eventos del
-// workspace activo fotografia el estado: HEAD + por cada archivo sucio su
-// contenido como BLOB de git (hash-object -w — vive en .git/objects,
-// comprimido y deduplicado, sin tocar worktree ni índice). El índice por
-// workspace persiste en ~/.zcode/diff-ask/turns/<key>/turns.json, así la
-// historia sobrevive sessions/restarts. Diff del turno N = foto(prompt N) vs
-// foto(prompt N+1) — el efecto NETO (commits incluidos); el ÚLTIMO turno =
-// foto del último prompt vs working tree VIVO.
-// Sobreescribible (tests apuntan a un tmp): ZCODE_DIFF_ASK_STATE=/tmp/x
+// --------------------------------------------------------------- turnos (v2)
+// A TURN = one prompt→stop window of a ZCode session. The app's hook system
+// taps both boundaries into turn-events.jsonl (UserPromptSubmit writes
+// {"type":"prompt",...}, Stop writes {"type":"stop","reply":...}; both carry
+// sid + cwd). While a turn is open this server accumulates every path touched
+// on the machine (recursive FSEvents over $HOME — measured ~17 ev/s with
+// negligible CPU) and at Stop groups them by enclosing git repo: the commits
+// made DURING the window (agents commit per unit — often in .worktrees of
+// other repos) plus whatever stayed dirty at the end. One JSON per turn in
+// <state>/turns2/, global across sessions; the panel lists turns newest-first
+// with the prompt + the agent's reply summary.
+// Overridable (tests point at a tmp): ZCODE_DIFF_ASK_STATE=/tmp/x
 const DA_STATE_DIR = process.env.ZCODE_DIFF_ASK_STATE || path.join(os.homedir(), ".zcode", "diff-ask");
 const TURN_INBOX = path.join(DA_STATE_DIR, "turn-events.jsonl");
-const TURNS_DIR = path.join(DA_STATE_DIR, "turns");
+const TURNS2_DIR = path.join(DA_STATE_DIR, "turns2");
 const PROMPT_MAX = 100_000; // paranoia: prompts gigantes se recortan
-const BLOB_LIMIT = 5_000_000; // por archivo: más grande no se fotografía
-
-// ISO en hora LOCAL sin zona: la lista del panel muestra la hora que el
-// usuario vivió (los eventos del bot ya vienen así).
-function localIso() {
-  return new Date(Date.now() - new Date().getTimezoneOffset() * 60000)
-    .toISOString()
-    .slice(0, 19);
-}
+const REPLY_MAX = 8_000;
+const MAX_TURN_COMMITS = 40;
+const MAX_TURN_OUTSIDE = 300;
 
 function wsKey(ws) {
   return createHash("sha1").update(ws).digest("hex").slice(0, 16);
 }
 
-function turnsIndexPath(ws) {
-  return path.join(TURNS_DIR, wsKey(ws), "turns.json");
-}
-
-function loadTurns(ws) {
+// ---- event parsing (pure; exported for tests) -------------------------
+// One inbox line → a tagged event. New shape: {type:"prompt"|"stop", sid,
+// cwd, prompt|reply, at}. Legacy lines ({workspace, prompt, at, source},
+// written by the Telegram bot) parse as a prompt so that path keeps working.
+export function parseTurnEvent(line) {
+  let e;
   try {
-    const arr = JSON.parse(fs.readFileSync(turnsIndexPath(ws), "utf8"));
-    return Array.isArray(arr) ? arr : [];
+    e = JSON.parse(line);
   } catch {
-    return [];
+    return null;
   }
+  if (!e || typeof e !== "object") return null;
+  const atMs = Date.parse(String(e.at ?? "").trim());
+  if (!Number.isFinite(atMs)) return null;
+  const sid = String(e.sid ?? e.session_id ?? "").trim();
+  const cwd = String(e.cwd ?? e.workspace ?? "").trim();
+  if (e.type === "stop")
+    return { type: "stop", sid, cwd, reply: String(e.reply ?? e.last_assistant_message ?? ""), atMs };
+  const prompt = String(e.prompt ?? "");
+  if (!prompt) return null;
+  return { type: "prompt", sid, cwd, prompt, atMs };
 }
 
-function saveTurns(ws, arr) {
-  fs.mkdirSync(path.dirname(turnsIndexPath(ws)), { recursive: true });
-  fs.writeFileSync(turnsIndexPath(ws), JSON.stringify(arr));
+// ---- touched-path noise filter (pure; exported) -----------------------
+// Paths are relative to $HOME. Build dirs, caches, dependency trees and the
+// server's own state/logs would drown the turn; .git internals are handled
+// separately (they mark the repo as "commits to scan").
+export function isTapNoise(rel) {
+  const p = String(rel ?? "").replaceAll("\\", "/");
+  return (
+    /(^|\/)(Library|\.Trash|Caches|\.cache|node_modules|\.venv|venv|__pycache__|\.next|DerivedData|\.gradle|\.m2|target\/debug|target\/release)(\/|$)/.test(p) ||
+    /\.(log|lock|tmp|swp|swo|sqlite-wal|sqlite-shm)$/.test(p) ||
+    p.startsWith(".zcode/diff-ask/") || // the tap's own state (avoid self-feedback)
+    p.startsWith(".zcode/cli/log/") ||
+    p.startsWith(".zcode/cli/db/") ||
+    p.startsWith(".zcode/cli/exec/") ||
+    p.startsWith(".zcode/agent-brain/") ||
+    p.startsWith(".zcode/hooks/logs/")
+  );
 }
 
-// git con stdin (hash-object --stdin necesita escribir bytes al proceso).
-function runGitIn(args, input, { cwd = activeWorkspace } = {}) {
-  return new Promise((resolve) => {
-    const p = spawn("git", ["-C", cwd, ...args], { stdio: ["pipe", "pipe", "pipe"] });
-    let out = "";
-    let err = "";
-    p.stdout.on("data", (d) => (out += d));
-    p.stderr.on("data", (d) => (err += d));
-    p.on("error", () => resolve({ ok: false, out: "", err: "git binary not found" }));
-    p.on("close", (code) => resolve({ ok: code === 0, out, err }));
-    p.stdin.end(input);
-  });
-}
+// ---- live turn collector ------------------------------------------------
+// While a turn is open every FSEvent under $HOME lands here (filtered); at
+// Stop the set is grouped by enclosing git repo. Repo roots are cached per
+// directory to keep the walk cheap.
+const repoRootCache = new Map();
 
-async function hashBlobIn(content, ws) {
-  const r = await runGitIn(["hash-object", "-w", "--stdin"], content, { cwd: ws });
-  return r.ok ? r.out.trim() : null;
-}
-
-// La foto del AHORA: HEAD + blob del contenido de cada archivo sucio.
-// Exportada para tests.
-export async function recordTurn(prompt, at = localIso(), workspace = activeWorkspace) {
-  const ws = workspace;
-  const headR = await runGit(["rev-parse", "HEAD"], { cwd: ws });
-  if (!headR.ok) return null; // sin repo no hay turno
-  const stR = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: ws });
-  const files = [];
-  for (const f of parsePorcelainZ(stR.out)) {
-    if (f.status === "D") {
-      files.push({ path: f.path, status: "D", blob: null });
-      continue;
+export function repoRootOf(absPath) {
+  let dir = String(absPath ?? "");
+  const seen = [];
+  while (dir && dir !== path.dirname(dir)) {
+    if (repoRootCache.has(dir)) {
+      const root = repoRootCache.get(dir);
+      for (const d of seen) repoRootCache.set(d, root);
+      return root;
     }
-    let blob = null;
-    let oversized = false;
+    seen.push(dir);
     try {
-      const abs = path.join(ws, f.path);
-      if (fs.statSync(abs).size <= BLOB_LIMIT) {
-        blob = await hashBlobIn(fs.readFileSync(abs), ws); // Buffer: binario OK
-      } else oversized = true;
-    } catch {
-      oversized = true; // ilegible ahora: la foto cae a la versión de HEAD
-    }
-    files.push({ path: f.path, status: f.status, ...(f.oldPath ? { oldPath: f.oldPath } : {}), blob, ...(oversized ? { oversized: true } : {}) });
+      if (fs.existsSync(path.join(dir, ".git"))) {
+        for (const d of seen) repoRootCache.set(d, dir);
+        return dir;
+      }
+    } catch { /* unreadable dir: keep walking up */ }
+    dir = path.dirname(dir);
   }
-  const turns = loadTurns(ws);
-  const rec = {
-    id: `${Date.now().toString(36)}-${turns.length + 1}`,
-    at,
-    prompt: String(prompt ?? "").slice(0, PROMPT_MAX),
-    head: headR.out.trim(),
-    files,
-  };
-  turns.push(rec);
-  saveTurns(ws, turns);
-  log(`turno ${rec.id} (${files.length} archivo(s) sucios) — "${rec.prompt.slice(0, 50)}"`);
-  return rec;
+  for (const d of seen) repoRootCache.set(d, null);
+  return null;
+}
+
+let tapWatcher = null;
+const tapTouched = new Set(); // ABSOLUTE paths, files only
+const tapGitRoots = new Set(); // repos whose .git changed (commits happen here)
+let openTurn = null; // { sid, cwd, prompt, startMs, reply?, stopMs? }
+
+// Accepts an absolute path or one relative to $HOME (the watcher's form).
+// Exported so tests can inject paths without a real FSEvents stream.
+export function noteTapPath(raw) {
+  if (!openTurn || !raw) return;
+  const p = String(raw);
+  const abs = path.isAbsolute(p) ? p : path.join(os.homedir(), p);
+  const home = os.homedir();
+  const gitAt = abs.indexOf(`${path.sep}.git${path.sep}`);
+  if (gitAt >= 0 || abs.endsWith(`${path.sep}.git`)) {
+    const root = gitAt >= 0 ? abs.slice(0, gitAt) : abs.slice(0, -5);
+    if (root) tapGitRoots.add(root);
+    return;
+  }
+  const noiseTarget = abs.startsWith(home + path.sep) ? path.relative(home, abs) : abs;
+  if (isTapNoise(noiseTarget)) return;
+  if (tapTouched.size < 5000) tapTouched.add(abs);
+}
+
+function ensureTapWatcher() {
+  if (tapWatcher) return;
+  try {
+    tapWatcher = fs.watch(os.homedir(), { recursive: true }, (_evt, file) => noteTapPath(String(file ?? "")));
+    tapWatcher.on("error", () => { tapWatcher?.close(); tapWatcher = null; });
+    tapWatcher.unref?.();
+  } catch {
+    /* no FSEvents: the turn still records its cwd repo commits/dirty */
+  }
+}
+
+// Current touched set, exported for tests and for the live diff.
+export function tapSnapshot() {
+  return { touched: [...tapTouched], gitRoots: [...tapGitRoots] };
 }
 
 // ----------------------------------------------------------- inbox de turnos
@@ -702,42 +716,113 @@ export async function processInbox() {
   if (data.length <= inboxOffset) return;
   const chunk = data.slice(inboxOffset);
   inboxOffset = data.length;
-  let active = activeWorkspace;
-  try {
-    active = fs.realpathSync(activeWorkspace);
-  } catch { /* sin realpath nos quedamos con la ruta literal */ }
-  let touched = false;
   for (const line of chunk.split("\n")) {
     if (!line.trim()) continue;
-    let ev;
-    try {
-      ev = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const ws = String(ev.workspace ?? "").trim();
-    if (!ws) continue;
-    let resolved = ws;
-    try {
-      resolved = fs.realpathSync(ws);
-    } catch {
-      continue; // la carpeta ya no existe
-    }
-    if (resolved !== active) continue;
-    // dedupe anti doble-disparo (la misma línea procesada dos veces o un
-    // evento sintético inmediato): mismo prompt a <3s del último turno.
-    const turnsNow = loadTurns(activeWorkspace);
-    const lastRec = turnsNow[turnsNow.length - 1];
-    if (
-      lastRec &&
-      lastRec.prompt === String(ev.prompt ?? "") &&
-      Math.abs(Date.parse(String(ev.at ?? "")) - Date.parse(lastRec.at)) < 3000
-    )
-      continue;
-    if (await recordTurn(ev.prompt ?? "", ev.at ?? localIso())) touched = true;
+    const ev = parseTurnEvent(line);
+    if (!ev) continue;
+    if (ev.type === "prompt") await onTurnPrompt(ev);
+    else await onTurnStop(ev);
   }
-  if (touched)
-    for (const uri of subs) sendNotification("notifications/resources/updated", { uri });
+}
+
+async function onTurnPrompt(ev) {
+  // a new prompt supersedes an unfinished turn (persisted as interrupted)
+  if (openTurn) await finalizeOpenTurn({ interrupted: true });
+  openTurn = { sid: ev.sid, cwd: ev.cwd, prompt: ev.prompt.slice(0, PROMPT_MAX), startMs: ev.atMs };
+  tapTouched.clear();
+  tapGitRoots.clear();
+  ensureTapWatcher();
+  log(`turno abierto (${ev.sid.slice(0, 8)}): "${ev.prompt.slice(0, 50)}"`);
+}
+
+async function onTurnStop(ev) {
+  if (!openTurn) return; // stop without a prompt in this server life: nothing to bound
+  if (openTurn.sid && ev.sid && ev.sid !== openTurn.sid) return; // another session's stop
+  openTurn.reply = String(ev.reply ?? "").slice(0, REPLY_MAX);
+  openTurn.stopMs = Math.max(ev.atMs, openTurn.startMs + 1);
+  await finalizeOpenTurn({ interrupted: false });
+}
+
+// Reads everything a turn touched: per repo, the commits made in the window
+// and the dirty state left at the end. Shared by finalize and the live view.
+async function collectTurnChanges({ cwd, startMs, stopMs, touched, gitRoots }) {
+  const home = os.homedir();
+  const repos = new Map(); // root -> Set(rel)
+  const outside = [];
+  for (const abs of touched) {
+    const root = repoRootOf(abs);
+    if (!root) {
+      outside.push(abs.startsWith(home + path.sep) ? path.relative(home, abs) : abs);
+      continue;
+    }
+    if (!repos.has(root)) repos.set(root, new Set());
+    repos.get(root).add(path.relative(root, abs));
+  }
+  for (const root of gitRoots) {
+    if (!repos.has(root) && fs.existsSync(root)) repos.set(root, new Set());
+  }
+  const cwdRoot = cwd ? repoRootOf(cwd) : null;
+  if (cwdRoot && !repos.has(cwdRoot)) repos.set(cwdRoot, new Set());
+
+  const sinceIso = new Date(startMs - 2000).toISOString();
+  const untilIso = new Date(stopMs + 2000).toISOString();
+  const out = [];
+  for (const [root, relSet] of repos) {
+    const commitsR = await runGit(
+      ["log", "--all", `--since=${sinceIso}`, `--until=${untilIso}`, "-n", String(MAX_TURN_COMMITS), `--format=${LOG_FMT}`],
+      { cwd: root },
+    );
+    const commits = (commitsR.ok && commitsR.out.trim() ? commitsR.out.trim().split("\n") : [])
+      .map(parseLogLine)
+      .filter(Boolean);
+    const stR = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: root });
+    const dirty = parsePorcelainZ(stR.out).map((f) => ({
+      path: f.path,
+      status: f.status,
+      ...(f.oldPath ? { oldPath: f.oldPath } : {}),
+    }));
+    if (!commits.length && !dirty.length && !relSet.size) continue;
+    out.push({ path: root, label: path.basename(root), commits, dirty });
+  }
+  return { repos: out, outside: outside.slice(0, MAX_TURN_OUTSIDE) };
+}
+
+async function finalizeOpenTurn({ interrupted }) {
+  const t = openTurn;
+  openTurn = null;
+  if (!t) return null;
+  const stopMs = t.stopMs ?? Date.now();
+  const snap = tapSnapshot();
+  tapTouched.clear();
+  tapGitRoots.clear();
+  const { repos, outside } = await collectTurnChanges({
+    cwd: t.cwd,
+    startMs: t.startMs,
+    stopMs,
+    touched: snap.touched,
+    gitRoots: snap.gitRoots,
+  });
+  const rec = {
+    id: `${stopMs.toString(36)}-${(t.sid || "x").slice(0, 8)}`,
+    sid: t.sid,
+    workspace: t.cwd,
+    prompt: t.prompt,
+    reply: t.reply ?? "",
+    startedAt: new Date(t.startMs).toISOString(),
+    stoppedAt: new Date(stopMs).toISOString(),
+    ...(interrupted ? { interrupted: true } : {}),
+    repos,
+    outside,
+  };
+  try {
+    fs.mkdirSync(TURNS2_DIR, { recursive: true });
+    fs.writeFileSync(path.join(TURNS2_DIR, `${rec.id}.json`), JSON.stringify(rec));
+  } catch {
+    return null;
+  }
+  log(`turno ${rec.id}: ${repos.length} repo(s), ${repos.reduce((n, r) => n + r.commits.length, 0)} commit(s), ${outside.length} fuera de git`);
+  for (const uri of subs) sendNotification("notifications/resources/updated", { uri });
+  return rec;
 }
 
 let inboxWatcher = null;
@@ -757,123 +842,175 @@ function ensureInboxWatcher() {
   }
 }
 
-// Counts reales de un diff before/after que git no conoce: numstat contra
-// archivos temporales (--no-index). Binarios llegan como "-".
-async function numstatBetween(a, b) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "da-turn-"));
+// ---- turn store (one JSON per turn, global across sessions) --------------
+function readTurnFiles() {
+  let names = [];
   try {
-    const fa = path.join(dir, "a");
-    const fb = path.join(dir, "b");
-    fs.writeFileSync(fa, a ?? "");
-    fs.writeFileSync(fb, b ?? "");
-    const r = await runGit(["diff", "--no-index", "--numstat", "--", fa, fb], {
-      cwd: dir,
-      expectDiffExit: true,
-    });
-    const m = r.out.trim().match(/^(-|\d+)\t(-|\d+)\t/);
-    return m ? { added: m[1], deleted: m[2] } : { added: "0", deleted: "0" };
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    names = fs.readdirSync(TURNS2_DIR).filter((n) => n.endsWith(".json"));
+  } catch {
+    return [];
   }
+  const out = [];
+  for (const n of names) {
+    try {
+      const rec = JSON.parse(fs.readFileSync(path.join(TURNS2_DIR, n), "utf8"));
+      if (rec && rec.id) out.push(rec);
+    } catch { /* turno corrupto: se ignora */ }
+  }
+  return out.sort((a, b) => Date.parse(b.stoppedAt ?? "") - Date.parse(a.stoppedAt ?? ""));
 }
 
-// Contenido de un archivo según una FOTO: blob guardado (estado sucio en ese
-// momento) o, si estaba limpio/oversized, la versión de HEAD de la foto.
-// null = no existía / borrado. Oversize → {oversize:true} (sin contenido).
-async function contentAt(rec, entry, p, ws) {
-  if (entry) {
-    if (entry.blob) {
-      const c = await catBlob(entry.blob, ws);
-      if (c !== null) return c.length > CONTENT_LIMIT ? { oversize: true } : c;
-    }
-    if (entry.status === "D") return null;
-    const c = await gitShow(rec.head, entry.oldPath ?? p, ws);
-    return c !== null && c.length > CONTENT_LIMIT ? { oversize: true } : c;
-  }
-  // sin entrada = estaba LIMPIO: la versión de HEAD de la foto.
-  const c = await gitShow(rec.head, p, ws);
-  return c !== null && c.length > CONTENT_LIMIT ? { oversize: true } : c;
+function turnFileCount(rec) {
+  let n = 0;
+  for (const r of rec.repos ?? []) n += (r.commits?.length ?? 0) + (r.dirty?.length ?? 0);
+  return n;
 }
 
-// Diff del turno: foto(prompt N) vs foto(prompt N+1). El último ("latest")
-// compara contra el working tree VIVO (se actualiza con cada notificación).
-export async function buildTurnDiff(id, { workspace = activeWorkspace } = {}) {
-  const ws = workspace;
-  const meta = await repoMeta(ws);
-  if (!meta.inside)
-    return { error: "not_a_repo", message: `El workspace no es un repositorio git (${ws}).`, workspace: ws };
-  const turns = loadTurns(ws);
-  if (!turns.length)
-    return {
-      error: "no_turns",
-      message: "Todavía no hay turnos registrados para esta carpeta. Cada mensaje tuyo en la sesión (desktop o Telegram) registra uno automáticamente.",
-      workspace: ws,
-      branch: meta.branch,
-      head: meta.head,
-    };
-  const idx = id === "latest" ? turns.length - 1 : turns.findIndex((t) => t.id === id);
-  if (idx === -1)
-    return { error: "unknown_turn", message: `No encontré el turno "${id}".`, workspace: ws, branch: meta.branch, head: meta.head };
-
-  const rec = turns[idx];
-  const isLatest = idx === turns.length - 1;
-  const next = isLatest ? null : turns[idx + 1];
-
-  // estado "después": la foto siguiente, o el working tree vivo.
-  let nowMap = new Map();
-  if (isLatest) {
-    const stR = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: ws });
-    nowMap = new Map(parsePorcelainZ(stR.out).map((f) => [f.path, f]));
-  }
-  const paths = new Set(rec.files.map((f) => f.path));
-  for (const f of next?.files ?? []) paths.add(f.path);
-  for (const p of nowMap.keys()) paths.add(p);
-
+// Builds the panel entries for a turn: every commit hunk and every dirty file
+// of every repo touched in the window, namespaced as "<repo label>/<path>"
+// (the panel keys sections by path, and two repos can hold the same rel path).
+// Content rides the shared bounded pool (mapPool + budget via enrichFiles).
+async function turnEntries(repos) {
   const entries = [];
-  for (const p of paths) {
-    const fe = rec.files.find((f) => f.path === p);
-    const fn = next?.files.find((f) => f.path === p);
-    const before = await contentAt(rec, fe, p, ws);
-    let after;
-    if (isLatest) {
-      const nf = nowMap.get(p);
-      if (nf) after = nf.status === "D" ? null : readWorkFile(p, ws);
-      else {
-        const c = await gitShow("HEAD", p, ws);
-        after = c !== null && c.length > CONTENT_LIMIT ? { oversize: true } : c;
+  const numstat = new Map();
+  const seen = new Set();
+  for (const r of repos) {
+    const label = r.label ?? path.basename(r.path);
+    const root = r.path;
+    for (const c of r.commits ?? []) {
+      // -z: parseNameStatusZ speaks NUL-separated records
+      const baseArgs = ["diff", "--name-status", "-z", "-M", `${c.hash}^`, c.hash];
+      let nsR = await runGit(baseArgs, { cwd: root });
+      if (!nsR.ok) nsR = await runGit(["diff", "--name-status", "-z", "-M", EMPTY_TREE, c.hash], { cwd: root });
+      const numR = await runGit(["diff", "--numstat", "-M", `${c.hash}^`, c.hash], { cwd: root });
+      const nums = numstatMapOf(numR.ok ? numR.out : "");
+      for (const f of parseNameStatusZ(nsR.out)) {
+        const key = `${label}/${f.path}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        entries.push({
+          status: f.status, path: key,
+          ...(f.oldPath ? { oldPath: `${label}/${f.oldPath}` } : {}),
+          repo: root, repoLabel: label, commit: c.short, note: `commit ${c.short} · ${c.subject}`,
+          _src: { commit: c.hash, rel: f.path, oldRel: f.oldPath },
+        });
+        const n = nums.get(f.path);
+        if (n) numstat.set(key, n);
       }
-    } else {
-      after = await contentAt(next, fn, p, ws);
     }
-    // oversize en ambos lados: sin contenido comparable, el archivo se omite.
-    if (before?.oversize && after?.oversize) continue;
-    if (before === after) continue;
-    if (before === null && after === null) continue;
-    const status = before === null ? "A" : after === null ? "D" : "M";
-    if (before?.oversize || after?.oversize) {
-      entries.push({ status, path: p, note: "archivo muy grande — sin contenido en este turno" });
-      continue;
+    for (const f of r.dirty ?? []) {
+      const key = `${label}/${f.path}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({
+        status: f.status, path: key,
+        ...(f.oldPath ? { oldPath: `${label}/${f.oldPath}` } : {}),
+        repo: root, repoLabel: label, note: "sin commitear",
+        _src: { dirty: true, rel: f.path, oldRel: f.oldPath },
+      });
     }
-    entries.push({ status, path: p, before: before ?? "", after: after ?? "", patch: undefined });
+    // counts for the dirty side: one numstat vs HEAD per repo (untracked files
+    // fall back to content-length counting inside enrichFiles)
+    if ((r.dirty ?? []).length) {
+      const dnR = await runGit(["diff", "--numstat", "-M", "HEAD"], { cwd: root });
+      const dnums = numstatMapOf(dnR.ok ? dnR.out : "");
+      for (const f of r.dirty ?? []) {
+        const n = dnums.get(f.path);
+        const key = `${label}/${f.path}`;
+        if (n && !numstat.has(key)) numstat.set(key, n);
+      }
+    }
   }
+  await enrichFiles({
+    entries,
+    numstat,
+    getBefore: (f) =>
+      f._src.dirty
+        ? f.status === "A" || f.status === "?"
+          ? Promise.resolve(null)
+          : gitShow("HEAD", f._src.oldRel ?? f._src.rel, f.repo)
+        : gitShow(`${f._src.commit}^`, f._src.oldRel ?? f._src.rel, f.repo).then((c) => c ?? ""),
+    getAfter: (f) =>
+      f._src.dirty
+        ? f.status === "D"
+          ? Promise.resolve(null)
+          : Promise.resolve(readWorkFile(f._src.rel, f.repo))
+        : gitShow(f._src.commit, f._src.rel, f.repo).then((c) => c ?? ""),
+    buildPatches: null,
+    cwd: activeWorkspace,
+  });
+  return entries;
+}
 
-  for (const f of entries) {
-    if (f.before === undefined) continue;
-    const n = await numstatBetween(f.before, f.after);
-    f.added = n.added;
-    f.deleted = n.deleted;
-    if (n.added === "-") f.binary = true;
+// Diff de un turno: "latest" = turno EN VIVO (ventana abierta hasta ahora);
+// un id = turno guardado. Multi-repo: cada archivo viaja con repoLabel.
+export async function buildTurnDiff(id, { workspace = activeWorkspace } = {}) {
+  let rec;
+  let isLive = false;
+  if (id === "latest" && openTurn) {
+    isLive = true;
+    const stopMs = Date.now();
+    const snap = tapSnapshot();
+    const { repos, outside } = await collectTurnChanges({
+      cwd: openTurn.cwd,
+      startMs: openTurn.startMs,
+      stopMs,
+      touched: snap.touched,
+      gitRoots: snap.gitRoots,
+    });
+    rec = {
+      id: "latest",
+      workspace: openTurn.cwd,
+      prompt: openTurn.prompt,
+      reply: "",
+      startedAt: new Date(openTurn.startMs).toISOString(),
+      stoppedAt: new Date(stopMs).toISOString(),
+      repos,
+      outside,
+    };
+  } else {
+    rec = readTurnFiles().find((t) => t.id === id) ?? null;
+    if (!rec && id === "latest") {
+      // sin turno abierto: el último guardado
+      rec = readTurnFiles()[0] ?? null;
+    }
+    if (!rec) {
+      if (id !== "latest")
+        return { error: "unknown_turn", message: `No encontré el turno "${id}".`, workspace, files: [], fileCount: 0 };
+      return {
+        error: "no_turns",
+        message: "Todavía no hay turnos registrados. Cada mensaje en la sesión abre un turno y lo cierra al terminar la respuesta.",
+        workspace,
+        files: [],
+        fileCount: 0,
+      };
+    }
   }
-
+  const entries = await turnEntries(rec.repos ?? []);
   const pruned = pruneList(entries, false);
+  const atLabel = String(rec.startedAt ?? "").slice(11, 16);
   return {
-    workspace: ws,
-    branch: meta.branch,
-    head: meta.head,
+    workspace: rec.workspace || workspace,
+    head: "",
     mode: "turn",
-    turn: { id: rec.id, at: rec.at, prompt: rec.prompt, isLatest },
-    baseLabel: `turno ${rec.at.slice(11, 16)}`,
-    snapshotAt: rec.at,
+    turn: {
+      id: rec.id,
+      at: rec.startedAt,
+      stoppedAt: rec.stoppedAt,
+      prompt: rec.prompt,
+      reply: rec.reply ?? "",
+      isLive,
+      interrupted: Boolean(rec.interrupted),
+      repos: (rec.repos ?? []).map((r) => ({
+        label: r.label,
+        path: r.path,
+        commits: (r.commits ?? []).length,
+        dirty: (r.dirty ?? []).length,
+      })),
+      outside: rec.outside ?? [],
+    },
+    baseLabel: `turno ${atLabel}`,
+    snapshotAt: rec.startedAt,
     dirty: entries.length > 0,
     truncated: pruned.truncated,
     fileCount: entries.length,
@@ -882,35 +1019,48 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace } = {}) {
   };
 }
 
-export function listTurns({ workspace = activeWorkspace } = {}) {
-  const turns = loadTurns(workspace)
-    .map((t, i, arr) => ({
-      id: t.id,
-      at: t.at,
-      prompt: t.prompt,
-      head: t.head,
-      seq: i,
-      isLatest: i === arr.length - 1,
-    }))
-    .reverse();
-  return { workspace, count: turns.length, turns };
+export function listTurns() {
+  const recs = readTurnFiles();
+  const turns = recs.map((t) => ({
+    id: t.id,
+    at: t.startedAt,
+    stoppedAt: t.stoppedAt,
+    prompt: t.prompt,
+    reply: t.reply ?? "",
+    workspace: t.workspace,
+    repoCount: (t.repos ?? []).length,
+    fileCount: turnFileCount(t),
+    isLive: false,
+    interrupted: Boolean(t.interrupted),
+  }));
+  if (openTurn)
+    turns.unshift({
+      id: "latest",
+      at: new Date(openTurn.startMs).toISOString(),
+      stoppedAt: "",
+      prompt: openTurn.prompt,
+      reply: "",
+      workspace: openTurn.cwd,
+      repoCount: 0,
+      fileCount: 0,
+      isLive: true,
+    });
+  return { count: turns.length, turns };
 }
 
-// Borrar un turno: su registro sale del índice — el turno ANTERIOR pasa a
-// diffear contra la foto siguiente que quede (o el working tree si era el
-// último). Los blobs quedan huérfanos en .git/objects (el gc de git los
-// recoge).
 export function deleteTurn(id, { workspace = activeWorkspace } = {}) {
-  const turns = loadTurns(workspace);
-  const i = turns.findIndex((t) => t.id === id);
-  if (i === -1) return { error: "unknown_turn", message: `No encontré el turno "${id}".` };
-  turns.splice(i, 1);
-  saveTurns(workspace, turns);
-  return { ok: true, remaining: turns.length };
+  const rec = readTurnFiles().find((t) => t.id === id);
+  if (!rec) return { error: "unknown_turn", message: `No encontré el turno "${id}".` };
+  try {
+    fs.rmSync(path.join(TURNS2_DIR, `${rec.id}.json`), { force: true });
+  } catch { /* ya no está */ }
+  return { ok: true, remaining: readTurnFiles().length };
 }
 
 export function clearTurns({ workspace = activeWorkspace } = {}) {
-  saveTurns(workspace, []);
+  try {
+    fs.rmSync(TURNS2_DIR, { recursive: true, force: true });
+  } catch { /* nada que borrar */ }
   return { ok: true, remaining: 0 };
 }
 
@@ -1151,18 +1301,18 @@ const TOOLS = [
   {
     name: "list_turns",
     description:
-      "List the recorded turns of the active workspace (newest first): every user prompt snapshots the workspace state, so each turn's diff shows exactly what that prompt achieved (commits included). Each entry: id, timestamp, full prompt text, isLatest.",
+      "List recorded turns (newest first, GLOBAL across sessions): a turn is one prompt→stop window. Each entry: id, startedAt/stoppedAt, the user prompt, the agent's reply summary, how many repos/worktrees were touched and how many files changed. The first entry may be the OPEN turn (isLive).",
     inputSchema: { type: "object", properties: {} },
     annotations: { readOnlyHint: true },
   },
   {
     name: "get_turn_diff",
     description:
-      "Get the diff of one turn (state at its prompt vs state at the next prompt; 'latest' diffs against the live working tree). Same JSON shape as get_diff. Opens the Diff Ask panel on that turn.",
+      "Get the diff of one turn: every commit made DURING the window and every file left dirty, across ALL repos the turn touched (agents commit per unit, often in .worktrees of other repos — paths are namespaced by repo label). 'latest' returns the open turn live; same JSON shape as get_diff. Opens the Diff Ask panel on that turn.",
     inputSchema: {
       type: "object",
       properties: {
-        turn: { type: "string", description: "Turn id, or 'latest' for the live last turn." },
+        turn: { type: "string", description: "Turn id, or 'latest' for the open/last turn." },
       },
       required: ["turn"],
     },
@@ -1173,8 +1323,7 @@ const TOOLS = [
   },
   {
     name: "delete_turn",
-    description:
-      "Delete one recorded turn (the panel's ✕). The previous turn then diffs against the next remaining snapshot; orphaned git blobs are collected by git gc.",
+    description: "Delete one recorded turn (the panel's ✕).",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string" } },
@@ -1199,7 +1348,7 @@ const TOOLS = [
   },
   {
     name: "clear_turns",
-    description: "Delete ALL recorded turns of the active workspace (the panel's 'Borrar todo').",
+    description: "Delete ALL recorded turns (the panel's 'Borrar todo').",
     inputSchema: { type: "object", properties: {} },
   },
   {

@@ -40,14 +40,14 @@ const app = new App({ name: "diff-ask", version: "0.1.0" }, {});
 //   commits   → historial: últimos commits / búsqueda por hash o título;
 //               un click abre el diff de ese commit (vs primer padre)
 const MODES = [
-  { id: "working", label: "Trabajo", title: "Cambios sin commitear vs HEAD (+ untracked)" },
+  { id: "turns", label: "Turnos", title: "Turno a turno: qué cambió en cada uno — commits y archivos sucios de TODOS los repos/worktrees que tocó (el último, en vivo)" },
   { id: "unpushed", label: "Sin pushear", title: "Commits sin pushear + cambios locales vs el upstream" },
-  { id: "turns", label: "Turnos", title: "Qué logró cada turno (de tu prompt al siguiente); el último, en vivo" },
+  { id: "working", label: "Trabajo por repositorio", title: "Cambios sin commitear del repositorio elegido con 📁 (vs HEAD + untracked)" },
   { id: "commits", label: "Commits", title: "Historial de commits: buscá por hash o título, abrí el diff de uno" },
 ];
-let mode = "working";
+let mode = "turns";
 let commitSel = null; // hash en vista de diff de commit (null = lista)
-let turnSel = null;   // id de turno en vista (null = lista; "latest" = último)
+let turnSel = "latest"; // id de turno en vista (null = lista; "latest" = vivo/último)
 let turnsState = { list: [] };
 let commitsState = { query: "", skip: 0, list: [], hasMore: false };
 let subscribedUri = null;
@@ -62,8 +62,11 @@ function diffUriFor() {
 // Scope del mensaje: que el agente sepa QUÉ diff se le pregunta.
 function scopeLabel() {
   if (mode === "unpushed") return diffData?.upstream ? `sin pushear, vs ${diffData.upstream}` : "sin pushear";
-  if (mode === "turns" && diffData?.turn)
-    return `turno ${diffData.turn.at?.slice(11, 16) ?? ""}${diffData.turn.isLatest ? " (en vivo)" : ""}`.trim();
+  if (mode === "turns" && diffData?.turn) {
+    const tn = diffData.turn;
+    const repos = (tn.repos ?? []).map((r) => r.label).join(", ");
+    return `turno ${tn.at?.slice(11, 16) ?? ""}${tn.isLive ? " (en vivo)" : ""}${repos ? ` — repos: ${repos}` : ""}`.trim();
+  }
   if (mode === "commits" && diffData?.commit) return `commit ${diffData.commit.short} ${diffData.commit.subject ?? ""}`.trim();
   return "";
 }
@@ -392,7 +395,9 @@ function editingCount() {
 function editableNow(f) {
   if (typeof f.after !== "string" || f.binary || f.status === "D") return false;
   if (mode === "working" || mode === "unpushed") return true;
-  if (mode === "turns" && diffData?.turn?.isLatest) return true;
+  // turns are CROSS-REPO (files from worktrees of other repos, path
+  // namespaced "<repo>/<path>"): the inline editor writes through the active
+  // workspace and would hit the wrong repo — read-only there.
   return false;
 }
 
@@ -1457,9 +1462,10 @@ function renderSelUI(entry) {
   big.style.left = "2px"; // riel izquierdo (el número ya no ocupa cajita propia)
   big.onclick = () => openComposerMulti(entry);
   layer.appendChild(big);
-  // ↩ revert: los bloques cubiertos por la selección vuelven al original
-  // (estilo IDE). Sólo si hay before completo — archivo nuevo no tiene original.
-  if (typeof entry.fileData?.before === "string") {
+  // Chunk revert (IDE-style): the blocks covered by the selection go back to
+  // the original. Needs full before content; turns are CROSS-REPO/read-only
+  // (the write would land in the wrong active repo).
+  if (typeof entry.fileData?.before === "string" && mode !== "turns") {
     const rev = document.createElement("button");
     rev.className = "big-plus big-revert";
     rev.textContent = "↩";
@@ -3055,8 +3061,9 @@ function renderFileInner(f) {
   // 28/10. Los flujos siguen: pintar acumula con coexistencia por chars, el
   // popup ＋/↩ aparece tras cada pintada, Enter ejecuta el revert de todo lo
   // pintado y el ＋ del popup pregunta por los fragmentos pintados.)
-  // ↩ revert de TODO el archivo (sólo modificados con before completo)
-  if (typeof f.before === "string" && f.status !== "A" && f.status !== "?") {
+  // Whole-file revert (only modified files with full before content; turns are
+  // cross-repo/read-only — the write would land in the wrong active repo).
+  if (typeof f.before === "string" && f.status !== "A" && f.status !== "?" && mode !== "turns") {
     const revBtn = document.createElement("button");
     revBtn.className = "ghost frev";
     revBtn.textContent = "↩";
@@ -3252,6 +3259,16 @@ function renderAll() {
   root.textContent = "";
 
   if (!diffData || diffData.error) {
+    // "no turns yet" is an EMPTY state, not a broken repo: no switch-repo
+    // call-to-action, just the message (the tab stays usable).
+    if (diffData?.error === "no_turns") {
+      renderModebar(root);
+      const st = document.createElement("div");
+      st.className = "state";
+      st.textContent = diffData.message ?? "Todavía no hay turnos.";
+      root.appendChild(st);
+      return;
+    }
     renderRepoError(root, diffData?.message ?? "Sin datos del diff.");
     return;
   }
@@ -3282,6 +3299,21 @@ function renderAll() {
     bits.push(`<b>${esc(c.short)}</b> ${esc(c.subject)}`);
     if (c.author || c.date) bits.push(esc([c.author, c.date].filter(Boolean).join(" · ")));
     if (diffData.isMerge) bits.push('<span class="tot-m">merge (vs primer padre)</span>');
+  } else if (mode === "turns" && diffData.turn) {
+    const tn = diffData.turn;
+    const from = tn.at?.slice(11, 16) ?? "";
+    const to = tn.stoppedAt ? ` → ${esc(tn.stoppedAt.slice(11, 16))}` : "";
+    bits.push(`<b>turno ${esc(from)}${to}</b>`);
+    if (tn.isLive) bits.push('<span class="tot-a">en vivo</span>');
+    if (tn.interrupted) bits.push('<span class="tot-m">interrumpido por el próximo prompt</span>');
+    for (const r of tn.repos ?? []) {
+      const c = r.commits ? ` · ${r.commits} commit${r.commits === 1 ? "" : "s"}` : "";
+      const d = r.dirty ? ` · ${r.dirty} sucio${r.dirty === 1 ? "" : "s"}` : "";
+      bits.push(`<b>${esc(r.label)}</b>${c}${d}`);
+    }
+    if (!(tn.repos ?? []).length) bits.push('<span class="tot-m">sin repos tocados</span>');
+    bits.push(`${diffData.fileCount} archivo${diffData.fileCount === 1 ? "" : "s"}`);
+    bits.push(`<span class="tot-a">+${t.added}</span>`, `<span class="tot-d">−${t.deleted}</span>`);
   } else {
     bits.push(`${esc(diffData.branch)} @ ${esc(diffData.head)}`);
     if (mode === "unpushed" && diffData.upstream) {
@@ -3289,10 +3321,6 @@ function renderAll() {
       if (diffData.ahead !== undefined) ab.push(`<span class="tot-a">↑${diffData.ahead}</span>`);
       if (diffData.behind !== undefined) ab.push(`<span class="tot-d">↓${diffData.behind}</span>`);
       bits.push(`${ab.join(" ")} vs ${esc(diffData.upstream)}`);
-    }
-    if (mode === "turns" && diffData.turn) {
-      bits.push(`<b>turno ${esc(diffData.turn.at?.slice(11, 16) ?? "")}</b>`);
-      if (diffData.turn.isLatest) bits.push('<span class="tot-a">en vivo</span>');
     }
     bits.push(`${diffData.fileCount} archivo${diffData.fileCount === 1 ? "" : "s"}`);
     bits.push(`<span class="tot-a">+${t.added}</span>`, `<span class="tot-d">−${t.deleted}</span>`);
@@ -3338,7 +3366,7 @@ function renderAll() {
 
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Modos arriba: Trabajo (vs HEAD) · Sin pushear (upstream) · Turnos (qué logró cada prompt; el último en vivo) · Commits. ⌘F busca en el diff (Enter cicla) · ＋/−/≡ filtran líneas agregadas/borradas/contexto. Click en un NÚMERO = seleccionarlo (arrastrás y pintás varios, salteados también) → ＋ grande abre la pregunta · hover en una línea → ＋ · ＋ del encabezado = archivo. Abajo: libres; ⌘↵ manda todo junto.";
+  hint.textContent = "Modos arriba: Turnos (qué cambió en cada turno, en TODOS los repos; el último en vivo) · Sin pushear (upstream) · Trabajo por repositorio (sin commitear vs HEAD, del repo elegido con 📁) · Commits. ⌘F busca en el diff (Enter cicla) · ＋/−/≡ filtran líneas agregadas/borradas/contexto. Click en un NÚMERO = seleccionarlo (arrastrás y pintás varios, salteados también) → ＋ grande abre la pregunta · hover en una línea → ＋ · ＋ del encabezado = archivo. Abajo: libres; ⌘↵ manda todo junto.";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
@@ -3515,8 +3543,8 @@ function openPromptCard(turn) {
   card.innerHTML = `
     <div class="ie-head"><span class="anchor"></span><button class="ghost close" title="Cerrar (Esc)">✕</button></div>
     <pre></pre>`;
-  card.querySelector(".anchor").textContent = `Turno ${turn.at?.slice(11, 16) ?? ""} — tu prompt completo`;
-  card.querySelector("pre").textContent = turn.prompt || "(sin texto)";
+  card.querySelector(".anchor").textContent = `Turno ${turn.at?.slice(11, 16) ?? ""} — prompt y resumen`;
+  card.querySelector("pre").textContent = [turn.prompt || "(sin texto)", turn.reply ? `\n— resumen del agente —\n${turn.reply}` : ""].join("");
   card.querySelector(".close").onclick = () => card.remove();
   document.addEventListener("keydown", function esc(e) {
     if (e.key === "Escape") { card.remove(); document.removeEventListener("keydown", esc); }
@@ -3552,7 +3580,7 @@ function renderTurns() {
   const clear = document.createElement("button");
   clear.className = "ghost danger";
   clear.textContent = "🗑 Borrar todo";
-  clear.title = "Borrar todos los turnos de esta carpeta";
+  clear.title = "Borrar TODOS los turnos (global, todas las sesiones)";
   clear.onclick = () => {
     if (clear.dataset.armed) {
       app.callServerTool({ name: "clear_turns", arguments: {} })
@@ -3574,7 +3602,7 @@ function renderTurns() {
   if (!turnsState.list.length) {
     const st = document.createElement("div");
     st.className = "state";
-    st.textContent = "Todavía no hay turnos. Cada mensaje tuyo en la sesión (desktop o Telegram) registra uno automáticamente.";
+    st.textContent = "Todavía no hay turnos. Cada mensaje en la sesión abre un turno y el fin de la respuesta lo cierra: quedan los commits hechos y los archivos sucios de todos los repos que tocó.";
     root.appendChild(st);
     return;
   }
@@ -3588,21 +3616,31 @@ function renderTurns() {
     row.innerHTML = `
       <span class="turn-time"></span>
       <span class="turn-prompt"></span>
+      <span class="commit-meta turn-meta"></span>
       <span class="turn-live"></span>
-      <button class="ghost turn-prompt-btn" title="Ver el prompt completo">💬</button>
+      <button class="ghost turn-prompt-btn" title="Ver el prompt y el resumen del turno">💬</button>
       <button class="ghost danger turn-del" title="Borrar este turno">✕</button>`;
     row.querySelector(".turn-time").textContent = `${day} ${time}`;
     row.querySelector(".turn-prompt").textContent = (t.prompt || "(sin texto)").split("\n")[0];
-    row.querySelector(".turn-prompt").title = t.prompt || "";
-    if (t.isLatest) row.querySelector(".turn-live").textContent = "en vivo";
+    row.querySelector(".turn-prompt").title = [t.prompt, t.reply].filter(Boolean).join("\n\n");
+    const meta = [];
+    if (t.repoCount) meta.push(`${t.repoCount} repo${t.repoCount === 1 ? "" : "s"}`);
+    if (t.fileCount) meta.push(`${t.fileCount} archivo${t.fileCount === 1 ? "" : "s"}`);
+    if (t.reply) meta.push(`💬 ${t.reply.split("\n")[0].slice(0, 90)}`);
+    row.querySelector(".turn-meta").textContent = meta.join(" · ");
+    if (t.isLive) row.querySelector(".turn-live").textContent = "en vivo";
+    else row.querySelector(".turn-del").remove(); // live row has no file to delete
+    if (t.interrupted) row.querySelector(".turn-live").textContent = "interrumpido";
     row.querySelector(".turn-prompt-btn").onclick = (e) => {
       e.stopPropagation();
       openPromptCard(t);
     };
-    row.querySelector(".turn-del").onclick = (e) => {
-      e.stopPropagation();
-      deleteTurnById(t.id);
-    };
+    const delBtn = row.querySelector(".turn-del");
+    if (delBtn)
+      delBtn.onclick = (e) => {
+        e.stopPropagation();
+        deleteTurnById(t.id);
+      };
     row.onclick = () => {
       turnSel = t.id;
       refresh();

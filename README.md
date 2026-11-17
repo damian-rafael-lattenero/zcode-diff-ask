@@ -50,7 +50,8 @@ Documentación de profundidad:
 | Feature | Dónde |
 |---|---|
 | Diff vivo reactivo (fs.watch → firma git → SSE) | server + panel |
-| 4 modos: Trabajo / Sin pushear / Turnos 📸 / Commits | server (`diff://workspace?mode=…`) |
+| 4 modos (orden): **Turnos** (default) / Sin pushear / Trabajo por repositorio / Commits | server (`diff://workspace?mode=…`) |
+| Turnos v2: ventana prompt→stop por hooks (UserPromptSubmit/Stop), FSEvents sobre $HOME, commits de la ventana + sucios al final, agrupado por repo/worktree | `turns2/` + `turn-tap.nu` |
 | Preguntas ancladas ＋ (línea, rango de cajitas, archivo) | panel + skill |
 | Revert por línea (riel derecho), por selección, por archivo | `revertLines` (lib) |
 | **Pincel quirúrgico**: pintar chars/palabras, coexistencia por chars, Enter, brocha acumulativa sin popups | `revertFrags` + `surgeryLine`/`restoreOldWords` (lib) |
@@ -107,12 +108,12 @@ Decisiones clave (resumen; el detalle con el por qué en
 
 | Nivel | Qué | Cantidad | Tiempo |
 |---|---|---|---|
-| Unit | lib.js pura + server MCP (con repos git reales en tmp) | 100 | **~9 s** |
+| Unit | lib.js pura + server MCP (con repos git reales en tmp) | 101 | **~9 s** |
 | Integración | lib → `write_file` → `git diff` cierra el circuito en repo tmp real | (dentro de unit) | — |
-| E2E | Chromium real + CDP, **mouse y teclado reales**, panel dist real + server real, cada revert verificado con git | 146 checks | **~2 min** (la sección del mega commit suma render de 600 secciones) |
+| E2E | Chromium real + CDP, **mouse y teclado reales**, panel dist real + server real, cada revert verificado con git | 165 checks | **~2 min** (la sección del mega commit suma render de 600 secciones) |
 
 ```bash
-npm test          # 100 unit + integración (~9 s)
+npm test          # 101 unit + integración (~9 s)
 npm run test:e2e  # rig completo con mouse real (~2 min)
 ```
 
