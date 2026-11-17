@@ -21,6 +21,8 @@
 //     it the mode chips + folder picker still respond — no brick (0.9.21)
 //   - dead workspace (repo deleted while open): the panel WARNS and its
 //     "Elegir otra carpeta" button leads back to a valid repo (0.9.24)
+//   - turns v2 (0.9.26): the panel boots on Turnos; one turn records a dirty
+//     file of the session repo AND a commit of a SECOND repo, namespaced
 // Uso: node tests/e2e/revert.e2e.mjs   (requiere Google Chrome instalado)
 
 import { spawn, execFileSync } from "node:child_process";
@@ -55,8 +57,12 @@ function check(cond, label, extra = "") {
 execFileSync("node", [path.join(HERE, "apply-fixture-mods.mjs")], { stdio: "inherit" });
 
 // ------------------------------------------------ server MCP real (stdio)
+// Hermetic plugin state (turns store, inbox, shelved): a tmp dir, never the
+// real ~/.zcode/diff-ask — the turn tap tests write events into it.
+const TURN_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "da-e2e-state-"));
+const TURN_INBOX = path.join(TURN_STATE, "turn-events.jsonl");
 const server = spawn("node", [path.join(REPO, "diff-ask/server/server.mjs")], {
-  env: { ...process.env, ZCODE_WORKSPACE_ROOT: REPO },
+  env: { ...process.env, ZCODE_WORKSPACE_ROOT: REPO, ZCODE_DIFF_ASK_STATE: TURN_STATE },
   stdio: ["pipe", "pipe", "pipe"],
 });
 let rpcId = 0;
@@ -366,16 +372,29 @@ if ((await evalJs(`typeof __DA`).catch(() => "x")) !== "object") {
   console.error("BOOT FAIL — body:", await evalJs(`JSON.stringify((document.body?.innerText ?? "").slice(0, 120))`).catch(() => "?"));
   console.error("BOOT FAIL — scripts:", await evalJs(`[...document.scripts].map((s) => s.src || "inline " + (s.textContent ?? "").length).join(" | ").slice(0, 200)`).catch(() => "?"));
 }
-await evalJs(`__DA.refresh(true)`);
-await (async () => {
-  const t0 = Date.now();
-  while (Date.now() - t0 < 8000) {
-    if (await evalJs(`__DA.rendered.size >= 9`)) return;
-    await sleep(150);
-  }
-  throw new Error("el panel no renderizó los 9 archivos del fixture");
-})();
-log(`panel: ${await evalJs("__DA.rendered.size")} archivos en el diff (Trabajo vs HEAD)`);
+if (true) {
+  // 0.9.26: the panel boots on TURNOS (first tab). Assert it, then switch to
+  // the working diff — every gesture section below operates on that view.
+  const bootTab = await evalJs(`(() => {
+    const t = document.querySelector('.modebar button[data-mode="turns"]');
+    const w = document.querySelector('.modebar button[data-mode="working"]');
+    return { turnsActive: !!t?.classList.contains("active"), hasWorking: !!w };
+  })()`);
+  log(`boot tab: Turnos=${bootTab.turnsActive} (esperado true), chip Trabajo=${bootTab.hasWorking}`);
+  if (!bootTab.turnsActive || !bootTab.hasWorking)
+    fails.push(`boot: la primera pestaña debe ser Turnos y existir el chip de trabajo (${JSON.stringify(bootTab)})`);
+  await evalJs(`document.querySelector('.modebar button[data-mode="working"]')?.click()`);
+  await evalJs(`__DA.refresh(true)`);
+  await (async () => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 8000) {
+      if (await evalJs(`__DA.rendered.size >= 9`)) return;
+      await sleep(150);
+    }
+    throw new Error("el panel no renderizó los 9 archivos del fixture");
+  })();
+  log(`panel: ${await evalJs("__DA.rendered.size")} archivos en el diff (working, del repo elegido)`);
+}
 
 // ------------------------------------------------ mouse real
 const mouse = {
@@ -1363,6 +1382,70 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(await until(async () => (await askCount()) === 0, 3000), "T: el tacho borra TODAS las selecciones");
   check(await until(async () => (await markCount()) === 0, 3000), "T: y no queda ninguna marca pintada");
   await shot("19-asks-borrables.png");
+
+  // ============ U. turnos v2: un turno, DOS repos (0.9.26) ============
+  // The turn tap listens on the plugin inbox (prompt/stop events) and a
+  // home-wide FSEvents stream; at Stop it records commits made in the window
+  // and dirty files, grouped by repo. Fixture: a real second repo under the
+  // global agent-worktrees container (outside this checkout) + a dirty file
+  // in the fixture repo — both must show up namespaced in ONE turn.
+  const SECOND = path.join(os.homedir(), "Projects", ".worktrees", `da-e2e-turn-${Date.now().toString(36)}`);
+  execFileSync("git", ["init", "-q", "-b", "main", SECOND]);
+  execFileSync("git", ["-C", SECOND, "config", "user.email", "t@t"]);
+  execFileSync("git", ["-C", SECOND, "config", "user.name", "T"]);
+  fs.writeFileSync(path.join(SECOND, "x.txt"), "base\n");
+  execFileSync("git", ["-C", SECOND, "add", "-A"]);
+  execFileSync("git", ["-C", SECOND, "commit", "-qm", "base"]);
+  const U_DIRTY = "tests/diffs/u-turn-dirty.txt";
+  const sendTurnEvent = (ev) => fs.appendFileSync(TURN_INBOX, `${JSON.stringify(ev)}\n`);
+  sendTurnEvent({ type: "prompt", sid: "e2e-u", cwd: REPO, prompt: "U: hola turno de dos repos", at: new Date().toISOString() });
+  await sleep(500);
+  fs.writeFileSync(path.join(REPO, U_DIRTY), "linea sucia del turno\n"); // dirty in the fixture repo
+  fs.writeFileSync(path.join(SECOND, "x.txt"), "base\navance del turno\n");
+  execFileSync("git", ["-C", SECOND, "add", "-A"]);
+  execFileSync("git", ["-C", SECOND, "commit", "-qm", "feat: avance del turno"]);
+  await sleep(500);
+  sendTurnEvent({ type: "stop", sid: "e2e-u", cwd: REPO, reply: "U: listo, toqué dos repos", at: new Date().toISOString() });
+  check(await until(async () => (await evalJs(`!!document.querySelector(".modebar button[data-mode='turns']")`)), 3000), "U: la pestaña Turnos existe");
+  await evalJs(`document.querySelector('.modebar button[data-mode="turns"]')?.click()`);
+  await until(async () => !!(await evalJs(`document.querySelector(".header .back")`)), 5000);
+  await evalJs(`document.querySelector(".header .back")?.click()`); // ← Turnos: la lista
+  const rowU = await until(async () => (await evalJs(`(() => {
+    const rows = [...document.querySelectorAll(".turn-row")];
+    const row = rows.find((r) => (r.textContent ?? "").includes("dos repos"));
+    if (!row) return null;
+    const r = row.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, text: row.textContent.slice(0, 120) };
+  })()`)), 8000);
+  check(!!rowU, "U: el turno aparece en la lista de Turnos con su prompt");
+  if (!rowU) throw new Error("U: sin fila de turno — no puedo abrir el diff");
+  check((rowU?.text ?? "").includes("2 repo"), `U: la fila resume 2 repos (${JSON.stringify((rowU?.text ?? "").slice(0, 80))})`);
+  check((rowU?.text ?? "").includes("listo, toqué dos repos"), "U: la fila muestra el resumen del reply");
+  await click(rowU.x, rowU.y);
+  check(await until(async () => (await evalJs(`__DA.diffData?.mode ?? null`)) === "turn", 6000), "U: el click abre el diff del turno");
+  const uState = await evalJs(`(() => {
+    const d = __DA.diffData;
+    const paths = (d?.files ?? []).map((f) => f.path);
+    return {
+      repos: (d?.turn?.repos ?? []).map((r) => r.label),
+      hasDirty: paths.some((p) => p.endsWith("/" + ${JSON.stringify(U_DIRTY)})),
+      hasCommit: paths.some((p) => p.endsWith("/x.txt") && p.split("/")[0] !== ${JSON.stringify(path.basename(REPO))}),
+      editable: [...document.querySelectorAll(".file-head .fedit")].length,
+      revertable: [...document.querySelectorAll(".file-head .frev")].length,
+      meta: document.querySelector(".header .meta")?.textContent ?? "",
+    };
+  })()`);
+  check((uState.repos ?? []).length === 2, `U: el turno agrupa los DOS repos (${JSON.stringify(uState.repos)})`);
+  check(uState.hasDirty, "U: el archivo sucio del repo de la sesión está en el diff");
+  check(uState.hasCommit, "U: el COMMIT del segundo repo está en el diff");
+  check(uState.editable === 0 && uState.revertable === 0, `U: turno = read-only cross-repo (edit=${uState.editable} rev=${uState.revertable})`);
+  check((uState.meta ?? "").includes("2 archivo") || (uState.meta ?? "").includes("archivo"), `U: el header resume el turno (${JSON.stringify((uState.meta ?? "").slice(0, 90))})`);
+  await shot("20-turnos-dos-repos.png");
+  // limpieza: repo efímero + archivo sucio (el state dir es tmp del rig)
+  fs.rmSync(SECOND, { recursive: true, force: true });
+  fs.rmSync(path.join(REPO, U_DIRTY), { force: true });
+  await evalJs(`document.querySelector('.modebar button[data-mode="working"]')?.click()`);
+  await evalJs("__DA.refresh(true)");
 
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));
