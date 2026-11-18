@@ -1190,7 +1190,12 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   // own row loading) and the WHOLE cycle retries up to 3 times: focus/typing
   // races made the switch land late sometimes (workspace never switched
   // within the window, then appeared right after — retry until it sticks).
-  const switchWorkspace = async (want) => {
+  // switchWorkspace: the server CANONICALIZES the workspace (realpathSync,
+  // audit wave 5) — on macOS tmp dirs (/var/folders...) resolve to
+  // /private/var/... so the wanted path must be canonicalized too or the
+  // equality check never matches.
+  const switchWorkspace = async (rawWant) => {
+    const want = fs.realpathSync(rawWant);
     for (let attempt = 0; attempt < 3; attempt++) {
       const opened = await until(async () => {
         if (!(await evalJs(`!!document.querySelector(".ws-editor input")`))) {
@@ -1210,9 +1215,22 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
       await sleep(150);
       await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
       await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter" });
-      const ok = await until(async () => (await evalJs(`__DA.diffData?.workspace ?? null`)) === want, 6000);
+      // 12s per attempt: a switch under load (Chrome busy rendering the mega
+      // view, FSEvents bursts) can land past 6s but well before the next try
+      const ok = await until(async () => (await evalJs(`__DA.diffData?.workspace ?? null`)) === want, 12000);
       if (ok) return true;
     }
+    console.error("    diag switch:", JSON.stringify(await evalJs(`(() => ({
+      want: ${JSON.stringify(want)},
+      ws: __DA.diffData?.workspace ?? null,
+      mode: __DA.diffData?.mode ?? null,
+      error: __DA.diffData?.error ?? null,
+      errMsg: __DA.diffData?.message?.slice(0, 60) ?? null,
+      files: __DA.diffData?.files?.length ?? null,
+      picker: !!document.querySelector(".ws-picker"),
+      editor: !!document.querySelector(".ws-editor"),
+    }))()`)));
+    await shot("debug-switch.png");
     return false;
   };
   await clickAt("button.ws");
