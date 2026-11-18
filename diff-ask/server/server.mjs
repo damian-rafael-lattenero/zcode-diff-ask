@@ -50,6 +50,12 @@ const ENRICH_CONCURRENCY = 12;
 // Cap on captured git stdout (a mega-merge `git diff` can dump tens of MB —
 // buffering it all is pointless: the patch budget prunes it anyway).
 const GIT_OUT_CAP = 4_000_000;
+// Every git read is bounded (audit wave 5): an index lock or a filesystem
+// stall must fail the read, never hang the MCP tool call.
+const GIT_TIMEOUT_MS = 30_000;
+// The turn-path git reads share a bounded pool (audit wave 5): serial issue
+// made an N-commit turn cost N× the latency.
+const TURN_GIT_POOL = 4;
 // Exported for the unit tests (tests/server-mega-commit.test.mjs).
 export {
   MAX_CONTENT_FILES, MAX_LIST_FILES, ENRICH_CONCURRENCY, GIT_OUT_CAP,
@@ -74,7 +80,7 @@ const log = (...a) => process.stderr.write(`[diff-ask] ${a.join(" ")}\n`);
 
 // ---------------------------------------------------------------- git
 
-export function runGit(args, { cwd = activeWorkspace, expectDiffExit = false, maxOut = Infinity } = {}) {
+export function runGit(args, { cwd = activeWorkspace, expectDiffExit = false, maxOut = Infinity, timeoutMs = GIT_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
     const p = spawn("git", ["-C", cwd, ...args], {
       stdio: ["ignore", "pipe", "pipe"],
@@ -82,6 +88,17 @@ export function runGit(args, { cwd = activeWorkspace, expectDiffExit = false, ma
     let out = "";
     let err = "";
     let capped = false;
+    let timedOut = false;
+    // Bounded (audit wave 5): a git stuck on an index lock or a filesystem
+    // stall used to hang the whole MCP tool call — the timeout kills it and
+    // the caller sees an honest failure instead of a dead panel.
+    const timer = timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          p.kill("SIGKILL");
+        }, timeoutMs)
+      : null;
+    timer?.unref?.();
     p.stdout.on("data", (d) => {
       if (capped) return; // already killed: don't keep buffering past the cap
       out += d;
@@ -91,11 +108,16 @@ export function runGit(args, { cwd = activeWorkspace, expectDiffExit = false, ma
       }
     });
     p.stderr.on("data", (d) => (err += d));
-    p.on("error", () => resolve({ ok: false, out: "", err: "git binary not found" }));
+    p.on("error", () => {
+      if (timer) clearTimeout(timer);
+      resolve({ ok: false, out: "", err: "git binary not found" });
+    });
     p.on("close", (code) => {
+      if (timer) clearTimeout(timer);
       // capped: we killed it on purpose — the captured output is still valid.
-      const ok = capped || code === 0 || (expectDiffExit && code === 1);
-      resolve({ ok, out, err, capped });
+      const ok = !timedOut && (capped || code === 0 || (expectDiffExit && code === 1));
+      const reason = timedOut ? `${err} (timeout ${timeoutMs} ms)`.trim() : err;
+      resolve({ ok, out, err: reason, capped, timedOut });
     });
   });
 }
@@ -320,10 +342,19 @@ export async function setActiveWorkspace(input) {
     return { error: "invalid_path", message: `No existe: ${p}` };
   }
   if (!stats.isDirectory()) return { error: "invalid_path", message: `No es una carpeta: ${p}` };
-  const inside = await runGit(["rev-parse", "--is-inside-work-tree"], { cwd: p });
+  // REALPATH (audit wave 5): the panel keys its watchers, URIs and diff roots
+  // off ONE canonical path — a symlinked workspace used to make the watchers
+  // and the git CWD disagree about which tree is being diffed.
+  let real;
+  try {
+    real = fs.realpathSync(p);
+  } catch {
+    return { error: "invalid_path", message: `No existe: ${p}` };
+  }
+  const inside = await runGit(["rev-parse", "--is-inside-work-tree"], { cwd: real });
   if (!inside.ok)
-    return { error: "not_a_repo", message: `${p} no es un repositorio git. Diff Ask necesita git.` };
-  activeWorkspace = p;
+    return { error: "not_a_repo", message: `${real} no es un repositorio git. Diff Ask necesita git.` };
+  activeWorkspace = real;
   lastSig = null; // el próximo cálculo de firma difiere → notifica y refresca
   worktreeWatcher?.close();
   gitWatcher?.close();
@@ -331,8 +362,8 @@ export async function setActiveWorkspace(input) {
   gitWatcher = null;
   if (subs.size) ensureWatchers();
   ensureInboxWatcher();
-  log(`workspace activo → ${p}`);
-  return { ok: true, workspace: p };
+  log(`workspace activo → ${real}`);
+  return { ok: true, workspace: real };
 }
 
 // Lista los repos git LOCALES bajo una carpeta (chip 📁 del panel — spec
@@ -874,17 +905,28 @@ async function turnEntries(repos) {
   const entries = [];
   const numstat = new Map();
   const seen = new Set();
+  // The per-commit git reads run in the shared bounded pool (audit wave 5):
+  // serial issue made an N-commit turn cost N× the latency. Fetch in
+  // parallel, assemble in ORDER — the dedupe (first repo wins) and the
+  // panel's section order stay byte-identical.
+  const commitsOf = [];
+  for (const r of repos) for (const c of r.commits ?? []) commitsOf.push({ r, c });
+  const fetched = new Map();
+  await mapPool(commitsOf, TURN_GIT_POOL, async ({ r, c }) => {
+    // -z: parseNameStatusZ speaks NUL-separated records
+    let nsR = await runGit(["diff", "--name-status", "-z", "-M", `${c.hash}^`, c.hash], { cwd: r.path });
+    if (!nsR.ok) {
+      nsR = await runGit(["diff", "--name-status", "-z", "-M", EMPTY_TREE, c.hash], { cwd: r.path });
+    }
+    const numR = await runGit(["diff", "--numstat", "-M", `${c.hash}^`, c.hash], { cwd: r.path });
+    fetched.set(`${r.path}\0${c.hash}`, { nsR, nums: numstatMapOf(numR.ok ? numR.out : "") });
+  });
   for (const r of repos) {
     const label = r.label ?? path.basename(r.path);
     const root = r.path;
     for (const c of r.commits ?? []) {
-      // -z: parseNameStatusZ speaks NUL-separated records
-      const baseArgs = ["diff", "--name-status", "-z", "-M", `${c.hash}^`, c.hash];
-      let nsR = await runGit(baseArgs, { cwd: root });
-      if (!nsR.ok) nsR = await runGit(["diff", "--name-status", "-z", "-M", EMPTY_TREE, c.hash], { cwd: root });
-      const numR = await runGit(["diff", "--numstat", "-M", `${c.hash}^`, c.hash], { cwd: root });
-      const nums = numstatMapOf(numR.ok ? numR.out : "");
-      for (const f of parseNameStatusZ(nsR.out)) {
+      const got = fetched.get(`${root}\0${c.hash}`) ?? { nsR: { ok: false, out: "" }, nums: new Map() };
+      for (const f of parseNameStatusZ(got.nsR.out)) {
         const key = `${label}/${f.path}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -894,7 +936,7 @@ async function turnEntries(repos) {
           repo: root, repoLabel: label, commit: c.short, note: `commit ${c.short} · ${c.subject}`,
           _src: { commit: c.hash, rel: f.path, oldRel: f.oldPath },
         });
-        const n = nums.get(f.path);
+        const n = got.nums.get(f.path);
         if (n) numstat.set(key, n);
       }
     }
