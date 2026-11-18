@@ -172,10 +172,12 @@ test("setActiveWorkspace: cambia el workspace por defecto del server y valida", 
   // edito DESPUÉS del switch para probar que lee el activo en vivo.
   const ok = await setActiveWorkspace(b);
   assert.equal(ok.ok, true);
-  assert.equal(ok.workspace, b);
+  // the server reports the CANONICAL path (realpath: symlinks resolved — on
+  // macOS /var is a link to /private/var, so the assertion canonicalizes too)
+  assert.equal(ok.workspace, fs.realpathSync(b));
   fs.writeFileSync(path.join(b, "b.py"), "de B editado\n");
   const d = await buildDiff({ mode: "working" });
-  assert.equal(d.workspace, b);
+  assert.equal(d.workspace, fs.realpathSync(b));
   assert.deepEqual(d.files.map((f) => f.path), ["b.py"]);
 
   // vuelvo a A para no contaminar otros tests (los demás pasan workspace

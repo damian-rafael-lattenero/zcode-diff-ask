@@ -71,6 +71,6 @@ test("the active workspace can be re-pointed after it dies", async () => {
   assert.equal(okB.ok, true);
   const d = await buildDiff({ mode: "working" });
   assert.equal(d.error, undefined);
-  assert.equal(d.workspace, b);
+  assert.equal(d.workspace, fs.realpathSync(b)); // the canonical path, symlinks resolved
   await setActiveWorkspace(a); // restore default for other tests (path is gone → harmless)
 });
