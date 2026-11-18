@@ -1271,10 +1271,12 @@ function containerOf(node) {
   return null;
 }
 
-// diagSel: chip persistente arriba a la derecha que narra el flujo de
-// selección→popup (0.7.4). En la app no hay consola visible: cuando algo
-// "no funciona" este chip dice EN QUÉ gate murió, sin screenshots ni OCR.
+// diagSel: persistent top-right chip narrating the selection→popup flow.
+// TEST/E2E ONLY (18/11): in the real app it overlaid controls — it exists
+// only under the harnesses (or ?diag=1); otherwise a silent no-op.
 const diagSel = (() => {
+  if (!(window.__DA_TEST__ || window.__DA_E2E__ || new URLSearchParams(window.location.search).has("diag")))
+    return () => {};
   let el = null;
   return (msg) => {
     if (!el) {
@@ -3309,7 +3311,8 @@ function renderAll() {
     for (const r of tn.repos ?? []) {
       const c = r.commits ? ` · ${r.commits} commit${r.commits === 1 ? "" : "s"}` : "";
       const d = r.dirty ? ` · ${r.dirty} sucio${r.dirty === 1 ? "" : "s"}` : "";
-      bits.push(`<b>${esc(r.label)}</b>${c}${d}`);
+      const h = r.dirtyHidden ? ` (+${r.dirtyHidden} ruido oculto)` : "";
+      bits.push(`<b>${esc(r.label)}</b>${c}${d}${h}`);
     }
     if (!(tn.repos ?? []).length) bits.push('<span class="tot-m">sin repos tocados</span>');
     bits.push(`${diffData.fileCount} archivo${diffData.fileCount === 1 ? "" : "s"}`);

@@ -37,6 +37,7 @@ function makeRepo() {
 }
 function commitAt(dir, ms, file, content, msg) {
   const iso = new Date(ms).toISOString();
+  fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
   fs.writeFileSync(path.join(dir, file), content);
   git(dir, null, "add", "-A");
   git(dir, { GIT_AUTHOR_DATE: iso, GIT_COMMITTER_DATE: iso }, "commit", "-qm", msg);
@@ -155,4 +156,38 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
   clearTurns();
   assert.ok(listTurns().count <= 1); // only the live one may remain
   assert.equal((await buildTurnDiff("no-existe")).error, "unknown_turn");
+});
+
+test("turn dirty list: node_modules-style junk filtered + cap + hidden count", async () => {
+  const C = makeRepo();
+  commitAt(C, T0 - 100_000, "src/real.py", "ok\n", "base C");
+  await setActiveWorkspace(C);
+
+  sendEvent({ type: "prompt", sid: "sN", cwd: C, prompt: "turno con ruido", at: new Date(T0 + 300_000).toISOString() });
+  await processInbox();
+  // the agent touches ONE real file; the repo is full of untracked junk
+  // (node_modules without a .gitignore — Damian's 2052-file turn)
+  fs.writeFileSync(path.join(C, "src", "real.py"), "ok\nedit\n");
+  noteTapPath(path.join(C, "src", "real.py"));
+  for (let i = 0; i < 5; i++) {
+    fs.mkdirSync(path.join(C, "node_modules", "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(C, "node_modules", "pkg", `f${i}.md`), `junk ${i}\n`);
+  }
+  noteTapPath(path.join(C, "node_modules", "pkg", "f0.md"));
+  sendEvent({ type: "stop", sid: "sN", cwd: C, reply: "hecho", at: new Date(T0 + 360_000).toISOString() });
+  await processInbox();
+
+  const list = listTurns();
+  const turn = list.turns.find((t) => t.prompt === "turno con ruido");
+  assert.ok(turn, "el turno existe");
+  assert.equal(turn.fileCount, 1, "sólo el archivo real entra al turno");
+  const d = await buildTurnDiff(turn.id);
+  const repoC = d.turn.repos.find((r) => r.label === path.basename(C));
+  assert.equal(repoC.dirty, 1);
+  assert.equal(repoC.dirtyHidden, 5, "el ruido filtrado viaja como hidden count");
+  assert.equal(d.fileCount, 1);
+  const fileC = d.files.find((f) => f.path === `${path.basename(C)}/src/real.py`);
+  assert.ok(fileC, "el archivo real está en el payload");
+  assert.equal(fileC.after, "ok\nedit\n");
+  assert.ok(!d.files.some((f) => f.path.includes("node_modules")), "node_modules jamás en el payload");
 });

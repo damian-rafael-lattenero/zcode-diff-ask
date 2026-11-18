@@ -73,7 +73,10 @@ test("revert palabra cambiada: lib + writeFileGuarded + git diff cierran el circ
   fs.writeFileSync(file, CHANGED);
   const before = git(repo, "show", "HEAD:doc.md").split("\n");
   const after = CHANGED.split("\n");
-  const hunks = hunksFromUnified(git(repo, "diff", "-U3", "--", "doc.md"));
+  // --no-color: the app environment injects GIT_CONFIG color.ui=always, and
+  // the ANSI escapes break hunksFromUnified's ^@@ regex.
+  const diffText = git(repo, "diff", "--no-color", "-U3", "--", "doc.md");
+  const hunks = hunksFromUnified(diffText);
   assert.ok(hunks.length > 0, "hay hunks");
 
   // revert 1: pinto "delta2" (verde, palabra cambiada) → línea 3 al original
@@ -87,7 +90,7 @@ test("revert palabra cambiada: lib + writeFileGuarded + git diff cierran el circ
   // revert 2 (secuencial, con el diff NUEVO como hace el panel): pinto
   // "epsilon" en la fila ROJA de la línea 4 → la pareja vuelve entera
   const after2 = fs.readFileSync(file, "utf8").split("\n");
-  const hunks2 = hunksFromUnified(git(repo, "diff", "-U3", "--", "doc.md"));
+  const hunks2 = hunksFromUnified(git(repo, "diff", "--no-color", "-U3", "--", "doc.md"));
   const oldOff = BASE.split("\n")[4].indexOf("epsilon");
   const res2 = revertFrags(before, after2, hunks2, [{ side: "old", line: 5, offA: oldOff, offB: oldOff + 7 }]);
   const w2 = await writeFileGuarded({ path: "doc.md", content: res2.lines.join("\n"), base: after2.join("\n"), workspace: repo });

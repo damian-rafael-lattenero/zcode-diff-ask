@@ -605,6 +605,7 @@ const PROMPT_MAX = 100_000; // paranoia: prompts gigantes se recortan
 const REPLY_MAX = 8_000;
 const MAX_TURN_COMMITS = 40;
 const MAX_TURN_OUTSIDE = 300;
+const MAX_TURN_DIRTY = 300; // per repo, after the noise filter
 
 function wsKey(ws) {
   return createHash("sha1").update(ws).digest("hex").slice(0, 16);
@@ -807,13 +808,25 @@ async function collectTurnChanges({ cwd, startMs, stopMs, touched, gitRoots }) {
       .map(parseLogLine)
       .filter(Boolean);
     const stR = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: root });
-    const dirty = parsePorcelainZ(stR.out).map((f) => ({
+    // Repos can hold THOUSANDS of untracked junk files (node_modules without a
+    // .gitignore — Damian's 2052-file turn). The same noise rules as the tap
+    // apply to the dirty list, and a hard cap keeps any repo bounded; the
+    // hidden count travels so nothing is silently lost.
+    const allDirty = parsePorcelainZ(stR.out).map((f) => ({
       path: f.path,
       status: f.status,
       ...(f.oldPath ? { oldPath: f.oldPath } : {}),
     }));
+    const dirty = allDirty.filter((f) => !isTapNoise(f.path)).slice(0, MAX_TURN_DIRTY);
+    const dirtyHidden = allDirty.length - dirty.length;
     if (!commits.length && !dirty.length && !relSet.size) continue;
-    out.push({ path: root, label: path.basename(root), commits, dirty });
+    out.push({
+      path: root,
+      label: path.basename(root),
+      commits,
+      dirty,
+      ...(dirtyHidden > 0 ? { dirtyHidden } : {}),
+    });
   }
   return { repos: out, outside: outside.slice(0, MAX_TURN_OUTSIDE) };
 }
@@ -1048,6 +1061,7 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace } = {}) {
         path: r.path,
         commits: (r.commits ?? []).length,
         dirty: (r.dirty ?? []).length,
+        ...(r.dirtyHidden ? { dirtyHidden: r.dirtyHidden } : {}),
       })),
       outside: rec.outside ?? [],
     },
