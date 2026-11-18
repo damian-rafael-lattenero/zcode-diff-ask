@@ -1458,6 +1458,26 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(uState.hasCommit, "U: el COMMIT del segundo repo está en el diff");
   check(uState.editable === 0 && uState.revertable === 0, `U: turno = read-only cross-repo (edit=${uState.editable} rev=${uState.revertable})`);
   check((uState.meta ?? "").includes("2 archivo") || (uState.meta ?? "").includes("archivo"), `U: el header resume el turno (${JSON.stringify((uState.meta ?? "").slice(0, 90))})`);
+  // agrupación visual por repo: un encabezado por repo, cada uno con sus
+  // conteos, y sus archivos propios inmediatamente debajo
+  const groupsU = await evalJs(`(() => {
+    const heads = [...document.querySelectorAll(".turn-repo-head")];
+    return {
+      n: heads.length,
+      labels: heads.map((h) => h.querySelector(".trh-label")?.textContent),
+      counts: heads.map((h) => h.querySelector(".trh-counts")?.textContent ?? ""),
+    };
+  })()`);
+  check(groupsU.n === 2, `U: un encabezado por repo (${JSON.stringify(groupsU.labels)})`);
+  check(groupsU.labels?.includes(path.basename(REPO)) && groupsU.labels?.includes(path.basename(SECOND)), "U: los encabezados nombran los DOS repos");
+  check(groupsU.counts?.some((c) => c.includes("2 commits")), "U: el encabezado del segundo repo muestra sus 2 commits");
+  const orderU = await evalJs(`(() => {
+    const kids = [...document.getElementById("root").children];
+    const idx = kids.findIndex((k) => k.classList?.contains("turn-repo-head"));
+    const next = kids[idx + 1];
+    return { firstIsHead: idx >= 0, firstFilePrefix: next?.querySelector(".path")?.textContent?.slice(0, 40) ?? null };
+  })()`);
+  check(orderU.firstIsHead && (orderU.firstFilePrefix ?? "").startsWith(path.basename(REPO)), `U: el encabezado precede a SUS archivos (${JSON.stringify(orderU)})`);
   await shot("20-turnos-dos-repos.png");
   // limpieza: repo efímero + archivo sucio (el state dir es tmp del rig)
   fs.rmSync(SECOND, { recursive: true, force: true });

@@ -3392,7 +3392,35 @@ function renderAll() {
       collapsedPaths.add(f.path); // nace colapsado
     }
   }
-  for (const f of diffData.files) renderFile(f);
+  // Turns: files arrive grouped by repo (contiguous — the server emits them
+  // repo by repo). A header per group makes each file's repo visible at a
+  // glance; with a single repo no headers are added.
+  const repoCounts = new Map(
+    (diffData.turn?.repos ?? []).map((r) => [r.label, { commits: r.commits ?? 0, dirty: r.dirty ?? 0, dirtyHidden: r.dirtyHidden ?? 0 }]),
+  );
+  if (mode === "turns" && diffData.turn && (diffData.turn.repos ?? []).length > 1) {
+    let lastLabel = null;
+    for (const f of diffData.files) {
+      const label = f.repoLabel ?? "";
+      if (label !== lastLabel) {
+        lastLabel = label;
+        const counts = repoCounts.get(label);
+        const head = document.createElement("div");
+        head.className = "turn-repo-head";
+        head.innerHTML = `<span class="trh-icon">🗂</span><span class="trh-label"></span><span class="trh-counts"></span>`;
+        head.querySelector(".trh-label").textContent = label || "(sin repo)";
+        head.title = `Todos los archivos de este grupo pertenecen al repositorio ${(diffData.turn.repos.find((r) => r.label === label) ?? {}).path ?? label}`;
+        const c = counts?.commits ? ` · ${counts.commits} commit${counts.commits === 1 ? "" : "s"}` : "";
+        const d = counts?.dirty ? ` · ${counts.dirty} sucio${counts.dirty === 1 ? "" : "s"}` : "";
+        const h = counts?.dirtyHidden ? ` · +${counts.dirtyHidden} ruido oculto` : "";
+        head.querySelector(".trh-counts").textContent = `${c}${d}${h}`.trimStart();
+        root.appendChild(head);
+      }
+      renderFile(f);
+    }
+  } else {
+    for (const f of diffData.files) renderFile(f);
+  }
   applyLineFilter();
   // BORRADORES (ver keptComposers): los composers abiertos vuelven a su
   // sección — texto, listeners y foco intactos. Si el archivo salió del
