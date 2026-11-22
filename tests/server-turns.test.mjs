@@ -474,3 +474,57 @@ test("turn id determinista: re-finalización sobreescribe; interrumpido zombie N
   assert.equal(legacy[0].reply, "la buena", "gana la copia COMPLETADA");
   assert.equal(legacy[0].interrupted, false);
 });
+
+test("atribución cross-session: el repo de OTRA task activa NO entra a mi turno (y simétrico)", async () => {
+  clearTurns();
+  const A = makeRepo(); // this task's cwd
+  const B = makeRepo(); // the OTHER task's cwd
+  commitAt(A, T0 - 100_000, "a.py", "v1\n", "base A");
+  commitAt(B, T0 - 100_000, "b.py", "v1\n", "base B");
+
+  // Phase 1 runs as OUR session (each real server knows its sid: foreign
+  // prompts never supersede OUR open turn — the global-mode test process
+  // must emulate that or a foreign prompt would interrupt-spam records).
+  // NOTE: the inbox offset starts at EOF on the FIRST processInbox
+  // (cold-start rule) — process each event or the server never sees it.
+  process.env.ZCODE_SESSION_ID = "sess_mine";
+  sendEvent({ type: "prompt", sid: "sess_other-task", cwd: B, prompt: "otra task trabajando", at: new Date(T0 - 10_000).toISOString() });
+  await processInbox(); // foreign prompt: ignored as a turn, lands in the timeline
+  sendEvent({ type: "prompt", sid: "sess_mine", cwd: A, prompt: "mi turno", at: new Date(T0).toISOString() });
+  await processInbox();
+  fs.writeFileSync(path.join(A, "a.py"), "v1\nmia\n");
+  noteTapPath(path.join(A, "a.py"));
+  fs.writeFileSync(path.join(B, "b.py"), "v1\najena\n");
+  noteTapPath(path.join(B, "b.py"));
+  sendEvent({ type: "stop", sid: "sess_mine", cwd: A, reply: "ok", at: new Date(T0 + 5_000).toISOString() });
+  await processInbox();
+  sendEvent({ type: "stop", sid: "sess_other-task", cwd: B, reply: "ok", at: new Date(T0 + 6_000).toISOString() });
+  await processInbox(); // foreign stop: ignored (we never opened it)
+
+  try {
+    const d = await buildTurnDiff("latest");
+    const labels = (d.turn.repos ?? []).map((r) => r.label);
+    assert.ok(labels.includes(path.basename(A)), `mi repo está (${JSON.stringify(labels)})`);
+    assert.ok(!labels.includes(path.basename(B)), "el repo de la OTRA task NO entra a mi turno");
+  } finally {
+    process.env.ZCODE_SESSION_ID = "";
+  }
+
+  // Phase 2 runs as THEIR session (their own turn, after mine closed): they
+  // see THEIR repo — and not a trace of mine.
+  process.env.ZCODE_SESSION_ID = "sess_other-task";
+  sendEvent({ type: "prompt", sid: "sess_other-task", cwd: B, prompt: "su turno ahora", at: new Date(T0 + 10_000).toISOString() });
+  await processInbox();
+  fs.writeFileSync(path.join(B, "b.py"), "v1\nsuya\n");
+  noteTapPath(path.join(B, "b.py"));
+  sendEvent({ type: "stop", sid: "sess_other-task", cwd: B, reply: "ok B", at: new Date(T0 + 12_000).toISOString() });
+  await processInbox();
+  try {
+    const d2 = await buildTurnDiff("latest");
+    const labels2 = (d2.turn.repos ?? []).map((r) => r.label);
+    assert.ok(labels2.includes(path.basename(B)) && !labels2.includes(path.basename(A)),
+      `la otra task ve SU repo y no el mío (${JSON.stringify(labels2)})`);
+  } finally {
+    process.env.ZCODE_SESSION_ID = "";
+  }
+});

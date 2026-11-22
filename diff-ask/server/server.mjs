@@ -785,9 +785,75 @@ async function onTurnStop(ev) {
   await finalizeOpenTurn({ interrupted: false });
 }
 
+// ---- session timeline (whose cwd was active when) ------------------------
+// The $HOME-wide tap is machine-global: with several tasks open at once,
+// EVERY server's open turn used to claim every write — another task's
+// Turnos showed diff-ask files that a DIFFERENT session was editing
+// (Damian 22/11: "que atraiga hacia sí los cambios solo de la sesion/task").
+// Attribution rule: a repo that is the CWD of a DIFFERENT top-level session
+// whose turn was OPEN during this window is THAT session's work — excluded
+// here. Child sessions (sess_subagent_*, sess_workflow_*) never claim:
+// their worktrees belong to the parent task's story. The timeline parses
+// the global inbox ONCE per change (size+mtime cached).
+let inboxTimelineCache = null; // { key, intervals }
+
+function inboxTimeline() {
+  let key = "missing";
+  try {
+    const st = fs.statSync(TURN_INBOX);
+    key = `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return [];
+  }
+  if (inboxTimelineCache?.key === key) return inboxTimelineCache.intervals;
+  const openBySid = new Map(); // sid -> {sid, cwd, startMs}
+  const intervals = [];
+  let data = "";
+  try {
+    data = fs.readFileSync(TURN_INBOX, "utf8");
+  } catch { /* sin inbox */ }
+  for (const line of data.split("\n")) {
+    if (!line.trim()) continue;
+    const ev = parseTurnEvent(line);
+    if (!ev || !ev.sid) continue;
+    if (ev.type === "prompt") {
+      const prev = openBySid.get(ev.sid);
+      if (prev) intervals.push({ ...prev, endMs: ev.atMs - 1 });
+      openBySid.set(ev.sid, { sid: ev.sid, cwd: ev.cwd, startMs: ev.atMs });
+    } else {
+      const prev = openBySid.get(ev.sid);
+      if (prev) {
+        openBySid.delete(ev.sid);
+        intervals.push({ ...prev, endMs: ev.atMs });
+      }
+    }
+  }
+  for (const open of openBySid.values()) intervals.push({ ...open, endMs: null }); // still open
+  inboxTimelineCache = { key, intervals };
+  return intervals;
+}
+
+const CHILD_SESSION_PREFIXES = ["sess_subagent_", "sess_workflow_"];
+
+// CWDs of OTHER top-level sessions whose turn overlapped [startMs, stopMs].
+function foreignCwds(sid, startMs, stopMs) {
+  const out = new Set();
+  for (const iv of inboxTimeline()) {
+    if (!iv.cwd || iv.sid === sid) continue;
+    if (CHILD_SESSION_PREFIXES.some((p) => iv.sid.startsWith(p))) continue;
+    const end = iv.endMs ?? Number.MAX_SAFE_INTEGER;
+    if (iv.startMs <= stopMs && end >= startMs) out.add(iv.cwd);
+  }
+  return out;
+}
+
 // Reads everything a turn touched: per repo, the commits made in the window
 // and the dirty state left at the end. Shared by finalize and the live view.
-async function collectTurnChanges({ cwd, startMs, stopMs, touched, gitRoots }) {
+async function collectTurnChanges({ sid = "", cwd, startMs, stopMs, touched, gitRoots }) {
+  // Cross-session attribution: another task's live repo is theirs, not ours.
+  const foreignRoots = new Set(
+    [...foreignCwds(sid, startMs - 2000, stopMs + 2000)].map((c) => repoRootOf(c)).filter(Boolean),
+  );
   const home = os.homedir();
   const repos = new Map(); // root -> Set(rel)
   const outside = [];
@@ -805,6 +871,8 @@ async function collectTurnChanges({ cwd, startMs, stopMs, touched, gitRoots }) {
   }
   const cwdRoot = cwd ? repoRootOf(cwd) : null;
   if (cwdRoot && !repos.has(cwdRoot)) repos.set(cwdRoot, new Set());
+  // ...unless another task OWNS that repo (its cwd, its turn open): drop it.
+  for (const root of [...repos.keys()]) if (foreignRoots.has(root)) repos.delete(root);
 
   const sinceIso = new Date(startMs - 2000).toISOString();
   const untilIso = new Date(stopMs + 2000).toISOString();
@@ -876,6 +944,7 @@ async function finalizeOpenTurn({ interrupted }) {
   tapTouched.clear();
   tapGitRoots.clear();
   const { repos, outside } = await collectTurnChanges({
+    sid: t.sid,
     cwd: t.cwd,
     startMs: t.startMs,
     stopMs,
@@ -1192,6 +1261,7 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
     const stopMs = Date.now();
     const snap = tapSnapshot();
     const { repos, outside } = await collectTurnChanges({
+      sid: openTurn.sid,
       cwd: openTurn.cwd,
       startMs: openTurn.startMs,
       stopMs,
