@@ -646,6 +646,11 @@ export function isTapNoise(rel) {
     /(^|\/)(Library|\.Trash|Caches|\.cache|node_modules|\.venv|venv|__pycache__|\.next|DerivedData|\.gradle|\.m2|target\/debug|target\/release)(\/|$)/.test(p) ||
     /\.(log|lock|tmp|swp|swo|sqlite-wal|sqlite-shm)$/.test(p) ||
     p.startsWith(".zcode/diff-ask/") || // the tap's own state (avoid self-feedback)
+    // Derived install copies (0.10.6): marketplace/cache/registry mirrors of
+    // plugin repos — every session's install writes them, so machine-wide
+    // capture leaked them into EVERY open task's turn. The source-of-truth
+    // repo files are captured by the owning session via its own workspace.
+    p.startsWith(".zcode/cli/plugins/") ||
     p.startsWith(".zcode/cli/log/") ||
     p.startsWith(".zcode/cli/db/") ||
     p.startsWith(".zcode/cli/exec/") ||
@@ -683,9 +688,25 @@ export function repoRootOf(absPath) {
 }
 
 let tapWatcher = null;
-const tapTouched = new Set(); // ABSOLUTE paths, files only
+const tapTouched = new Map(); // ABSOLUTE path -> last touch ms (attribution of the "~" group)
 const tapGitRoots = new Set(); // repos whose .git changed (commits happen here)
 let openTurn = null; // { sid, cwd, prompt, startMs, reply?, stopMs? }
+
+// The session's TERRITORY (0.10.6, Damian: "solo de la sesion/task"): the
+// workspace tree, the agent-worktree containers, and ~/.zcode (session
+// state — plans, memories). Writes anywhere else on the machine belong to
+// other tasks or daemons and are NEVER captured, so they cannot leak into
+// another task's turn.
+function inTerritory(abs) {
+  const cwd = openTurn?.cwd;
+  if (cwd) {
+    const root = repoRootOf(cwd) ?? cwd;
+    if (abs === root || abs.startsWith(root + path.sep)) return true;
+  }
+  if (abs.startsWith(os.homedir() + path.sep + ".zcode" + path.sep)) return true;
+  if (abs.includes(`${path.sep}.worktrees${path.sep}`)) return true;
+  return false;
+}
 
 // Accepts an absolute path or one relative to $HOME (the watcher's form).
 // Exported so tests can inject paths without a real FSEvents stream.
@@ -697,12 +718,15 @@ export function noteTapPath(raw) {
   const gitAt = abs.indexOf(`${path.sep}.git${path.sep}`);
   if (gitAt >= 0 || abs.endsWith(`${path.sep}.git`)) {
     const root = gitAt >= 0 ? abs.slice(0, gitAt) : abs.slice(0, -5);
-    if (root) tapGitRoots.add(root);
+    // A commit marker counts only inside our territory (a foreign repo's
+    // .git is another task's business).
+    if (root && inTerritory(root)) tapGitRoots.add(root);
     return;
   }
   const noiseTarget = abs.startsWith(home + path.sep) ? path.relative(home, abs) : abs;
   if (isTapNoise(noiseTarget)) return;
-  if (tapTouched.size < 5000) tapTouched.add(abs);
+  if (!inTerritory(abs)) return;
+  if (tapTouched.size < 5000) tapTouched.set(abs, Date.now());
 }
 
 function ensureTapWatcher() {
@@ -718,7 +742,7 @@ function ensureTapWatcher() {
 
 // Current touched set, exported for tests and for the live diff.
 export function tapSnapshot() {
-  return { touched: [...tapTouched], gitRoots: [...tapGitRoots] };
+  return { touched: [...tapTouched.entries()], gitRoots: [...tapGitRoots] };
 }
 
 // ----------------------------------------------------------- inbox de turnos
@@ -766,8 +790,14 @@ async function onTurnPrompt(ev) {
   // known session (CLI/tests/rig) the old global behavior applies.
   const sid = currentSid();
   if (sid && ev.sid && ev.sid !== sid) return;
-  // a new prompt supersedes an unfinished turn (persisted as interrupted)
-  if (openTurn) await finalizeOpenTurn({ interrupted: true });
+  // a new prompt supersedes an unfinished turn (persisted as interrupted) —
+  // but a ZOMBIE window (older than the open cap) is silently dropped: it is
+  // not a real interruption and persisting it spams interrupted records with
+  // stoppedAt=now (measured tonight: October windows re-written as chains).
+  if (openTurn && Date.now() - openTurn.startMs <= TURN_OPEN_MAX_MS) {
+    await finalizeOpenTurn({ interrupted: true });
+  }
+  openTurn = null;
   openTurn = { sid: ev.sid, cwd: ev.cwd, prompt: ev.prompt.slice(0, PROMPT_MAX), startMs: ev.atMs };
   tapTouched.clear();
   tapGitRoots.clear();
@@ -835,16 +865,35 @@ function inboxTimeline() {
 
 const CHILD_SESSION_PREFIXES = ["sess_subagent_", "sess_workflow_"];
 
+// Timeline staleness cap: a prompt without a stop older than this is a
+// ZOMBIE window (a server that died mid-turn — October windows were still
+// "open" today, polluting every overlap computation). After the cap the
+// interval no longer overlaps anything.
+const TURN_OPEN_MAX_MS = 2 * 60 * 60 * 1000;
+
 // CWDs of OTHER top-level sessions whose turn overlapped [startMs, stopMs].
 function foreignCwds(sid, startMs, stopMs) {
   const out = new Set();
   for (const iv of inboxTimeline()) {
     if (!iv.cwd || iv.sid === sid) continue;
     if (CHILD_SESSION_PREFIXES.some((p) => iv.sid.startsWith(p))) continue;
-    const end = iv.endMs ?? Number.MAX_SAFE_INTEGER;
+    const end = Math.min(iv.endMs ?? Number.MAX_SAFE_INTEGER, iv.startMs + TURN_OPEN_MAX_MS);
     if (iv.startMs <= stopMs && end >= startMs) out.add(iv.cwd);
   }
   return out;
+}
+
+// Was ANOTHER top-level session's turn open at instant `ms`? (Attribution of
+// the outside-git group: a loose file touched inside someone else's open
+// window is their write.)
+function foreignActiveAt(mySid, ms) {
+  for (const iv of inboxTimeline()) {
+    if (!iv.cwd || iv.sid === mySid) continue;
+    if (CHILD_SESSION_PREFIXES.some((p) => iv.sid.startsWith(p))) continue;
+    const end = Math.min(iv.endMs ?? Number.MAX_SAFE_INTEGER, iv.startMs + TURN_OPEN_MAX_MS);
+    if (iv.startMs <= ms && ms <= end) return true;
+  }
+  return false;
 }
 
 // Reads everything a turn touched: per repo, the commits made in the window
@@ -857,12 +906,17 @@ async function collectTurnChanges({ sid = "", cwd, startMs, stopMs, touched, git
   const home = os.homedir();
   const repos = new Map(); // root -> Set(rel)
   const outside = [];
-  for (const abs of touched) {
+  for (const [abs, ts] of touched) {
     const root = repoRootOf(abs);
     if (!root) {
+      // "~" group attribution (0.10.6): a loose file whose LAST touch fell
+      // inside ANOTHER top-level session's open interval is that session's
+      // write — not ours.
+      if (foreignActiveAt(sid, ts)) continue;
       outside.push(abs.startsWith(home + path.sep) ? path.relative(home, abs) : abs);
       continue;
     }
+    if (foreignRoots.has(root)) continue; // territory rule missed it; timeline owns it
     if (!repos.has(root)) repos.set(root, new Set());
     repos.get(root).add(path.relative(root, abs));
   }
@@ -918,7 +972,14 @@ async function collectTurnChanges({ sid = "", cwd, startMs, stopMs, touched, git
 export function outsideEntry(raw, home = os.homedir()) {
   const p = String(raw ?? "");
   if (!p) return null;
-  const abs = path.isAbsolute(p) ? p : path.join(home, p);
+  // "~/x" is the STORED form (home-relative key): resolve to the real abs —
+  // joining home + "~/x" produced home/"~"/x (nonexistent), marking LIVE
+  // home files as gone and breaking focus resolution.
+  const abs = path.isAbsolute(p)
+    ? p
+    : p.startsWith("~/")
+      ? path.join(home, p.slice(2))
+      : path.join(home, p);
   const key = abs.startsWith(home + path.sep) ? `~/${path.relative(home, abs)}` : abs;
   let gone = true;
   try {
@@ -1283,6 +1344,22 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
     if (!rec && id === "latest") {
       // sin turno abierto (de esta sesión): el último guardado de la sesión
       rec = sidTurns()[0] ?? null;
+    }
+    // Read-time attribution (0.10.6): records stored BEFORE the territory
+    // rules carry repos captured machine-wide — drop repos that are OTHER
+    // top-level sessions' cwd with overlapping windows, so old records
+    // render clean without migrating the 8000-file store.
+    if (rec) {
+      const ivs = foreignCwds(
+        String(rec.sid ?? ""),
+        Date.parse(rec.startedAt ?? "") || 0,
+        Date.parse(rec.stoppedAt ?? "") || Date.now(),
+      );
+      if (ivs.size) {
+        const foreignRoots = new Set([...ivs].map((c) => repoRootOf(c)).filter(Boolean));
+        if (foreignRoots.size)
+          rec = { ...rec, repos: (rec.repos ?? []).filter((r) => !foreignRoots.has(r.path)) };
+      }
     }
     if (!rec) {
       if (id !== "latest")

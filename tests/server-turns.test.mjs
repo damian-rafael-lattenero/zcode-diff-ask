@@ -25,7 +25,10 @@ const {
 } = server;
 
 const INBOX = path.join(STATE, "turn-events.jsonl");
-const T0 = Date.parse("2026-11-17T10:00:00.000Z");
+// Fixture base RECENTE (now - 30 min): el guard anti-zombie (0.10.6) dropea
+// finalize interrumpidos de ventanas con más de 2h — fechas viejas romperían
+// los tests de supersede. El orden relativo de los eventos es el que importa.
+const T0 = Date.now() - 30 * 60 * 1000;
 
 function git(cwd, env, ...args) {
   return execFileSync("git", ["-C", cwd, ...args], {
@@ -53,7 +56,7 @@ function sendEvent(ev) {
 
 test("parseTurnEvent: prompt/stop nuevos, línea legacy del bot, basura", () => {
   const p = parseTurnEvent(JSON.stringify({ type: "prompt", sid: "s1", cwd: "/x", prompt: "hola", at: "2026-11-17T10:00:00.000Z" }));
-  assert.deepEqual(p, { type: "prompt", sid: "s1", cwd: "/x", prompt: "hola", atMs: T0 });
+  assert.deepEqual(p, { type: "prompt", sid: "s1", cwd: "/x", prompt: "hola", atMs: Date.parse("2026-11-17T10:00:00.000Z") });
   const s = parseTurnEvent(JSON.stringify({ type: "stop", sid: "s1", cwd: "/x", reply: "listo", at: "2026-11-17T10:00:09.000Z" }));
   assert.equal(s.type, "stop");
   assert.equal(s.reply, "listo");
@@ -86,11 +89,10 @@ test("repoRootOf: archivo en repo/subcarpeta → raíz; fuera de repos → null"
 });
 
 test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async () => {
-  // repo A = session workspace; repo B = a second repo (the "worktree" case)
+  // repo A = session workspace; the second repo lives in a .worktrees
+  // container (the real agent flow — inside the session's territory)
   const A = makeRepo();
-  const B = makeRepo();
   commitAt(A, T0 - 100_000, "a.py", "v1\n", "base A");
-  commitAt(B, T0 - 100_000, "x.py", "uno\n", "base B");
   await setActiveWorkspace(A);
 
   // prompt event opens the turn
@@ -100,14 +102,24 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
   assert.equal(list.count, 1);
   assert.equal(list.turns[0].isLive, true);
 
-  // the agent works: dirty edit in A, a COMMIT in B (inside the window),
-  // plus a stray non-git file
+  // the agent works: dirty edit in A, a COMMIT in an agent WORKTREE (inside
+  // the window), plus a stray non-git file. 0.10.6 territory: only the cwd
+  // tree, .worktrees containers and ~/.zcode are captured — machine-wide
+  // writes are other tasks'. B lives in a .worktrees container (the real
+  // agent flow) so its commit marker enters; the stray file must live IN
+  // territory (~/.zcode) to show as "Fuera de git".
+  const WT = path.join(os.homedir(), "Projects", ".worktrees", `da-unit-wt-${Date.now()}`);
+  fs.mkdirSync(WT, { recursive: true });
+  git(WT, null, "init", "-q", "-b", "main");
+  git(WT, null, "config", "user.email", "t@t");
+  git(WT, null, "config", "user.name", "T");
+  commitAt(WT, T0 - 50_000, "x.py", "uno\n", "base WT");
   fs.writeFileSync(path.join(A, "a.py"), "v1\nv2\n");
   noteTapPath(path.join(A, "a.py"));
-  commitAt(B, T0 + 30_000, "x.py", "uno\ndos\n", "feat: x avanza");
-  noteTapPath(path.join(B, "x.py"));
-  noteTapPath(path.join(B, ".git", "HEAD")); // commit marker → repo B included
-  noteTapPath(path.join(os.tmpdir(), "suelto.txt"));
+  commitAt(WT, T0 + 30_000, "x.py", "uno\ndos\n", "feat: x avanza");
+  noteTapPath(path.join(WT, ".git", "HEAD")); // commit marker → worktree repo included
+  const suelto = path.join(os.homedir(), ".zcode", `da-unit-suelto-${Date.now()}.txt`);
+  noteTapPath(suelto); // touched but never a real file → the honest "gone" note
 
   // stop event closes it
   sendEvent({ type: "stop", sid: "sX", cwd: A, reply: "hecho: A y B tocados", at: new Date(T0 + 60_000).toISOString() });
@@ -119,13 +131,13 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
   assert.equal(t.prompt, "hacé el trabajo");
   assert.equal(t.reply, "hecho: A y B tocados");
   assert.equal(t.repoCount, 2);
-  assert.equal(t.fileCount, 3); // 1 commit (B) + 1 dirty (A) + 1 fuera de git (suelto.txt, nunca existió)
+  assert.equal(t.fileCount, 3); // 1 commit (B) + 1 dirty (A) + 1 fuera de git (suelto, nunca existió)
 
   const d = await buildTurnDiff(t.id);
   assert.equal(d.mode, "turn");
   assert.equal(d.error, undefined);
   const labelA = path.basename(A);
-  const labelB = path.basename(B);
+  const labelB = path.basename(WT);
   const fileA = d.files.find((f) => f.path === `${labelA}/a.py`);
   const fileB = d.files.find((f) => f.path === `${labelB}/x.py`);
   assert.ok(fileA, "dirty de A presente y namespaced");
@@ -138,7 +150,7 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
   assert.equal(fileB.commit.length > 0, true);
   assert.equal(d.turn.repos.length, 3); // A + B + el pseudo-repo "~" (fuera de git)
   assert.deepEqual(d.turn.repos.map((r) => r.label).sort(), [labelA, labelB, "~"].sort());
-  const ghost = d.files.find((f) => f.path === path.join(os.tmpdir(), "suelto.txt"));
+  const ghost = d.files.find((f) => f.path === `~/${path.relative(os.homedir(), suelto)}`);
   assert.ok(ghost, "el suelto fuera de git entra al diff");
   assert.equal(ghost.status, "D");
   assert.equal(ghost.gone, true);
@@ -157,11 +169,16 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
   await processInbox();
   list = listTurns();
   assert.ok(list.turns.some((x) => x.interrupted && x.prompt === "segundo"), "el turno sin stop queda marcado interrumpido");
+  // hygiene: CLOSE the leftover window — its open interval would otherwise
+  // cover later tests' writes and the "~" attribution would drop them
+  sendEvent({ type: "stop", sid: "sX", cwd: A, reply: "cerrado", at: new Date(T0 + 190_000).toISOString() });
+  await processInbox();
 
   // delete + clear operate on the global store
   const victim = list.turns.find((x) => x.prompt === "hacé el trabajo");
   assert.equal(deleteTurn(victim.id).ok, true);
   assert.equal(deleteTurn("no-existe").error, "unknown_turn");
+  try { fs.rmSync(WT, { recursive: true, force: true }); } catch { /* cleanup */ }
   clearTurns();
   assert.ok(listTurns().count <= 1); // only the live one may remain
   assert.equal((await buildTurnDiff("no-existe")).error, "unknown_turn");
@@ -225,7 +242,9 @@ test("outside: archivos fuera de git entran al diff en verde; los borrados, como
   const D = makeRepo();
   commitAt(D, T0 - 100_000, "d.py", "v1\n", "base D");
   await setActiveWorkspace(D);
-  const loose = fs.mkdtempSync(path.join(os.tmpdir(), "da-loose-"));
+  // territory (~/.zcode): loose non-git files live there since 0.10.6
+  const loose = path.join(os.homedir(), ".zcode", `da-unit-loose-${Date.now()}`);
+  fs.mkdirSync(loose, { recursive: true });
   fs.writeFileSync(path.join(loose, "notas.md"), "linea uno\nlinea dos\n");
   const vanished = path.join(loose, "fantasma.txt");
 
@@ -241,7 +260,9 @@ test("outside: archivos fuera de git entran al diff en verde; los borrados, como
   const turn = listTurns().turns.find((t) => t.prompt === "turno con sueltos");
   assert.equal(turn.fileCount, 3); // dirty d.py + notas.md + fantasma.txt
   const d = await buildTurnDiff(turn.id);
-  const green = d.files.find((f) => f.path === path.join(loose, "notas.md"));
+  // outside keys under $HOME are home-relative ("~/...")
+  const rel = (p) => `~/${path.relative(os.homedir(), p)}`;
+  const green = d.files.find((f) => f.path === rel(path.join(loose, "notas.md")));
   assert.ok(green, "el archivo suelto entra al diff");
   assert.equal(green.status, "?");
   assert.equal(green.before, "");
@@ -249,7 +270,7 @@ test("outside: archivos fuera de git entran al diff en verde; los borrados, como
   assert.equal(green.added, "2");
   assert.equal(green.deleted, "0");
   assert.equal(green.repoLabel, "~");
-  const ghost = d.files.find((f) => f.path === vanished);
+  const ghost = d.files.find((f) => f.path === rel(vanished));
   assert.ok(ghost, "el tocado-y-desaparecido también entra");
   assert.equal(ghost.status, "D");
   assert.equal(ghost.gone, true);
@@ -264,7 +285,8 @@ test("focus: el click del fork resuelve al entry del turno, se consume y expira"
   const E = makeRepo();
   commitAt(E, T0 - 100_000, "e.py", "v1\n", "base E");
   await setActiveWorkspace(E);
-  const loose = fs.mkdtempSync(path.join(os.tmpdir(), "da-loose2-"));
+  const loose = path.join(os.homedir(), ".zcode", `da-unit-loose2-${Date.now()}`);
+  fs.mkdirSync(loose, { recursive: true });
   const suelto = path.join(loose, "suelto.md");
   fs.writeFileSync(suelto, "hola\n");
 
@@ -278,10 +300,11 @@ test("focus: el click del fork resuelve al entry del turno, se consume y expira"
   const turn = listTurns().turns.find((t) => t.prompt === "turno foco");
   assert.ok(turn, "el turno foco existe");
 
-  // click sobre el archivo suelto → focusPath = su key (abs, fuera de home)
+  // click sobre el archivo suelto → focusPath = su key (home-relative "~/")
+  const sueltoKey = `~/${path.relative(os.homedir(), suelto)}`;
   assert.equal(requestTurnFocus(suelto, turn.id).ok, true);
   const d1 = await buildTurnDiff(turn.id);
-  assert.equal(d1.focusPath, suelto);
+  assert.equal(d1.focusPath, sueltoKey);
   const d2 = await buildTurnDiff(turn.id);
   assert.equal(d2.focusPath, undefined, "el focus se consume en el primer read");
 
