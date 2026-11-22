@@ -117,8 +117,10 @@ const harness = http.createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      const { tool, args } = JSON.parse(body);
-      rpc("tools/call", { name: tool, arguments: args })
+      const { tool, args, meta } = JSON.parse(body);
+      // `meta` simulates the app's request context (_meta on tools/call) —
+      // the W-section exercises the multi-task sticky-sid reality.
+      rpc("tools/call", meta ? { name: tool, arguments: args, _meta: meta } : { name: tool, arguments: args })
         .then((r) => { res.writeHead(200, { "content-type": "text/json" }); res.end(JSON.stringify(r.structuredContent ?? r ?? {})); })
         .catch((e) => { res.writeHead(200, { "content-type": "text/json" }); res.end(JSON.stringify({ error: String(e?.message ?? e) })); });
     });
@@ -1683,6 +1685,36 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   fs.rmSync(path.join(REPO, U_DIRTY), { force: true });
   await evalJs(`document.querySelector('.modebar button[data-mode="working"]')?.click()`);
   await evalJs("__DA.refresh(true)");
+
+  // ============ W. 0.10.8: the multi-task reality (sticky sid) ============
+  // One server, several tasks: the app stamps _meta on every tools/call, so
+  // the server's sticky sid is whoever called LAST. Recording must stay
+  // session-agnostic (the live both-tabs-empty failure) and the panel's
+  // explicit-scope read must pin its own task.
+  const postTool = (tool, args, meta) =>
+    evalJs(`fetch("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: ${JSON.stringify(JSON.stringify({ tool, args, meta }))} }).then((r) => r.json())`);
+  {
+    // task sPanel-A talks (sticky sid ← _meta), then task sWork-B works:
+    const rc1 = JSON.stringify(await postTool("whoami", {}, { "com.zcode/request-context": { session_id: "e2e-w-panel" } }));
+    check(/e2e-w-panel/.test(rc1), "W: el sticky sid quedó en la task del panel (como la app)");
+    sendTurnEvent({ type: "prompt", sid: "e2e-w-work", cwd: REPO, prompt: "W turno de la OTRA task", at: new Date().toISOString() });
+    sendTurnEvent({ type: "stop", sid: "e2e-w-work", cwd: REPO, reply: "W trabajo hecho", at: new Date(Date.now() + 1000).toISOString() });
+    // a read from the panel's task must NOT see the other task's turn…
+    const scoped = await postTool("list_turns", {}, { "com.zcode/request-context": { session_id: "e2e-w-panel" } });
+    check(!JSON.stringify(scoped).includes("W turno de la OTRA task"),
+      "W: la vista de la task del panel NO ve el turno ajeno (scoped)");
+    // …but the recording HAPPENED: the other task's own scoped read sees it.
+    const own = await postTool("list_turns", {}, { "com.zcode/request-context": { session_id: "e2e-w-work" } });
+    check(JSON.stringify(own).includes("W turno de la OTRA task") && JSON.stringify(own).includes("W trabajo hecho"),
+      "W: el turno de la otra task se GRABÓ pese al sticky ajeno (la regresión en vivo)");
+    // and the panel's explicit-scope read (turn://list?sid=) pins its task
+    // even with the server's sticky elsewhere.
+    const panelList = await evalJs(`fetch("/mcp?read=" + encodeURIComponent("turn://list?skip=0&limit=10&sid=" + encodeURIComponent("e2e-w-work"))).then((r) => r.json())`);
+    check(JSON.stringify(panelList).includes("W turno de la OTRA task"),
+      "W: el read del panel con sid explícito ve SU task");
+    // cleanup: this rig state is tmp, but keep later sections' lists clean
+    await evalJs(`fetch("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool: "clear_turns", args: {}, meta: { "com.zcode/request-context": { session_id: "e2e-w-work" } } }) }).then(() => 0)`);
+  }
 
   // ============ salud general del panel ============
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));

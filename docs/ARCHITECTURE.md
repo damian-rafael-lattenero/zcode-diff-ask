@@ -78,6 +78,19 @@ potencia es `git` + `fs.watch`.
   hechos EN la ventana + los archivos sucios al final + los archivos tocados
   fuera de cualquier repo. Un JSON por turno en `turns2/`, global entre
   sesiones; `latest` diffea el turno abierto contra el árbol VIVO.
+  **Recording is a pure per-session fold (0.10.8, `turn-fold.mjs`)**: the
+  inbox is an append-only log and the open state is its fold into ONE lane
+  per sid — the reader's identity (the sticky request-context sid in the
+  app, where ONE server serves every task) scopes READS, never the fold.
+  Laws L1-L6 unit-tested (own-supersede, no cross-talk, zombie cap, boot
+  heal, window slice, lanes cap). Inbox offsets are BYTE-exact (the old
+  utf8-length offset reset to 0 on accented prompts and re-drained the
+  whole history on every restart); drains run through a structured
+  concurrency lane and clear/delete join it before wiping; boot reopens
+  the log's still-open windows (a stop landing on the server's NEXT life
+  completes the turn) and arms the watcher at startup. The panel stamps
+  its sid (`turn://list?sid=`, `diff://turn/…?sid=`) so its view always
+  follows its OWN task.
 - `log://commits`, `diff://commit/<hash>` — navegador de commits (páginas de
   10 + búsqueda por hash/título).
 
