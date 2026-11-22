@@ -53,8 +53,15 @@ const OUTSIDE_LABEL = "~";
 // Collapsed turn-repo group labels — survives reactive re-renders.
 const collapsedGroups = new Set();
 
+// This panel's task sid, learned from whoami at boot (0.10.8). resources/
+// read carries NO request context, so the server's cached sid is whoever
+// called ANY tool last — in a multi-task app that silently re-scoped the
+// panel's turn reads. Stamping it on the turn URIs pins OUR task's view.
+let sessionSid = "";
+
 function diffUriFor() {
-  if (mode === "turns" && turnSel) return `diff://turn/${encodeURIComponent(turnSel)}`;
+  if (mode === "turns" && turnSel)
+    return `diff://turn/${encodeURIComponent(turnSel)}${sessionSid ? `?sid=${encodeURIComponent(sessionSid)}` : ""}`;
   if (mode === "commits" && commitSel) return `diff://commit/${encodeURIComponent(commitSel)}`;
   return DIFF_URI;
 }
@@ -3859,7 +3866,7 @@ function renderCommits() {
 async function loadTurns(reset = false) {
   if (reset) turnsState = { list: [], skip: 0, hasMore: false, total: 0, sessionFilter: null };
   const gen = refreshGen;
-  const uri = `turn://list?skip=${turnsState.skip}&limit=10`;
+  const uri = `turn://list?skip=${turnsState.skip}&limit=10${sessionSid ? `&sid=${encodeURIComponent(sessionSid)}` : ""}`;
   const res = await withTimeout(app.readServerResource({ uri }), "turns");
   if (gen !== refreshGen) return; // superseded: don't render a stale list
   const data = JSON.parse(res?.contents?.[0]?.text ?? "{}");
@@ -4272,14 +4279,17 @@ async function boot() {
     return;
   }
   applyTheme(app.getHostContext());
-  // Session handshake (0.10.1): ANY tool call carries the request context,
-  // and the server caches the session id from it — this cheap call teaches
-  // the server WHICH task this panel serves, so every later turn read
-  // (even bare resources/read, which has no _meta) is scoped to this task.
+  // Session handshake (0.10.1, hardened 0.10.8): ANY tool call carries the
+  // request context — but the server's cached sid is the LAST caller's, and
+  // in a multi-task app another task's model call (its own get_diff) would
+  // silently re-scope OUR un-stamped resources/read. So the panel learns its
+  // sid here and stamps it EXPLICITLY on every turn read (turn://list?sid=
+  // and diff://turn/…?sid=) — the panel's view follows its own task, always.
   // Best-effort AND bounded (3s): a stalled tool bridge must never block the
-  // boot itself — without the handshake the server simply stays global.
+  // boot itself — without the handshake the reads fall back to global.
   try {
-    await callTool("whoami", {}, 3_000);
+    const who = await callTool("whoami", {}, 3_000);
+    sessionSid = String(who?.structuredContent?.sessionId ?? who?.sessionId ?? "") || "";
   } catch { /* global fallback */ }
   try {
     // Reactive refresh, THROTTLED (0.10.4): an agent working in the watched

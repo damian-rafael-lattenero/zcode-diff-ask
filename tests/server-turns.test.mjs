@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,7 +21,7 @@ const server = await import("../diff-ask/server/server.mjs");
 const {
   setActiveWorkspace, processInbox, listTurns, buildTurnDiff, deleteTurn, clearTurns,
   parseTurnEvent, isTapNoise, repoRootOf, noteTapPath, outsideEntry, requestTurnFocus,
-  suggestWorkspace, whoAmI,
+  suggestWorkspace, whoAmI, noteRequestMeta, resetRequestMetaForTests,
 } = server;
 
 const INBOX = path.join(STATE, "turn-events.jsonl");
@@ -176,10 +176,10 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
 
   // delete + clear operate on the global store
   const victim = list.turns.find((x) => x.prompt === "hacé el trabajo");
-  assert.equal(deleteTurn(victim.id).ok, true);
-  assert.equal(deleteTurn("no-existe").error, "unknown_turn");
+  assert.equal((await deleteTurn(victim.id)).ok, true);
+  assert.equal((await deleteTurn("no-existe")).error, "unknown_turn");
   try { fs.rmSync(WT, { recursive: true, force: true }); } catch { /* cleanup */ }
-  clearTurns();
+  await clearTurns();
   assert.ok(listTurns().count <= 1); // only the live one may remain
   assert.equal((await buildTurnDiff("no-existe")).error, "unknown_turn");
 });
@@ -327,7 +327,7 @@ test("suggestWorkspace: repo con más cambios del último turno, empate → comm
   // Hermetic store: earlier tests finalize superseded turns with stoppedAt =
   // Date.now() (real clock), which would outrank these T0-dated turns — clear
   // so the "last turn" this test builds IS the last turn.
-  clearTurns();
+  await clearTurns();
   const P = makeRepo();
   const Q = makeRepo();
   commitAt(P, T0 - 100_000, "p.py", "v1\n", "base P");
@@ -382,7 +382,7 @@ test("suggestWorkspace: repo con más cambios del último turno, empate → comm
 });
 
 test("session filter: list/build scoped al env, prompt ajeno no interrumpe, clear scoped, cache", async () => {
-  clearTurns();
+  await clearTurns();
   const A = makeRepo();
   const B = makeRepo();
   commitAt(A, T0 - 100_000, "a.py", "v1\n", "base A");
@@ -403,7 +403,10 @@ test("session filter: list/build scoped al env, prompt ajeno no interrumpe, clea
   try {
     sendEvent({ type: "prompt", sid: "sA", cwd: A, prompt: "turno propio", at: new Date(T0 + 20_000).toISOString() });
     await processInbox();
-    // while sA's turn is OPEN, a foreign sF prompt must NOT interrupt it
+    // while sA's turn is OPEN, a foreign sF prompt must NOT interrupt it —
+    // and since 0.10.8 the foreign prompt opens ITS OWN lane instead of
+    // being dropped by the caller's sticky sid (the live both-tabs-empty
+    // failure: with several tasks open, the gate starved the store).
     sendEvent({ type: "prompt", sid: "sF", cwd: B, prompt: "ajeno", at: new Date(T0 + 30_000).toISOString() });
     await processInbox();
     sendEvent({ type: "stop", sid: "sA", cwd: A, reply: "ok A", at: new Date(T0 + 35_000).toISOString() });
@@ -420,19 +423,26 @@ test("session filter: list/build scoped al env, prompt ajeno no interrumpe, clea
     assert.equal((await buildTurnDiff("latest")).turn.prompt, "turno propio", "latest de la sesión = su último turno");
     assert.equal((await suggestWorkspace()).turnId, list.turns[0].id, "suggest también queda scoped");
 
+    // the foreign lane closes on its OWN stop and records — even while this
+    // server's sticky sid stays sA. Recording is session-agnostic; only the
+    // READ above is scoped (0.10.8).
+    sendEvent({ type: "stop", sid: "sF", cwd: B, reply: "ajeno cerrado", at: new Date(T0 + 36_000).toISOString() });
+    await processInbox();
+    assert.equal(listTurns().count, 1, "el turno ajeno grabado NO entra a la vista de sA");
+
     // scoped clear: wipes ONLY sA's turns; sF's stay on disk
-    const cleared = clearTurns();
+    const cleared = await clearTurns();
     assert.equal(cleared.scoped, "sA");
     assert.equal(listTurns().count, 0);
     process.env.ZCODE_SESSION_ID = "";
-    assert.equal(listTurns().count, 1, "sin filtro: el turno de sF sobrevivió al clear scoped");
+    assert.equal(listTurns().count, 2, "sin filtro: los DOS turnos de sF sobrevivieron al clear scoped");
 
     // store cache: a NEW turn file is picked up by the next read (invalidation)
     sendEvent({ type: "prompt", sid: "sG", cwd: B, prompt: "otro turno", at: new Date(T0 + 40_000).toISOString() });
     await processInbox();
     sendEvent({ type: "stop", sid: "sG", cwd: B, reply: "ok G", at: new Date(T0 + 50_000).toISOString() });
     await processInbox();
-    assert.equal(listTurns().count, 2, "el cache del store se invalida cuando el dir cambia");
+    assert.equal(listTurns().count, 3, "el cache del store se invalida cuando el dir cambia");
 
     // whoami reflects the env identity
     process.env.ZCODE_SESSION_ID = "sZ";
@@ -445,7 +455,7 @@ test("session filter: list/build scoped al env, prompt ajeno no interrumpe, clea
 });
 
 test("turn id determinista: re-finalización sobreescribe; interrumpido zombie NO pisa completado; dedupe legacy", async () => {
-  clearTurns();
+  await clearTurns();
   const D = makeRepo();
   commitAt(D, T0 - 100_000, "d.py", "v1\n", "base D");
   await setActiveWorkspace(D);
@@ -499,20 +509,19 @@ test("turn id determinista: re-finalización sobreescribe; interrumpido zombie N
 });
 
 test("atribución cross-session: el repo de OTRA task activa NO entra a mi turno (y simétrico)", async () => {
-  clearTurns();
+  await clearTurns();
   const A = makeRepo(); // this task's cwd
   const B = makeRepo(); // the OTHER task's cwd
   commitAt(A, T0 - 100_000, "a.py", "v1\n", "base A");
   commitAt(B, T0 - 100_000, "b.py", "v1\n", "base B");
 
-  // Phase 1 runs as OUR session (each real server knows its sid: foreign
-  // prompts never supersede OUR open turn — the global-mode test process
-  // must emulate that or a foreign prompt would interrupt-spam records).
-  // NOTE: the inbox offset starts at EOF on the FIRST processInbox
-  // (cold-start rule) — process each event or the server never sees it.
+  // Phase 1 runs as OUR session. NOTE: the inbox offset starts at EOF on
+  // the FIRST processInbox (cold-start rule) — process each event or the
+  // server never sees it. Foreign events now open their OWN lanes (0.10.8)
+  // — attribution at read time keeps them out of MY turn.
   process.env.ZCODE_SESSION_ID = "sess_mine";
   sendEvent({ type: "prompt", sid: "sess_other-task", cwd: B, prompt: "otra task trabajando", at: new Date(T0 - 10_000).toISOString() });
-  await processInbox(); // foreign prompt: ignored as a turn, lands in the timeline
+  await processInbox(); // foreign prompt: its own lane, plus the timeline
   sendEvent({ type: "prompt", sid: "sess_mine", cwd: A, prompt: "mi turno", at: new Date(T0).toISOString() });
   await processInbox();
   fs.writeFileSync(path.join(A, "a.py"), "v1\nmia\n");
@@ -522,7 +531,7 @@ test("atribución cross-session: el repo de OTRA task activa NO entra a mi turno
   sendEvent({ type: "stop", sid: "sess_mine", cwd: A, reply: "ok", at: new Date(T0 + 5_000).toISOString() });
   await processInbox();
   sendEvent({ type: "stop", sid: "sess_other-task", cwd: B, reply: "ok", at: new Date(T0 + 6_000).toISOString() });
-  await processInbox(); // foreign stop: ignored (we never opened it)
+  await processInbox(); // foreign stop: closes ITS OWN lane and records (0.10.8)
 
   try {
     const d = await buildTurnDiff("latest");
@@ -550,4 +559,106 @@ test("atribución cross-session: el repo de OTRA task activa NO entra a mi turno
   } finally {
     process.env.ZCODE_SESSION_ID = "";
   }
+});
+
+test("regresión 0.10.8 (fallo en vivo): sticky sid del _meta NUNCA dropea los eventos de otra sesión", async () => {
+  // The live 22/11 failure, replayed exactly: ONE server, several tasks.
+  // The app stamps _meta["com.zcode/request-context"].session_id on every
+  // tools/call — panel AND model — so the sticky sid flips to whoever
+  // called LAST. Under the old single-slot gate, every other session's
+  // prompt/stop was dropped as "foreign": zero turns recorded for hours,
+  // both panel tabs empty. Recording must be session-agnostic.
+  await clearTurns();
+  const A = makeRepo();
+  commitAt(A, T0 - 100_000, "a.py", "v1\n", "base");
+  await setActiveWorkspace(A);
+
+  // the PANEL of task sPanel talks to the server (sticky sid ← _meta)
+  noteRequestMeta({ "com.zcode/request-context": { session_id: "sPanel" } });
+  assert.equal(whoAmI().sessionId, "sPanel", "el sticky sid quedó en sPanel (como la app)");
+
+  // ...while task sWork works: prompt + stop events land in the GLOBAL inbox
+  sendEvent({ type: "prompt", sid: "sWork", cwd: A, prompt: "turno de la otra task", at: new Date(T0).toISOString() });
+  await processInbox(); // the OLD gate dropped this prompt (sid ≠ sticky)
+  fs.writeFileSync(path.join(A, "a.py"), "v1\nedit\n");
+  noteTapPath(path.join(A, "a.py"));
+  sendEvent({ type: "stop", sid: "sWork", cwd: A, reply: "trabajo hecho", at: new Date(T0 + 5_000).toISOString() });
+  await processInbox(); // ...and dropped this stop: the turn was LOST
+
+  // the store recorded sWork's turn anyway...
+  assert.equal(listTurns().count, 0, "la vista de sPanel sigue vacía (scoped)");
+  // the PANEL's explicit-scope read (turn://list?sid=…): even with the
+  // server's sticky sid at sPanel, the panel's view pins ITS OWN task.
+  const panelView = listTurns({ sid: "sWork" });
+  assert.equal(panelView.count, 1, "el read con sid explícito ve SU task");
+  assert.equal(panelView.sessionFilter, "sWork");
+  process.env.ZCODE_SESSION_ID = "sWork";
+  try {
+    const list = listTurns();
+    assert.equal(list.count, 1, "el turno de sWork EXISTE pese al sticky ajeno");
+    assert.equal(list.turns[0].prompt, "turno de la otra task");
+    assert.equal(list.turns[0].interrupted, false);
+    const sug = await suggestWorkspace();
+    assert.equal(sug.workspace, A, "la sugerencia del repo tab vuelve a funcionar para sWork");
+  } finally {
+    process.env.ZCODE_SESSION_ID = "";
+    resetRequestMetaForTests(); // the sticky sid never self-clears in product code
+  }
+});
+
+test("regresión 0.10.8 (carrera de restart): el stop que llega a la vida SIGUIENTE del server completa el turno", async () => {
+  // Every deploy restarts the app mid-turn. Life 1 sees the prompt; life 2
+  // (a REAL child process, cold inbox offset) only sees the stop — the old
+  // life dropped it ("stop without a prompt in this server life") and the
+  // turn was lost. Boot heal must reopen the window from the log.
+  // Hermetic state (this file's shared inbox carries every earlier test's
+  // windows — the heal must be judged on a log with ONLY this turn).
+  const RSTATE = fs.mkdtempSync(path.join(os.tmpdir(), "da-rst-"));
+  const RINBOX = path.join(RSTATE, "turn-events.jsonl");
+  const A = makeRepo();
+  commitAt(A, T0 - 100_000, "a.py", "v1\n", "base");
+  fs.writeFileSync(path.join(A, "a.py"), "v1\nedit\n");
+
+  // "life 1" is just the LOG it left behind: one prompt, still open
+  fs.appendFileSync(RINBOX, `${JSON.stringify({ type: "prompt", sid: "sR", cwd: A, prompt: "turno atraviesa el restart", at: new Date(T0).toISOString() })}\n`);
+
+  // life 2: a fresh server process over that state — it boots mid-turn
+  // (cold offset skips the prompt; boot heal reopens the window), and the
+  // stop arrives LIVE, exactly like a deploy restart.
+  const child = spawn(process.execPath, [path.join(import.meta.dirname, "..", "diff-ask", "server", "server.mjs")], {
+    env: { ...process.env, ZCODE_DIFF_ASK_STATE: RSTATE, ZCODE_SESSION_ID: "", ZCODE_WORKSPACE_ROOT: A },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  child.stderr.on("data", () => {}); // keep the pipe drained
+  const reply = new Promise((resolve) => {
+    let buf = "";
+    child.stdout.on("data", (d) => {
+      buf += d;
+      for (const line of buf.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.id === 7) resolve(msg.result?.structuredContent ?? null);
+        } catch { /* partial line */ }
+      }
+    });
+  });
+  await new Promise((r) => setTimeout(r, 300)); // let it boot + heal
+  fs.appendFileSync(RINBOX, `${JSON.stringify({ type: "stop", sid: "sR", cwd: A, reply: "cerrado tras el restart", at: new Date(T0 + 8_000).toISOString() })}\n`);
+  await new Promise((r) => setTimeout(r, 250)); // the stop travels (watcher/drain)
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "list_turns", arguments: {} } })}\n`);
+  const list2 = await reply;
+  child.kill();
+  assert.ok(list2, "la vida 2 respondió");
+  const done = list2.turns.find((t) => t.prompt === "turno atraviesa el restart");
+  assert.ok(done, "el turno completó a través del restart (boot heal + drain)");
+  assert.equal(done.reply, "cerrado tras el restart");
+  assert.equal(done.interrupted, false);
+  assert.equal(done.isLive, false, "cerrado de verdad — no es la ventana viva");
+  // Byte-offset regression pin: the fresh life must NOT re-drain history —
+  // with the old utf8-length offset any multi-byte content reset it to 0
+  // and re-finalized the whole log on every restart.
+  const files = fs.readdirSync(path.join(RSTATE, "turns2")).filter((n) => n.endsWith(".json"));
+  assert.equal(files.length, 1, `el store grabó SOLO el turno del restart (${files.join(", ")})`);
+  assert.ok(files[0].endsWith("-sR.json"), files[0]);
 });

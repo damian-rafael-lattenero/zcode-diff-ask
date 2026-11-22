@@ -25,6 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { foldTurnEvent, reopenWindows, sliceByWindow, TURN_OPEN_MAX_MS, PROMPT_MAX, REPLY_MAX, TURN_LANES_CAP } from "./turn-fold.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.join(HERE, "..");
@@ -600,8 +601,6 @@ export async function buildDiff({ includePatches = true, workspace = activeWorks
 const DA_STATE_DIR = process.env.ZCODE_DIFF_ASK_STATE || path.join(os.homedir(), ".zcode", "diff-ask");
 const TURN_INBOX = path.join(DA_STATE_DIR, "turn-events.jsonl");
 const TURNS2_DIR = path.join(DA_STATE_DIR, "turns2");
-const PROMPT_MAX = 100_000; // paranoia: prompts gigantes se recortan
-const REPLY_MAX = 8_000;
 const MAX_TURN_COMMITS = 40;
 const MAX_TURN_OUTSIDE = 300;
 const MAX_TURN_DIRTY = 300; // per repo, after the noise filter
@@ -689,19 +688,40 @@ export function repoRootOf(absPath) {
 
 let tapWatcher = null;
 const tapTouched = new Map(); // ABSOLUTE path -> last touch ms (attribution of the "~" group)
-const tapGitRoots = new Set(); // repos whose .git changed (commits happen here)
-let openTurn = null; // { sid, cwd, prompt, startMs, reply?, stopMs? }
+const tapGitRoots = new Map(); // repo root -> last .git touch ms (commits happen here)
+// One open window PER SESSION — the inbox fold's lane map (0.10.8). The
+// old single openTurn was gated by the LAST caller's sid: with several
+// tasks open in the app (one server, sticky request-context sid) every
+// other session's prompt/stop was dropped as "foreign" and NOTHING was
+// recorded for hours (both panel tabs empty, 22/11). Recording is now
+// session-agnostic — the fold routes each event to its own lane, and the
+// caller's sid only scopes READS (listTurns / buildTurnDiff / suggest).
+const openTurns = new Map(); // sid -> { sid, cwd, prompt, startMs, reply?, stopMs? }
 
-// The session's TERRITORY (0.10.6, Damian: "solo de la sesion/task"): the
-// workspace tree, the agent-worktree containers, and ~/.zcode (session
-// state — plans, memories). Writes anywhere else on the machine belong to
-// other tasks or daemons and are NEVER captured, so they cannot leak into
-// another task's turn.
+// The live lane a READ should serve: THIS session's open window when the
+// reader is known; in global mode (CLI/tests/rig, no sid) the newest open
+// lane — the last-processed window, preserving the single-slot semantics.
+function liveLane(sid) {
+  if (!openTurns.size) return null;
+  if (sid) return openTurns.get(sid) ?? null;
+  let best = null;
+  for (const t of openTurns.values()) if (!best || t.startMs > best.startMs) best = t;
+  return best;
+}
+
+// The union TERRITORY of every open lane (0.10.6: "solo de la
+// sesion/task"): each lane's workspace tree, the agent-worktree
+// containers, and ~/.zcode (session state — plans, memories). Writes
+// anywhere else on the machine belong to other tasks or daemons and are
+// NEVER captured, so they cannot leak into another task's turn. Which
+// lane a captured write belongs to is decided later, by each lane's
+// window slice plus the cross-session attribution rules.
 function inTerritory(abs) {
-  const cwd = openTurn?.cwd;
-  if (cwd) {
-    const root = repoRootOf(cwd) ?? cwd;
-    if (abs === root || abs.startsWith(root + path.sep)) return true;
+  for (const t of openTurns.values()) {
+    if (t.cwd) {
+      const root = repoRootOf(t.cwd) ?? t.cwd;
+      if (abs === root || abs.startsWith(root + path.sep)) return true;
+    }
   }
   if (abs.startsWith(os.homedir() + path.sep + ".zcode" + path.sep)) return true;
   if (abs.includes(`${path.sep}.worktrees${path.sep}`)) return true;
@@ -711,7 +731,7 @@ function inTerritory(abs) {
 // Accepts an absolute path or one relative to $HOME (the watcher's form).
 // Exported so tests can inject paths without a real FSEvents stream.
 export function noteTapPath(raw) {
-  if (!openTurn || !raw) return;
+  if (!openTurns.size || !raw) return;
   const p = String(raw);
   const abs = path.isAbsolute(p) ? p : path.join(os.homedir(), p);
   const home = os.homedir();
@@ -720,7 +740,7 @@ export function noteTapPath(raw) {
     const root = gitAt >= 0 ? abs.slice(0, gitAt) : abs.slice(0, -5);
     // A commit marker counts only inside our territory (a foreign repo's
     // .git is another task's business).
-    if (root && inTerritory(root)) tapGitRoots.add(root);
+    if (root && inTerritory(root)) tapGitRoots.set(root, Date.now());
     return;
   }
   const noiseTarget = abs.startsWith(home + path.sep) ? path.relative(home, abs) : abs;
@@ -742,7 +762,7 @@ function ensureTapWatcher() {
 
 // Current touched set, exported for tests and for the live diff.
 export function tapSnapshot() {
-  return { touched: [...tapTouched.entries()], gitRoots: [...tapGitRoots] };
+  return { touched: [...tapTouched.entries()], gitRoots: [...tapGitRoots.keys()] };
 }
 
 // ----------------------------------------------------------- inbox de turnos
@@ -762,57 +782,85 @@ function initInboxOffset() {
   }
 }
 
-export async function processInbox() {
+// Structured-concurrency lane for the inbox (0.10.8): every drain — watcher,
+// tool dispatch, tests — runs ONE AT A TIME through this queue. The old
+// fire-and-forget watcher drain could still be inside finalizeWindow (its
+// git scans await) while a clear_turns wiped the store: the late write
+// resurrected deleted records. clear/delete join the queue before wiping,
+// so no finalize can land after them.
+let inboxLane = Promise.resolve();
+export function processInbox() {
+  const run = inboxLane.then(() => drainInbox());
+  inboxLane = run.catch(() => {});
+  return run;
+}
+
+async function drainInbox() {
+  // Every drain also guarantees the watcher and (once per life) the boot
+  // heal — reads that reach here from any dispatch must not depend on which
+  // code path happened to ensure the watcher first.
+  ensureInboxWatcher();
   initInboxOffset();
-  let data;
+  // Byte-exact offsets (0.10.8): the offset rides statSync BYTES, so the
+  // chunk must be measured in bytes too. Reading utf8 made data.length a
+  // UTF-16 count — with accented prompts (every real one) it ran BELOW the
+  // byte offset, tripped the rotation guard and re-drained the WHOLE inbox
+  // on every server life, re-finalizing every window (the October chains).
+  let buf;
   try {
-    data = fs.readFileSync(TURN_INBOX, "utf8");
+    buf = fs.readFileSync(TURN_INBOX);
   } catch {
     return;
   }
-  if (data.length < inboxOffset) inboxOffset = 0; // rotaron/reemplazaron el archivo
-  if (data.length <= inboxOffset) return;
-  const chunk = data.slice(inboxOffset);
-  inboxOffset = data.length;
+  if (buf.length < inboxOffset) inboxOffset = 0; // rotaron/reemplazaron el archivo
+  if (buf.length <= inboxOffset) return;
+  const chunk = buf.subarray(inboxOffset).toString("utf8");
+  inboxOffset = buf.length;
+  let openedAny = false;
   for (const line of chunk.split("\n")) {
     if (!line.trim()) continue;
     const ev = parseTurnEvent(line);
     if (!ev) continue;
-    if (ev.type === "prompt") await onTurnPrompt(ev);
-    else await onTurnStop(ev);
+    // The PURE fold routes the event to its own lane — no caller-identity
+    // gate, ever (that gate is what starved the store on 22/11). The
+    // computed effects (supersede/finalize) run here, at the edge.
+    const { states, superseded, finalized } = foldTurnEvent(openTurns, ev, {
+      promptMax: PROMPT_MAX,
+      replyMax: REPLY_MAX,
+      lanesCap: TURN_LANES_CAP,
+    });
+    openTurns.clear();
+    for (const [k, v] of states) openTurns.set(k, v);
+    if (ev.type === "prompt") openedAny = true;
+    if (superseded) await finalizeWindow(superseded, { interrupted: true });
+    if (finalized) await finalizeWindow(finalized, { interrupted: false });
   }
+  if (openedAny && openTurns.size) ensureTapWatcher();
 }
 
-async function onTurnPrompt(ev) {
-  // Foreign prompts are not ours to bound (0.10.1): every server sees the
-  // GLOBAL inbox, so without this gate another session's prompt would mark
-  // THIS session's open turn as interrupted in the shared store. With no
-  // known session (CLI/tests/rig) the old global behavior applies.
-  const sid = currentSid();
-  if (sid && ev.sid && ev.sid !== sid) return;
-  // a new prompt supersedes an unfinished turn (persisted as interrupted) —
-  // but a ZOMBIE window (older than the open cap) is silently dropped: it is
-  // not a real interruption and persisting it spams interrupted records with
-  // stoppedAt=now (measured tonight: October windows re-written as chains).
-  if (openTurn && Date.now() - openTurn.startMs <= TURN_OPEN_MAX_MS) {
-    await finalizeOpenTurn({ interrupted: true });
+// Restart-race heal (0.10.8): windows still open at EOF re-open as lanes.
+// Every deploy restarts the app mid-turn; the old life dropped the in
+// flight window (its stop later found "no prompt in this server life" and
+// the turn was lost). The log still carries prompt/cwd/startMs — only the
+// pre-boot loose-write tap is unrecoverable, and the git scans at finalize
+// recover commits and dirty state anyway.
+let bootHealed = false;
+function reopenLiveLanes() {
+  if (bootHealed || openTurns.size) return;
+  bootHealed = true; // once per server life — the full-inbox scan must not ride every drain
+  try {
+    const lanes = reopenWindows(fs.readFileSync(TURN_INBOX, "utf8").split("\n"), {
+      promptMax: PROMPT_MAX,
+      lanesCap: TURN_LANES_CAP,
+    });
+    for (const [k, v] of lanes) openTurns.set(k, v);
+    if (openTurns.size) {
+      log(`boot: ${openTurns.size} ventana(s) reabierta(s) del inbox`);
+      ensureTapWatcher();
+    }
+  } catch {
+    /* sin inbox: nada que reabrir */
   }
-  openTurn = null;
-  openTurn = { sid: ev.sid, cwd: ev.cwd, prompt: ev.prompt.slice(0, PROMPT_MAX), startMs: ev.atMs };
-  tapTouched.clear();
-  tapGitRoots.clear();
-  ensureTapWatcher();
-  log(`turno abierto (${ev.sid.slice(0, 8)}): "${ev.prompt.slice(0, 50)}"`);
-}
-
-async function onTurnStop(ev) {
-  if (!openTurn) return; // stop without a prompt in this server life: nothing to bound
-  if (openTurn.sid && ev.sid && ev.sid !== openTurn.sid) return; // another session's stop
-  const sid = currentSid();
-  if (sid && ev.sid && ev.sid !== sid) return; // foreign stop: this server never opened that turn
-  openTurn.reply = String(ev.reply ?? "").slice(0, REPLY_MAX);
-  openTurn.stopMs = Math.max(ev.atMs, openTurn.startMs + 1);
-  await finalizeOpenTurn({ interrupted: false });
 }
 
 // ---- session timeline (whose cwd was active when) ------------------------
@@ -865,11 +913,11 @@ function inboxTimeline() {
 
 const CHILD_SESSION_PREFIXES = ["sess_subagent_", "sess_workflow_"];
 
-// Timeline staleness cap: a prompt without a stop older than this is a
-// ZOMBIE window (a server that died mid-turn — October windows were still
-// "open" today, polluting every overlap computation). After the cap the
-// interval no longer overlaps anything.
-const TURN_OPEN_MAX_MS = 2 * 60 * 60 * 1000;
+// Timeline staleness cap: TURN_OPEN_MAX_MS lives in turn-fold.mjs now (a
+// prompt without a stop older than the cap is a ZOMBIE window — a server
+// that died mid-turn; October windows were still "open" today, polluting
+// every overlap computation). After the cap the interval no longer
+// overlaps anything.
 
 // CWDs of OTHER top-level sessions whose turn overlapped [startMs, stopMs].
 function foreignCwds(sid, startMs, stopMs) {
@@ -1001,21 +1049,27 @@ export function outsideEntry(raw, home = os.homedir()) {
   };
 }
 
-async function finalizeOpenTurn({ interrupted }) {
-  const t = openTurn;
-  openTurn = null;
+async function finalizeWindow(t, { interrupted }) {
   if (!t) return null;
   const stopMs = t.stopMs ?? Date.now();
-  const snap = tapSnapshot();
-  tapTouched.clear();
-  tapGitRoots.clear();
+  // WINDOW SLICE (L5): with several lanes open the tap sets are shared —
+  // each lane finalizes with only the writes inside ITS window (startMs
+  // minus the same 2s guard band the git scans use). The shared sets die
+  // only when the LAST lane closes, so concurrent windows never starve
+  // each other's tap.
+  const touched = sliceByWindow(tapTouched.entries(), t.startMs - 2000);
+  const gitRoots = sliceByWindow(tapGitRoots.entries(), t.startMs - 2000).map(([root]) => root);
+  if (openTurns.size === 0) {
+    tapTouched.clear();
+    tapGitRoots.clear();
+  }
   const { repos, outside } = await collectTurnChanges({
     sid: t.sid,
     cwd: t.cwd,
     startMs: t.startMs,
     stopMs,
-    touched: snap.touched,
-    gitRoots: snap.gitRoots,
+    touched,
+    gitRoots,
   });
   const rec = {
     // Deterministic per prompt window (0.10.2): keyed by startMs — a window
@@ -1057,6 +1111,7 @@ function ensureInboxWatcher() {
   try {
     fs.mkdirSync(DA_STATE_DIR, { recursive: true });
     initInboxOffset();
+    reopenLiveLanes(); // boot heal (once per life): open windows survive the restart
     inboxWatcher = fs.watch(DA_STATE_DIR, (_evt, file) => {
       if (file !== path.basename(TURN_INBOX)) return;
       processInbox().catch(() => {});
@@ -1147,12 +1202,19 @@ export function noteRequestMeta(meta) {
   if (sid) metaSid = sid;
 }
 
+// Tests only: the sticky sid is deliberately never forgotten by product
+// code (a request without a sid keeps the last known task); tests that
+// simulate several callers need to unwind it between scenarios.
+export function resetRequestMetaForTests() {
+  metaSid = "";
+}
+
 export function currentSid() {
   return String(process.env.ZCODE_SESSION_ID ?? "").trim() || metaSid;
 }
 
-function sidTurns() {
-  const sid = currentSid();
+function sidTurns(scopeSid) {
+  const sid = scopeSid || currentSid();
   if (!sid) return readTurnFiles();
   return readTurnFiles().filter((t) => String(t.sid ?? "") === sid);
 }
@@ -1316,30 +1378,33 @@ function sameFile(a, b) {
 
 // Diff de un turno: "latest" = turno EN VIVO (ventana abierta hasta ahora);
 // un id = turno guardado. Multi-repo: cada archivo viaja con repoLabel.
-export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFocus = true } = {}) {
+export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFocus = true, sid: scopeSid } = {}) {
   let rec;
   let isLive = false;
-  const sid = currentSid();
+  // scopeSid: the panel's EXPLICIT task (diff://turn/<id>?sid=…) — see listTurns.
+  const sid = scopeSid || currentSid();
   // The live turn only serves THIS session (0.10.1); a foreign open turn is
   // someone else's "latest" — fall through to the saved per-session list.
-  if (id === "latest" && openTurn && (!sid || openTurn.sid === sid)) {
+  const lane = id === "latest" ? liveLane(sid) : null;
+  if (id === "latest" && lane) {
     isLive = true;
     const stopMs = Date.now();
-    const snap = tapSnapshot();
+    const touched = sliceByWindow(tapTouched.entries(), lane.startMs - 2000);
+    const gitRoots = sliceByWindow(tapGitRoots.entries(), lane.startMs - 2000).map(([root]) => root);
     const { repos, outside } = await collectTurnChanges({
-      sid: openTurn.sid,
-      cwd: openTurn.cwd,
-      startMs: openTurn.startMs,
+      sid: lane.sid,
+      cwd: lane.cwd,
+      startMs: lane.startMs,
       stopMs,
-      touched: snap.touched,
-      gitRoots: snap.gitRoots,
+      touched,
+      gitRoots,
     });
     rec = {
       id: "latest",
-      workspace: openTurn.cwd,
-      prompt: openTurn.prompt,
+      workspace: lane.cwd,
+      prompt: lane.prompt,
       reply: "",
-      startedAt: new Date(openTurn.startMs).toISOString(),
+      startedAt: new Date(lane.startMs).toISOString(),
       stoppedAt: new Date(stopMs).toISOString(),
       repos,
       outside,
@@ -1451,11 +1516,15 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
 const TURN_PAGE = 20;
 const TURN_PREVIEW_MAX = 300;
 
-export function listTurns({ skip = 0, limit = TURN_PAGE } = {}) {
-  const sid = currentSid();
-  const recs = sidTurns();
-  // The live turn only belongs to this view when it is THIS session's turn.
-  const live = openTurn && (!sid || openTurn.sid === sid) ? openTurn : null;
+export function listTurns({ skip = 0, limit = TURN_PAGE, sid: scopeSid } = {}) {
+  // scopeSid: the panel's EXPLICIT task (turn://list?sid=…) — resources/read
+  // carries no request context, and the cached sid is whoever called any
+  // tool last; the panel's view must follow ITS OWN task, always (0.10.8).
+  const sid = scopeSid || currentSid();
+  const recs = sidTurns(scopeSid);
+  // The live turn only belongs to this view when it is THIS session's turn
+  // (global mode serves the newest open lane — the last-processed window).
+  const live = liveLane(sid);
   const total = recs.length + (live ? 1 : 0);
   const from = Math.max(0, Math.min(Number(skip) || 0, total));
   const lim = Math.max(1, Math.min(Number(limit) || TURN_PAGE, 100));
@@ -1464,11 +1533,11 @@ export function listTurns({ skip = 0, limit = TURN_PAGE } = {}) {
     if (live && i === 0)
       return {
         id: "latest",
-        at: new Date(openTurn.startMs).toISOString(),
+        at: new Date(live.startMs).toISOString(),
         stoppedAt: "",
-        prompt: preview(openTurn.prompt),
+        prompt: preview(live.prompt),
         reply: "",
-        workspace: openTurn.cwd,
+        workspace: live.cwd,
         repoCount: 0,
         fileCount: 0,
         isLive: true,
@@ -1495,7 +1564,8 @@ export function listTurns({ skip = 0, limit = TURN_PAGE } = {}) {
   return { count: total, skip: from, limit: lim, hasMore, sessionFilter: sid || null, turns: turns.slice(0, lim) };
 }
 
-export function deleteTurn(id, { workspace = activeWorkspace } = {}) {
+export async function deleteTurn(id, { workspace = activeWorkspace } = {}) {
+  await inboxLane.catch(() => {}); // no in-flight finalize may resurrect the file
   const rec = sidTurns().find((t) => t.id === id);
   if (!rec) return { error: "unknown_turn", message: `No encontré el turno "${id}".` };
   try {
@@ -1504,17 +1574,21 @@ export function deleteTurn(id, { workspace = activeWorkspace } = {}) {
   return { ok: true, remaining: sidTurns().length };
 }
 
-export function clearTurns({ workspace = activeWorkspace } = {}) {
+export async function clearTurns({ workspace = activeWorkspace } = {}) {
+  await inboxLane.catch(() => {}); // no in-flight finalize may resurrect records
   const sid = currentSid();
   if (!sid) {
     try {
       fs.rmSync(TURNS2_DIR, { recursive: true, force: true });
     } catch { /* nada que borrar */ }
     turnStoreCache = null;
+    openTurns.clear(); // global clear drops every live lane too
     return { ok: true, remaining: 0 };
   }
   // Scoped (0.10.1): the panel's "Borrar todo" is per task view — with a
-  // known session it must NOT nuke every other task's history.
+  // known session it must NOT nuke every other task's history. Its own
+  // live lane dies with the view (dropped, never persisted as a record).
+  openTurns.delete(sid);
   let remaining = 0;
   for (const t of readTurnFiles()) {
     if (String(t.sid ?? "") === sid) {
@@ -1918,8 +1992,12 @@ function uriDiffData(uri) {
     if (u.host === "workspace") return buildDiff();
     if (u.host === "turn") {
       const id = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
+      const sid = u.searchParams.get("sid") ?? "";
       ensureInboxWatcher();
-      return buildTurnDiff(id || "latest");
+      // Reads drain the inbox first (0.10.8): the fs.watch notifier can
+      // miss appends on macOS, and a blind read served a stale/empty turn
+      // list — the exact "both tabs show nothing" live failure.
+      return processInbox().then(() => buildTurnDiff(id || "latest", sid ? { sid } : {}));
     }
     if (u.host === "commit") {
       const ref = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
@@ -1928,10 +2006,14 @@ function uriDiffData(uri) {
   }
   if (u.protocol === "turn:" && u.host === "list") {
     ensureInboxWatcher();
-    return Promise.resolve(listTurns({
-      skip: parseInt(u.searchParams.get("skip") ?? "0", 10) || 0,
-      limit: parseInt(u.searchParams.get("limit") ?? "20", 10) || 20,
-    }));
+    const sid = u.searchParams.get("sid") ?? "";
+    return processInbox().then(() =>
+      listTurns({
+        skip: parseInt(u.searchParams.get("skip") ?? "0", 10) || 0,
+        limit: parseInt(u.searchParams.get("limit") ?? "20", 10) || 20,
+        ...(sid ? { sid } : {}),
+      }),
+    );
   }
   if (u.protocol === "log:" && u.host === "commits") {
     const skip = parseInt(u.searchParams.get("skip") ?? "0", 10) || 0;
@@ -1981,6 +2063,7 @@ async function handleRequest(msg) {
           data = await buildCommitDiff(String(params.arguments?.commit ?? ""));
           break;
         case "list_turns": {
+          await processInbox(); // drain before reading — watcher misses must not blind reads
           data = listTurns({
             skip: Number(params.arguments?.skip ?? 0) || 0,
             limit: Math.min(Number(params.arguments?.limit ?? 20) || 20, 100),
@@ -1992,6 +2075,7 @@ async function handleRequest(msg) {
         }
         case "get_turn_diff":
           ensureInboxWatcher();
+          await processInbox();
           // The fork's end-of-turn click parks a focus request here; the build
           // below does NOT resolve it — the panel's own resource read is the
           // one that consumes it (this build would eat it first).
@@ -2000,7 +2084,7 @@ async function handleRequest(msg) {
           data = await buildTurnDiff(String(params.arguments?.turn ?? "latest"), { resolveFocus: false });
           break;
         case "delete_turn": {
-          data = deleteTurn(String(params.arguments?.id ?? ""));
+          data = await deleteTurn(String(params.arguments?.id ?? ""));
           return {
             structuredContent: data,
             content: [{ type: "text", text: data.ok ? `Turno borrado (${data.remaining} restantes).` : data.message }],
@@ -2020,7 +2104,7 @@ async function handleRequest(msg) {
           };
         }
         case "clear_turns": {
-          data = clearTurns();
+          data = await clearTurns();
           return { structuredContent: data, content: [{ type: "text", text: "Turnos borrados." }] };
         }
         case "set_workspace": {
@@ -2039,6 +2123,7 @@ async function handleRequest(msg) {
           };
         }
         case "suggest_workspace": {
+          await processInbox(); // the suggestion ranks SAVED turns — drain first
           data = await suggestWorkspace();
           return {
             structuredContent: data,
@@ -2125,6 +2210,13 @@ async function handleRequest(msg) {
 // run directly (`node server.mjs`, e.g. tools/check-server.mjs) main() runs
 // via the argv guard below, the same pattern as the official documents server.
 export async function main() {
+  // Boot wiring (0.10.8): the inbox watcher, the cold offset and the boot
+  // heal must all be armed AT STARTUP — a restart mid-turn receives events
+  // (the deploy's own stop!) before any turn read; without this, nothing
+  // watched the inbox until the first tools/call, and those early appends
+  // fell in the cold-offset gap: unseen by the watcher, skipped by the
+  // first drain. This is the restart race's second half.
+  ensureInboxWatcher();
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   rl.on("line", (line) => {
     line = line.trim();
