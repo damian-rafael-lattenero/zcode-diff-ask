@@ -29,7 +29,7 @@ Call the `get_diff` tool (from this plugin) for structured JSON: branch, head, a
 
 Turns (what each user prompt achieved — commits made in the window plus files left dirty, across every repo the turn touched):
 
-- `list_turns` — recorded turns, newest first, paginated (use `skip`): id, timestamps, prompt/reply previews, repo and file counts. The first entry may be the OPEN turn (`isLive`).
+- `list_turns` — recorded turns, newest first, paginated (use `skip`): id, timestamps, prompt/reply previews, repo and file counts. The first entry may be the OPEN turn (`isLive`). Turns are scoped to the calling session when it is known (panel/model request context); otherwise they span all sessions.
 - `get_turn_diff` — diff of one turn (`latest` = the open turn live, or the last saved one): every file namespaced by repo label, commit files and dirty files, plus the "Fuera de git" group for files outside any repo. Opens the panel on that turn.
 
 Commits:

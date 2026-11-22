@@ -44,7 +44,7 @@ const MODES = [
 let mode = "turns";
 let commitSel = null; // hash en vista de diff de commit (null = lista)
 let turnSel = "latest"; // id de turno en vista (null = lista; "latest" = vivo/último)
-let turnsState = { list: [], skip: 0, hasMore: false, total: 0 };
+let turnsState = { list: [], skip: 0, hasMore: false, total: 0, sessionFilter: null };
 let commitsState = { query: "", skip: 0, list: [], hasMore: false };
 let subscribedUri = null;
 // Repo label (the server's OUTSIDE_LABEL — keep in sync) for files touched
@@ -82,8 +82,11 @@ let currentWorkspace = null;
 // (spec 22/11: an all-outside last turn ⇒ "seleccionar repositorio...").
 let wsChosen = false;
 // One in-flight suggestion at a time (refresh storms must not stampede
-// suggest_workspace).
+// suggest_workspace) — and ONE attempt per panel life: re-firing it on every
+// reactive refresh of an unchosen repo tab was 0.10.0's freeze (each failed
+// attempt cost a full turn-store parse server-side).
 let wsSuggesting = false;
+let wsSuggestTried = false;
 
 function wsLabel() {
   if (!currentWorkspace) return "…";
@@ -247,7 +250,7 @@ async function applyWorkspace(p, { silent = false } = {}) {
     seenPaths.clear();
     pendingAsks.length = 0;
     commitsState = { query: "", skip: 0, list: [], hasMore: false };
-    turnsState = { list: [], skip: 0, hasMore: false, total: 0 };
+    turnsState = { list: [], skip: 0, hasMore: false, total: 0, sessionFilter: null };
     commitSel = null;
     turnSel = mode === "turns" ? "latest" : null;
     await endAllEdits();
@@ -3425,6 +3428,7 @@ function renderModebar(root) {
 function renderRepoPickerPrompt() {
   const root = document.getElementById("root");
   hideSelPop("re-render"); // replaces the rows any popup anchors to
+  dropRenderedSig(); // the DOM no longer shows the stored payload's view
   root.textContent = "";
   renderModebar(root);
   const box = document.createElement("div");
@@ -3446,7 +3450,8 @@ function renderRepoPickerPrompt() {
 // all outside git / repo gone) or a failed apply → stay unchosen and show
 // the picker prompt until the user picks by hand.
 async function ensureWorkspaceForRepoTab() {
-  if (wsChosen || wsSuggesting) return;
+  if (wsChosen || wsSuggesting || wsSuggestTried) return;
+  wsSuggestTried = true;
   wsSuggesting = true;
   try {
     const res = await app.callServerTool({ name: "suggest_workspace", arguments: {} });
@@ -3472,6 +3477,7 @@ async function ensureWorkspaceForRepoTab() {
 // end where no control works.
 function renderRepoError(root, message) {
   hideSelPop("re-render"); // replaces the rows any popup anchors to
+  dropRenderedSig(); // the DOM no longer shows the stored payload's view
   renderModebar(root);
   const box = document.createElement("div");
   box.className = "state error";
@@ -3736,6 +3742,7 @@ async function loadCommits(reset = false) {
   commitsState.skip += (data.commits ?? []).length;
   commitsState.hasMore = Boolean(data.hasMore);
   diffData = null; // the active view is the list, not a diff
+  dropRenderedSig();
   renderCommits();
   resubscribe("log://commits");
 }
@@ -3817,13 +3824,14 @@ function renderCommits() {
 // re-reads page 1 (reactive refresh + entry points); reset=false appends the
 // next 10 (the "…" button).
 async function loadTurns(reset = false) {
-  if (reset) turnsState = { list: [], skip: 0, hasMore: false, total: 0 };
+  if (reset) turnsState = { list: [], skip: 0, hasMore: false, total: 0, sessionFilter: null };
   const gen = refreshGen;
   const uri = `turn://list?skip=${turnsState.skip}&limit=10`;
   const res = await withTimeout(app.readServerResource({ uri }), "turns");
   if (gen !== refreshGen) return; // superseded: don't render a stale list
   const data = JSON.parse(res?.contents?.[0]?.text ?? "{}");
   if (data.workspace) currentWorkspace = data.workspace;
+  turnsState.sessionFilter = data.sessionFilter ?? null;
   document.documentElement.dataset.repo = data?.error ? "no" : "yes";
   if (data.error) {
     const root = document.getElementById("root");
@@ -3839,6 +3847,7 @@ async function loadTurns(reset = false) {
   turnsState.hasMore = Boolean(data.hasMore);
   turnsState.total = data.count ?? turnsState.list.length;
   diffData = null;
+  dropRenderedSig();
   // pendingTurnFocus (the fork's end-of-turn file click): the LIST view also
   // honors the hint — jump straight to the focused turn's diff.
   const nav = data.pendingTurnFocus;
@@ -3891,7 +3900,7 @@ function renderTurns() {
   const count = document.createElement("span");
   count.className = "turns-count";
   count.textContent = turnsState.total
-    ? `${turnsState.total} turno${turnsState.total === 1 ? "" : "s"} · mostrando ${turnsState.list.length}`
+    ? `${turnsState.total} turno${turnsState.total === 1 ? "" : "s"} de esta task · mostrando ${turnsState.list.length}${turnsState.sessionFilter ? "" : " (todas)"}`
     : "";
   const clear = document.createElement("button");
   clear.className = "ghost danger";
@@ -4019,7 +4028,7 @@ async function setMode(m) {
   commitSel = null;
   turnSel = m === "turns" ? "latest" : null;
   commitsState = { query: "", skip: 0, list: [], hasMore: false };
-  turnsState = { list: [], skip: 0, hasMore: false, total: 0 };
+  turnsState = { list: [], skip: 0, hasMore: false, total: 0, sessionFilter: null };
   document.querySelectorAll(".modebar button").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === m);
   });
@@ -4062,6 +4071,12 @@ let refreshGen = 0;
 // the PREVIOUS view's stored signature.
 const payloadSig = (raw) => raw.replace(/"(generatedAt|stoppedAt)":"[^"]+"/g, "");
 let lastRendered = { uri: null, sig: null };
+// A list/prompt/error render replaces the DOM without going through the diff
+// branch: drop the stored signature so the next diff read re-renders even if
+// the payload is unchanged (the DOM no longer shows that payload's view).
+const dropRenderedSig = () => {
+  lastRendered = { uri: null, sig: null };
+};
 
 // Every server read gets a hard client-side timeout: a hung read must never
 // wedge the panel — on timeout the catch below renders an error state WITH
@@ -4089,7 +4104,10 @@ function refreshTarget() {
   const t = mode === "commits" && !commitSel ? "log://commits"
     : mode === "turns" && !turnSel ? "turn://list"
     : diffUriFor();
-  return `${t}@${currentWorkspace ?? ""}`;
+  // wsChosen qualifies the target: flipping it (0.10.1 picker prompt) must
+  // supersede an in-flight run that started with the other value, not
+  // coalesce into it.
+  return `${t}@${currentWorkspace ?? ""}@${wsChosen ? 1 : 0}`;
 }
 
 const isStale = (gen) => gen !== refreshGen;
@@ -4205,6 +4223,14 @@ async function boot() {
     return;
   }
   applyTheme(app.getHostContext());
+  // Session handshake (0.10.1): ANY tool call carries the request context,
+  // and the server caches the session id from it — this cheap call teaches
+  // the server WHICH task this panel serves, so every later turn read
+  // (even bare resources/read, which has no _meta) is scoped to this task.
+  // Best-effort: without it the server stays global.
+  try {
+    await app.callServerTool({ name: "whoami", arguments: {} });
+  } catch { /* global fallback */ }
   try {
     app.setNotificationHandler(ResourceUpdatedNotificationSchema, (n) => {
       // Estamos suscriptos al URI del modo activo (resubscribe): cualquier

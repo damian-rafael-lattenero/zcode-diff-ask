@@ -62,7 +62,7 @@ execFileSync("node", [path.join(HERE, "apply-fixture-mods.mjs")], { stdio: "inhe
 const TURN_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "da-e2e-state-"));
 const TURN_INBOX = path.join(TURN_STATE, "turn-events.jsonl");
 const server = spawn("node", [path.join(REPO, "diff-ask/server/server.mjs")], {
-  env: { ...process.env, ZCODE_WORKSPACE_ROOT: REPO, ZCODE_DIFF_ASK_STATE: TURN_STATE },
+  env: { ...process.env, ZCODE_WORKSPACE_ROOT: REPO, ZCODE_DIFF_ASK_STATE: TURN_STATE, ZCODE_SESSION_ID: "" },
   stdio: ["pipe", "pipe", "pipe"],
 });
 let rpcId = 0;

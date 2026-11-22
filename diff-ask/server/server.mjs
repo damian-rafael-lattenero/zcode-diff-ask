@@ -760,6 +760,12 @@ export async function processInbox() {
 }
 
 async function onTurnPrompt(ev) {
+  // Foreign prompts are not ours to bound (0.10.1): every server sees the
+  // GLOBAL inbox, so without this gate another session's prompt would mark
+  // THIS session's open turn as interrupted in the shared store. With no
+  // known session (CLI/tests/rig) the old global behavior applies.
+  const sid = currentSid();
+  if (sid && ev.sid && ev.sid !== sid) return;
   // a new prompt supersedes an unfinished turn (persisted as interrupted)
   if (openTurn) await finalizeOpenTurn({ interrupted: true });
   openTurn = { sid: ev.sid, cwd: ev.cwd, prompt: ev.prompt.slice(0, PROMPT_MAX), startMs: ev.atMs };
@@ -772,6 +778,8 @@ async function onTurnPrompt(ev) {
 async function onTurnStop(ev) {
   if (!openTurn) return; // stop without a prompt in this server life: nothing to bound
   if (openTurn.sid && ev.sid && ev.sid !== openTurn.sid) return; // another session's stop
+  const sid = currentSid();
+  if (sid && ev.sid && ev.sid !== sid) return; // foreign stop: this server never opened that turn
   openTurn.reply = String(ev.reply ?? "").slice(0, REPLY_MAX);
   openTurn.stopMs = Math.max(ev.atMs, openTurn.startMs + 1);
   await finalizeOpenTurn({ interrupted: false });
@@ -915,12 +923,38 @@ function ensureInboxWatcher() {
 }
 
 // ---- turn store (one JSON per turn, global across sessions) --------------
-function readTurnFiles() {
+// The store grows unbounded (4951 files / 73 MB measured 22/11): parsing it
+// on EVERY read (~1.1 s synchronous) wedged the single-threaded server —
+// tool calls queued behind each other and the panel's buttons froze. Cache
+// the parsed records; re-parse only when the directory actually changes
+// (mtime + file count + last name — cheap to check, correct for appends,
+// deletes and the atomic rm of clearTurns).
+let turnStoreCache = null; // { key, recs }
+
+function turnStoreKey() {
+  let st;
+  try {
+    st = fs.statSync(TURNS2_DIR);
+  } catch {
+    return "missing";
+  }
   let names = [];
   try {
     names = fs.readdirSync(TURNS2_DIR).filter((n) => n.endsWith(".json"));
   } catch {
-    return [];
+    return `broken:${st.mtimeMs}`;
+  }
+  return `${st.mtimeMs}:${names.length}:${names.length ? names[names.length - 1] : ""}`;
+}
+
+function readTurnFiles() {
+  const key = turnStoreKey();
+  if (turnStoreCache?.key === key) return turnStoreCache.recs;
+  let names = [];
+  try {
+    names = fs.readdirSync(TURNS2_DIR).filter((n) => n.endsWith(".json"));
+  } catch {
+    names = [];
   }
   const out = [];
   for (const n of names) {
@@ -929,7 +963,31 @@ function readTurnFiles() {
       if (rec && rec.id) out.push(rec);
     } catch { /* turno corrupto: se ignora */ }
   }
-  return out.sort((a, b) => Date.parse(b.stoppedAt ?? "") - Date.parse(a.stoppedAt ?? ""));
+  out.sort((a, b) => Date.parse(b.stoppedAt ?? "") - Date.parse(a.stoppedAt ?? ""));
+  turnStoreCache = { key, recs: out };
+  return out;
+}
+
+// Turns of the session this server serves (0.10.1): the session id arrives
+// in _meta["com.zcode/request-context"].session_id on every tools/call
+// (panel AND model calls — cached by noteRequestMeta), or via the
+// ZCODE_SESSION_ID env (belt-and-braces for a future host stamp). Empty →
+// global across sessions (CLI, tests, the e2e rig: unchanged behavior).
+let metaSid = "";
+
+export function noteRequestMeta(meta) {
+  const sid = String(meta?.["com.zcode/request-context"]?.session_id ?? "").trim();
+  if (sid) metaSid = sid;
+}
+
+export function currentSid() {
+  return String(process.env.ZCODE_SESSION_ID ?? "").trim() || metaSid;
+}
+
+function sidTurns() {
+  const sid = currentSid();
+  if (!sid) return readTurnFiles();
+  return readTurnFiles().filter((t) => String(t.sid ?? "") === sid);
 }
 
 function turnFileCount(rec) {
@@ -1094,7 +1152,10 @@ function sameFile(a, b) {
 export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFocus = true } = {}) {
   let rec;
   let isLive = false;
-  if (id === "latest" && openTurn) {
+  const sid = currentSid();
+  // The live turn only serves THIS session (0.10.1); a foreign open turn is
+  // someone else's "latest" — fall through to the saved per-session list.
+  if (id === "latest" && openTurn && (!sid || openTurn.sid === sid)) {
     isLive = true;
     const stopMs = Date.now();
     const snap = tapSnapshot();
@@ -1116,10 +1177,10 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
       outside,
     };
   } else {
-    rec = readTurnFiles().find((t) => t.id === id) ?? null;
+    rec = sidTurns().find((t) => t.id === id) ?? null;
     if (!rec && id === "latest") {
-      // sin turno abierto: el último guardado
-      rec = readTurnFiles()[0] ?? null;
+      // sin turno abierto (de esta sesión): el último guardado de la sesión
+      rec = sidTurns()[0] ?? null;
     }
     if (!rec) {
       if (id !== "latest")
@@ -1203,13 +1264,16 @@ const TURN_PAGE = 20;
 const TURN_PREVIEW_MAX = 300;
 
 export function listTurns({ skip = 0, limit = TURN_PAGE } = {}) {
-  const recs = readTurnFiles();
-  const total = recs.length + (openTurn ? 1 : 0);
+  const sid = currentSid();
+  const recs = sidTurns();
+  // The live turn only belongs to this view when it is THIS session's turn.
+  const live = openTurn && (!sid || openTurn.sid === sid) ? openTurn : null;
+  const total = recs.length + (live ? 1 : 0);
   const from = Math.max(0, Math.min(Number(skip) || 0, total));
   const lim = Math.max(1, Math.min(Number(limit) || TURN_PAGE, 100));
   const preview = (s) => String(s ?? "").split("\n")[0].slice(0, TURN_PREVIEW_MAX);
   const at = (i) => {
-    if (openTurn && i === 0)
+    if (live && i === 0)
       return {
         id: "latest",
         at: new Date(openTurn.startMs).toISOString(),
@@ -1222,7 +1286,7 @@ export function listTurns({ skip = 0, limit = TURN_PAGE } = {}) {
         isLive: true,
         interrupted: false,
       };
-    const t = recs[i - (openTurn ? 1 : 0)];
+    const t = recs[i - (live ? 1 : 0)];
     return {
       id: t.id,
       at: t.startedAt,
@@ -1239,34 +1303,50 @@ export function listTurns({ skip = 0, limit = TURN_PAGE } = {}) {
   const turns = [];
   for (let i = from; i < total && turns.length <= lim; i++) turns.push(at(i));
   const hasMore = turns.length > lim;
-  return { count: total, skip: from, limit: lim, hasMore, turns: turns.slice(0, lim) };
+  // sessionFilter: the panel renders "· esta task" when non-null (0.10.1).
+  return { count: total, skip: from, limit: lim, hasMore, sessionFilter: sid || null, turns: turns.slice(0, lim) };
 }
 
 export function deleteTurn(id, { workspace = activeWorkspace } = {}) {
-  const rec = readTurnFiles().find((t) => t.id === id);
+  const rec = sidTurns().find((t) => t.id === id);
   if (!rec) return { error: "unknown_turn", message: `No encontré el turno "${id}".` };
   try {
     fs.rmSync(path.join(TURNS2_DIR, `${rec.id}.json`), { force: true });
   } catch { /* ya no está */ }
-  return { ok: true, remaining: readTurnFiles().length };
+  return { ok: true, remaining: sidTurns().length };
 }
 
 export function clearTurns({ workspace = activeWorkspace } = {}) {
-  try {
-    fs.rmSync(TURNS2_DIR, { recursive: true, force: true });
-  } catch { /* nada que borrar */ }
-  return { ok: true, remaining: 0 };
+  const sid = currentSid();
+  if (!sid) {
+    try {
+      fs.rmSync(TURNS2_DIR, { recursive: true, force: true });
+    } catch { /* nada que borrar */ }
+    turnStoreCache = null;
+    return { ok: true, remaining: 0 };
+  }
+  // Scoped (0.10.1): the panel's "Borrar todo" is per task view — with a
+  // known session it must NOT nuke every other task's history.
+  let remaining = 0;
+  for (const t of readTurnFiles()) {
+    if (String(t.sid ?? "") === sid) {
+      try {
+        fs.rmSync(path.join(TURNS2_DIR, `${t.id}.json`), { force: true });
+      } catch { /* ya no está */ }
+    } else remaining++;
+  }
+  turnStoreCache = null;
+  return { ok: true, remaining, scoped: sid };
 }
 
 // Default workspace for the panel's "Trabajo por repositorio" tab (spec
-// 22/11): the git repo with the MOST changes of the last recorded turn —
-// commits + dirty files (dirtyHidden is noise by definition and doesn't
+// 22/11): the git repo with the MOST changes of the last recorded turn —// commits + dirty files (dirtyHidden is noise by definition and doesn't
 // count). An all-outside turn (or no turns at all) suggests nothing: the tab
 // then shows "seleccionar repositorio..." and waits for a manual pick. The
 // newest SAVED turn is the deterministic source (a live turn's repos are only
 // computed at Stop).
 export async function suggestWorkspace() {
-  const rec = readTurnFiles()[0] ?? null;
+  const rec = sidTurns()[0] ?? null;
   if (!rec) return { ok: true, turnId: null, workspace: null, reason: "no_turns" };
   const best = (rec.repos ?? [])
     .filter((r) => r.path && ((r.commits?.length ?? 0) + (r.dirty?.length ?? 0)) > 0)
@@ -1288,6 +1368,20 @@ export async function suggestWorkspace() {
     label: best.label ?? path.basename(best.path),
     commits: best.commits.length,
     dirty: best.dirty.length,
+  };
+}
+
+// Panel handshake (0.10.1): ANY tool call caches the request context's
+// session id (noteRequestMeta in the tools/call dispatch) — this cheap call
+// at panel boot is the one that teaches the server WHICH task it serves, so
+// every later turn read (even resources/read, which carries no _meta) is
+// scoped to this task.
+export function whoAmI() {
+  return {
+    ok: true,
+    sessionId: currentSid() || null,
+    workspace: activeWorkspace,
+    version: serverInfo.version,
   };
 }
 
@@ -1522,7 +1616,7 @@ const TOOLS = [
   {
     name: "list_turns",
     description:
-      "List recorded turns (newest first, GLOBAL across sessions, paginated in small pages — use skip to page deeper): a turn is one prompt→stop window. Each entry: id, startedAt/stoppedAt, a PREVIEW of the user prompt and the agent's reply, how many repos/worktrees were touched and how many files changed. The first entry may be the OPEN turn (isLive); call get_turn_diff for the full prompt and its files.",
+      "List recorded turns (newest first, paginated in small pages — use skip to page deeper): a turn is one prompt→stop window. Turns are SCOPED to the session making the call when it is known (panel/model request context), otherwise global across sessions. Each entry: id, startedAt/stoppedAt, a PREVIEW of the user prompt and the agent's reply, how many repos/worktrees were touched and how many files changed. The first entry may be the OPEN turn (isLive); call get_turn_diff for the full prompt and its files.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1603,6 +1697,13 @@ const TOOLS = [
     annotations: { readOnlyHint: true },
   },
   {
+    name: "whoami",
+    description:
+      "Identify the session this Diff Ask server serves (panel handshake; turns, suggestions and clear_turns are scoped to it when known).",
+    inputSchema: { type: "object", properties: {} },
+    annotations: { readOnlyHint: true },
+  },
+  {
     name: "list_git_projects",
     description:
       "List local git repositories under a folder (recursive, bounded depth, skips node_modules/Library/hidden — except .worktrees agent-worktree containers) for the panel's 📁 repo picker. Default folder: parent of the active workspace.",
@@ -1671,6 +1772,10 @@ async function handleRequest(msg) {
     case "tools/list":
       return { tools: TOOLS };
     case "tools/call": {
+      // Every tool call carries the request context (panel AND model calls):
+      // cache the session id so turn reads — including bare resources/read,
+      // which has no _meta — are scoped to THIS task (0.10.1).
+      noteRequestMeta(params._meta);
       let data;
       switch (params.name) {
         case "get_diff":
@@ -1757,6 +1862,13 @@ async function handleRequest(msg) {
                   : `Sin sugerencia (${data.reason}).`,
               },
             ],
+          };
+        }
+        case "whoami": {
+          data = whoAmI();
+          return {
+            structuredContent: data,
+            content: [{ type: "text", text: `Sesión: ${data.sessionId ?? "(global)"} · workspace: ${data.workspace}` }],
           };
         }
         default:

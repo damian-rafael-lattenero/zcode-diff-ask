@@ -12,12 +12,16 @@ import path from "node:path";
 
 const STATE = fs.mkdtempSync(path.join(os.tmpdir(), "da-state2-"));
 process.env.ZCODE_DIFF_ASK_STATE = STATE;
+// Neutralize an inherited ZCODE_SESSION_ID (the fork stamps it into every
+// Bash child): these tests exercise the GLOBAL store; the session-scoped
+// filter has its own test below, which sets/restores the var explicitly.
+process.env.ZCODE_SESSION_ID = "";
 
 const server = await import("../diff-ask/server/server.mjs");
 const {
   setActiveWorkspace, processInbox, listTurns, buildTurnDiff, deleteTurn, clearTurns,
   parseTurnEvent, isTapNoise, repoRootOf, noteTapPath, outsideEntry, requestTurnFocus,
-  suggestWorkspace,
+  suggestWorkspace, whoAmI,
 } = server;
 
 const INBOX = path.join(STATE, "turn-events.jsonl");
@@ -352,4 +356,67 @@ test("suggestWorkspace: repo con más cambios del último turno, empate → comm
   assert.equal(s2.ok, true);
   assert.equal(s2.workspace, null);
   assert.equal(s2.reason, "no_repos");
+});
+
+test("session filter: list/build scoped al env, prompt ajeno no interrumpe, clear scoped, cache", async () => {
+  clearTurns();
+  const A = makeRepo();
+  const B = makeRepo();
+  commitAt(A, T0 - 100_000, "a.py", "v1\n", "base A");
+  commitAt(B, T0 - 100_000, "b.py", "v1\n", "base B");
+  await setActiveWorkspace(A);
+
+  // a foreign (sF) turn first, recorded with the filter OFF (global)
+  sendEvent({ type: "prompt", sid: "sF", cwd: B, prompt: "turno extranjero", at: new Date(T0).toISOString() });
+  await processInbox();
+  fs.writeFileSync(path.join(B, "b.py"), "v1\nedit\n");
+  noteTapPath(path.join(B, "b.py"));
+  sendEvent({ type: "stop", sid: "sF", cwd: B, reply: "ok F", at: new Date(T0 + 10_000).toISOString() });
+  await processInbox();
+  assert.equal(listTurns().count, 1, "sin filtro: el turno extranjero está");
+
+  // scope to sA: from here the server only sees sA events as its own
+  process.env.ZCODE_SESSION_ID = "sA";
+  try {
+    sendEvent({ type: "prompt", sid: "sA", cwd: A, prompt: "turno propio", at: new Date(T0 + 20_000).toISOString() });
+    await processInbox();
+    // while sA's turn is OPEN, a foreign sF prompt must NOT interrupt it
+    sendEvent({ type: "prompt", sid: "sF", cwd: B, prompt: "ajeno", at: new Date(T0 + 30_000).toISOString() });
+    await processInbox();
+    sendEvent({ type: "stop", sid: "sA", cwd: A, reply: "ok A", at: new Date(T0 + 35_000).toISOString() });
+    await processInbox();
+    const list = listTurns();
+    assert.equal(list.count, 1, "con filtro: sólo los turnos de sA");
+    assert.equal(list.sessionFilter, "sA");
+    assert.equal(list.turns[0].prompt, "turno propio");
+    assert.equal(list.turns[0].isLive, false);
+    assert.equal(list.turns[0].interrupted, false, "el prompt ajeno NO marcó el turno como interrumpido");
+    const d = await buildTurnDiff(list.turns[0].id);
+    assert.equal(d.error, undefined);
+    assert.equal(d.turn.prompt, "turno propio");
+    assert.equal((await buildTurnDiff("latest")).turn.prompt, "turno propio", "latest de la sesión = su último turno");
+    assert.equal((await suggestWorkspace()).turnId, list.turns[0].id, "suggest también queda scoped");
+
+    // scoped clear: wipes ONLY sA's turns; sF's stay on disk
+    const cleared = clearTurns();
+    assert.equal(cleared.scoped, "sA");
+    assert.equal(listTurns().count, 0);
+    process.env.ZCODE_SESSION_ID = "";
+    assert.equal(listTurns().count, 1, "sin filtro: el turno de sF sobrevivió al clear scoped");
+
+    // store cache: a NEW turn file is picked up by the next read (invalidation)
+    sendEvent({ type: "prompt", sid: "sG", cwd: B, prompt: "otro turno", at: new Date(T0 + 40_000).toISOString() });
+    await processInbox();
+    sendEvent({ type: "stop", sid: "sG", cwd: B, reply: "ok G", at: new Date(T0 + 50_000).toISOString() });
+    await processInbox();
+    assert.equal(listTurns().count, 2, "el cache del store se invalida cuando el dir cambia");
+
+    // whoami reflects the env identity
+    process.env.ZCODE_SESSION_ID = "sZ";
+    assert.equal(whoAmI().sessionId, "sZ");
+    process.env.ZCODE_SESSION_ID = "";
+    assert.equal(whoAmI().sessionId, null, "sin env ni request-context → global (sessionId null)");
+  } finally {
+    process.env.ZCODE_SESSION_ID = "";
+  }
 });
