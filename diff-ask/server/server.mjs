@@ -899,9 +899,14 @@ function foreignActiveAt(mySid, ms) {
 // Reads everything a turn touched: per repo, the commits made in the window
 // and the dirty state left at the end. Shared by finalize and the live view.
 async function collectTurnChanges({ sid = "", cwd, startMs, stopMs, touched, gitRoots }) {
-  // Cross-session attribution: another task's live repo is theirs, not ours.
+  // Cross-session attribution: another task's live repo is theirs, not ours
+  // — EXCEPT our own workspace repo (two tasks on the same project are both
+  // legitimate; the session cwd is ALWAYS ours, like the default git).
   const foreignRoots = new Set(
-    [...foreignCwds(sid, startMs - 2000, stopMs + 2000)].map((c) => repoRootOf(c)).filter(Boolean),
+    [...foreignCwds(sid, startMs - 2000, stopMs + 2000)]
+      .map((c) => repoRootOf(c))
+      .filter(Boolean)
+      .filter((root) => root !== (cwd ? repoRootOf(cwd) : null)),
   );
   const home = os.homedir();
   const repos = new Map(); // root -> Set(rel)
@@ -1348,15 +1353,19 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
     // Read-time attribution (0.10.6): records stored BEFORE the territory
     // rules carry repos captured machine-wide — drop repos that are OTHER
     // top-level sessions' cwd with overlapping windows, so old records
-    // render clean without migrating the 8000-file store.
+    // render clean without migrating the 8000-file store. The record's OWN
+    // workspace repo is NEVER dropped (0.10.6b: two tasks on the same
+    // project are both legitimate — consecutive same-repo turns were going
+    // empty).
     if (rec) {
-      const ivs = foreignCwds(
-        String(rec.sid ?? ""),
-        Date.parse(rec.startedAt ?? "") || 0,
-        Date.parse(rec.stoppedAt ?? "") || Date.now(),
-      );
+      const recStart = Date.parse(rec.startedAt ?? "") || 0;
+      const recStop = Date.parse(rec.stoppedAt ?? "") || Date.now();
+      const ivs = foreignCwds(String(rec.sid ?? ""), recStart, recStop);
+      const ownRoot = rec.workspace ? repoRootOf(rec.workspace) : null;
       if (ivs.size) {
-        const foreignRoots = new Set([...ivs].map((c) => repoRootOf(c)).filter(Boolean));
+        const foreignRoots = new Set(
+          [...ivs].map((c) => repoRootOf(c)).filter(Boolean).filter((root) => root !== ownRoot),
+        );
         if (foreignRoots.size)
           rec = { ...rec, repos: (rec.repos ?? []).filter((r) => !foreignRoots.has(r.path)) };
       }

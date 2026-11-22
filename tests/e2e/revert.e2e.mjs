@@ -676,20 +676,31 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     "las líneas hermanas del bloque NO se tocaron");
   const jReload = await until(async () => !(await evalJs(`__E2E.hasRowText(${JSON.stringify(SERVER_TS)}, "/delta")`)), 8000);
   if (!jReload) {
+    console.error("    diag J disk:", JSON.stringify({
+      hasDeltaRoute: readDisk(SERVER_TS).includes('"/delta"'),
+      hasRegisterSlash: readDisk(SERVER_TS).includes('register("GET", "/",'),
+      around: (readDisk(SERVER_TS).match(/.{0,60}delta.{0,60}/) ?? [""])[0],
+    }));
+    console.error("    diag J shelved:", fs.readdirSync(path.join(os.homedir(), ".zcode", "diff-ask", "shelved"), { recursive: true }).length);
     console.error("    diag J:", JSON.stringify(await evalJs(`(() => {
       const f = (__DA.diffData?.files ?? []).find((x) => x.path === ${JSON.stringify(SERVER_TS)});
       const e = __DA.rendered.get(${JSON.stringify(SERVER_TS)});
       return {
         gen: __DA.diffData?.generatedAt ?? null,
         dataHasDelta: (f?.after ?? f?.patch ?? "").includes("/delta"),
+        afterTail: (f?.after ?? "").slice(-80),
         frags: (__DA.fragSel.get(${JSON.stringify(SERVER_TS)}) ?? []).map((x) => x.text),
+        editing: __DA.editingCount,
         hydrated: !!e?.fd,
         refreshCalls: __DA.refreshCalls,
         refreshBusy: __DA.refreshBusy,
         lastUri: __DA.lastRenderedUri,
         mode: __DA.mode,
+        chips: [...document.querySelectorAll(".sent-chip")].map((c) => c.textContent),
       };
     })()`)));
+    const freshRaw = await evalJs(`fetch("/mcp?read=" + encodeURIComponent("diff://workspace")).then((r) => r.text())`);
+    console.error("    diag J freshRead hasDelta:", freshRaw.includes("/delta"), "len:", freshRaw.length);
   }
   check(jReload, "panel recargado: la palabra /delta desapareció del diff");
   await shot("09-tras-enter-quirurgico-adicion-pura.png");
@@ -1607,6 +1618,50 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     }))()`)));
   check((pageV?.rows ?? 0) === 10, `V: la lista de turnos pagina de a DIEZ (${pageV?.rows} filas)`);
   check(pageV?.more && /10 turnos/.test(pageV.moreTitle ?? ""), `V: el "…" carga de a 10 (${JSON.stringify(pageV?.moreTitle)})`);
+
+  // V5 — two CONTENT turns, then pick A → back → pick B: both must render
+  // their sections (0.10.4 reconciliation vs stale entries; report 22/11:
+  // "elijo cualquier turno de la lista y me aparece vacio").
+  const mark = (tag) => `V5-${tag}-${Date.now().toString(36)}`;
+  const contentTurn = async (tag, file, line) => {
+    const sid = `e2e-v5-${tag}`;
+    const at = new Date().toISOString();
+    sendTurnEvent({ type: "prompt", sid, cwd: REPO, prompt: mark(tag), at });
+    await sleep(400);
+    fs.writeFileSync(path.join(REPO, file), line);
+    await sleep(400);
+    sendTurnEvent({ type: "stop", sid, cwd: REPO, reply: `ok ${tag}`, at: new Date(Date.now() + 1000).toISOString() });
+    await sleep(600);
+  };
+  await contentTurn("a", "tests/diffs/notes.md", `v5 A ${Date.now()}\n`);
+  await contentTurn("b", "tests/diffs/notes.md", `v5 B ${Date.now()}\n`);
+  const pickByPrompt = async (needle) => {
+    const p = await evalJs(`(() => {
+      const row = [...document.querySelectorAll(".turn-row")].find((r) => (r.textContent ?? "").includes(${JSON.stringify(needle)}));
+      if (!row) return null;
+      const r = row.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    if (!p) throw new Error("V5: sin fila para " + needle);
+    await click(p.x, p.y);
+    return until(async () => (await evalJs(`(() => {
+      const id = __DA.diffData?.turn?.id ?? null;
+      const files = document.querySelectorAll("#root .file").length;
+      return id && files >= 0 ? { id, files } : null;
+    })()`)), 8000);
+  };
+  const pickA = await pickByPrompt("V5-a");
+  check(!!pickA && pickA.files > 0, `V: turno A (con contenido) abre con secciones (${JSON.stringify(pickA)})`);
+  await evalJs(`document.querySelector(".header .back")?.click()`); // ← Turnos (the list)
+  await until(async () => !!(await evalJs(`document.querySelector(".turn-row")`)), 6000);
+  const pickB = await pickByPrompt("V5-b");
+  check(!!pickB && pickB.files > 0 && pickB.id !== pickA.id,
+    `V: turno B DISTINTO re-renderiza con sus secciones (${JSON.stringify(pickB)})`);
+  await evalJs(`document.querySelector(".header .back")?.click()`); // ← Turnos (the list)
+  await until(async () => !!(await evalJs(`document.querySelector(".turn-row")`)), 6000);
+  const pickA2 = await pickByPrompt("V5-a");
+  check(!!pickA2 && pickA2.files > 0 && pickA2.id === pickA.id,
+    `V: volver a A re-renderiza (${JSON.stringify(pickA2)})`);
 
   // V4 — no turns at all → the repo tab shows its picker prompt (nothing is
   // auto-diffed) and a manual pick recovers the view. (Enter the repo tab
