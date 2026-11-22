@@ -478,6 +478,18 @@ const clickRevert = async () => {
   // take a beat longer than 3s to show (flake seen twice at the ONE-LETTER
   // drag step). Give it a wider window before giving up.
   const p = await until(async () => await evalJs("__E2E.popRev()"), 8000);
+  if (!p) {
+    console.error("    diag pop:", await evalJs(`(document.querySelector('.diag-chip')?.__log ?? []).slice(-8).join(' ⏐ ')`).catch((e) => "?" + e.message));
+    console.error("    pop state:", JSON.stringify(await evalJs(`(() => ({
+      pop: !!document.querySelector(".sel-pop"),
+      kids: document.querySelector(".sel-pop")?.children?.length ?? 0,
+      files: __DA.fragSel.size,
+      frags: [...__DA.fragSel.values()].reduce((n, v) => n + v.length, 0),
+      rendered: __DA.rendered.size,
+      hydrated: [...__DA.rendered.values()].filter((e) => e.fd).length,
+    }))()`).catch((e) => "?" + e.message)));
+    await shot("debug-no-pop.png").catch(() => {});
+  }
   if (!p) throw new Error("no apareció el popup ↩");
   await click(p.x, p.y);
 };
@@ -1237,7 +1249,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(await until(async () => (await evalJs(`document.querySelector(".ws-picker")`)) !== null, 3000), "R: el picker 📁 abre");
   check(await switchWorkspace(MEGA_DIR), "R: workspace cambiado al repo mega (flujo real del picker)");
 
-  await clickAt('.modebar button[data-mode="commits"]');
+  await clickAt('.modebar button.ws-commits');
   check(await until(async () => (await evalJs(`[...document.querySelectorAll(".commit-row")].length`)) > 0, 6000), "R: la lista de commits muestra el commit mega");
   const rowR = await evalJs(`(() => { const b = document.querySelector(".commit-row"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, hash: b.querySelector(".hash-chip")?.textContent }; })()`);
   check(rowR?.hash === megaShort, `R: el row es el commit mega (${JSON.stringify(rowR?.hash)})`);
@@ -1482,14 +1494,102 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     `U: el encabezado Fuera de git, si hay, va último (${JSON.stringify(groupsU.labels)})`);
   check(groupsU.labels?.includes(path.basename(REPO)) && groupsU.labels?.includes(path.basename(SECOND)), "U: los encabezados nombran los DOS repos");
   check(groupsU.counts?.some((c) => c.includes("2 commits")), "U: el encabezado del segundo repo muestra sus 2 commits");
+  // 0.10.0: folder sub-headers sort the browsing inside each repo group
+  // ("categorizados por repositorios y carpetas"). The first repo block's
+  // files follow its head (folder heads in between are not files).
   const orderU = await evalJs(`(() => {
     const kids = [...document.getElementById("root").children];
     const idx = kids.findIndex((k) => k.classList?.contains("turn-repo-head"));
-    const next = kids[idx + 1];
-    return { firstIsHead: idx >= 0, firstFilePrefix: next?.querySelector(".path")?.textContent?.slice(0, 40) ?? null };
+    const label = kids[idx]?.querySelector(".trh-label")?.textContent ?? null;
+    const firstFile = kids.slice(idx + 1).find((k) => k.classList?.contains("file"));
+    return { firstIsHead: idx >= 0, label, firstFilePrefix: firstFile?.querySelector(".path")?.textContent?.slice(0, 40) ?? null };
   })()`);
-  check(orderU.firstIsHead && (orderU.firstFilePrefix ?? "").startsWith(path.basename(REPO)), `U: el encabezado precede a SUS archivos (${JSON.stringify(orderU)})`);
+  check(orderU.firstIsHead && (orderU.firstFilePrefix ?? "").startsWith(orderU.label), `U: el encabezado precede a SUS archivos (${JSON.stringify(orderU)})`);
+  const foldersU = await evalJs(`[...document.querySelectorAll(".turn-folder-head")].map((h) => h.querySelector(".tfh-label")?.textContent)`);
+  check((foldersU ?? []).includes("tests/diffs") && (foldersU ?? []).includes("(raíz)"),
+    `U: sub-encabezados de carpeta por grupo (${JSON.stringify(foldersU)})`);
   await shot("20-turnos-dos-repos.png");
+
+  // ============ V. 0.10.0: dos tabs + repo tab (sugerencia/prompt/Commits) ====
+  // The mode bar has exactly TWO tabs now (Turnos + Trabajo por repositorio);
+  // "Sin pushear" is gone. The repo tab without a chosen repo asks the server
+  // which repo the LAST turn changed the most and adopts it; with no turns it
+  // shows its picker prompt instead. Commits is a sub-view reached through the
+  // repo tab's own button.
+  const tabsV = await evalJs(`[...document.querySelectorAll('.modebar button[data-mode]')].map((b) => b.dataset.mode)`);
+  check(tabsV.length === 2 && tabsV.includes("turns") && tabsV.includes("working"),
+    `V: la modebar tiene exactamente DOS tabs (${JSON.stringify(tabsV)})`);
+  check(await evalJs(`[...document.querySelectorAll('.modebar button')].every((b) => !/Sin pushear/.test(b.textContent))`),
+    "V: el botón Sin pushear ya no existe");
+
+  // V1 — suggestion: reset wsChosen and enter the repo tab. The U turn left
+  // the fixture repo with ~11 dirty files vs the second repo's 2 commits —
+  // the fixture repo is the "most changes" repo and must be adopted alone.
+  await evalJs(`__DA.wsChosen = false`);
+  await evalJs(`document.querySelector('.modebar button[data-mode="working"]')?.click()`);
+  check(await until(async () => (await evalJs(`__DA.wsChosen && (__DA.diffData?.mode ?? null)`)) === "working", 10000),
+    "V: sin repo elegido, la sugerencia del último turno se aplica sola");
+  const wsV = await evalJs(`(() => ({ ws: __DA.diffData?.workspace, chip: document.querySelector(".modebar button.ws")?.textContent ?? "", commitsBtn: !!document.querySelector(".modebar button.ws-commits") }))()`);
+  check((wsV.ws ?? "") === fs.realpathSync(REPO), `V: el repo sugerido es el de MÁS cambios (${JSON.stringify((wsV.ws ?? "").slice(-24))})`);
+  check((wsV.chip ?? "").includes(path.basename(REPO)), `V: el chip muestra el repo sugerido (${JSON.stringify(wsV.chip)})`);
+  check(wsV.commitsBtn, "V: el botón Commits aparece con el repo elegido");
+
+  // V2 — Commits sub-view: list → one commit's diff → back to the list →
+  // back to the SAME repo's working tree.
+  await clickAt('.modebar button.ws-commits');
+  check(await until(async () => (await evalJs(`document.querySelectorAll(".commit-row").length > 0 && !!document.querySelector(".back-ws")`)), 8000),
+    "V: Commits abre la lista del repo elegido con su botón volver");
+  const rowV = await evalJs(`(() => { const b = document.querySelector(".commit-row"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  if (!rowV) throw new Error("V: sin commit rows");
+  await click(rowV.x, rowV.y);
+  check(await until(async () => !!(await evalJs(`__DA.diffData?.commit`)), 8000), "V: el diff de un commit abre desde la sub-vista");
+  await evalJs(`document.querySelector(".header .back")?.click()`); // ← Commits (the list)
+  check(await until(async () => (await evalJs(`document.querySelectorAll(".commit-row").length > 0`)), 6000), "V: ← Commits vuelve a la lista");
+  await evalJs(`document.querySelector(".back-ws")?.click()`); // ← Trabajo del repo
+  check(await until(async () => (await evalJs(`__DA.diffData?.mode ?? null`)) === "working", 6000), "V: ← Trabajo del repo vuelve al árbol del MISMO repo");
+  check((await evalJs(`__DA.diffData?.workspace ?? ""`)) === fs.realpathSync(REPO), "V: el workspace se conservó durante todo el ciclo Commits");
+
+  // V3 — the turn list pages 10 at a time ("de a diez hacia el pasado"):
+  // pump cheap all-outside turns (no repos to scan) and read page 1.
+  const TURN_TMP = fs.mkdtempSync(path.join(os.tmpdir(), "da-e2e-vturn-"));
+  const t0v = Date.now() - 12 * 90_000;
+  for (let i = 0; i < 12; i++) {
+    const at = new Date(t0v + i * 60_000).toISOString();
+    sendTurnEvent({ type: "prompt", sid: `e2e-v${i}`, cwd: TURN_TMP, prompt: `V turno de página ${i}`, at });
+    sendTurnEvent({ type: "stop", sid: `e2e-v${i}`, cwd: TURN_TMP, reply: `V ok ${i}`, at: new Date(t0v + i * 60_000 + 30_000).toISOString() });
+  }
+  await evalJs(`document.querySelector('.modebar button[data-mode="turns"]')?.click()`);
+  await until(async () => !!(await evalJs(`document.querySelector(".header .back")`)), 5000);
+  await evalJs(`document.querySelector(".header .back")?.click()`); // ← Turnos (the list)
+  const pageV = await until(async () => (await evalJs(`(() => {
+    const rows = document.querySelectorAll(".turn-row").length;
+    const more = document.querySelector(".more-btn");
+    return rows > 0 ? { rows, more: !!more, moreTitle: more?.title ?? "" } : null;
+  })()`)), 8000);
+  if (!pageV)
+    console.error("    diag V3:", JSON.stringify(await evalJs(`(() => ({
+      mode: __DA.mode, turnSel: __DA.turnSel, turns: __DA.turnsState?.list?.length,
+      err: document.querySelector(".state.error")?.textContent?.slice(0, 80) ?? null,
+      empty: document.querySelector(".state")?.textContent?.slice(0, 60) ?? null,
+    }))()`)));
+  check((pageV?.rows ?? 0) === 10, `V: la lista de turnos pagina de a DIEZ (${pageV?.rows} filas)`);
+  check(pageV?.more && /10 turnos/.test(pageV.moreTitle ?? ""), `V: el "…" carga de a 10 (${JSON.stringify(pageV?.moreTitle)})`);
+
+  // V4 — no turns at all → the repo tab shows its picker prompt (nothing is
+  // auto-diffed) and a manual pick recovers the view. (Enter the repo tab
+  // FIRST: V3 left the panel on the turns LIST.)
+  await evalJs(`fetch("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool: "clear_turns", args: {} }) }).then(() => 0)`);
+  await evalJs(`document.querySelector('.modebar button[data-mode="working"]')?.click()`);
+  await until(async () => (await evalJs(`__DA.mode`)) === "working", 6000);
+  await evalJs(`__DA.wsChosen = false`);
+  await evalJs(`__DA.refresh(true)`);
+  check(await until(async () => (await evalJs(`!!document.querySelector(".state .ws-switch") && !__DA.wsChosen`)), 10000),
+    "V: sin turnos, el repo tab muestra el prompt de selección (nada auto-diffeado)");
+  check(/seleccionar repositorio/.test((await evalJs(`document.querySelector(".modebar button.ws")?.textContent ?? ""`))),
+    "V: el chip dice seleccionar repositorio...");
+  check(await switchWorkspace(REPO), "V: selección manual del fixture desde el prompt");
+  fs.rmSync(TURN_TMP, { recursive: true, force: true });
+  await shot("21-repo-tab-flow.png");
   // limpieza: repo efímero + archivo sucio (el state dir es tmp del rig)
   fs.rmSync(SECOND, { recursive: true, force: true });
   fs.rmSync(path.join(REPO, U_DIRTY), { force: true });

@@ -688,6 +688,14 @@ button.filt.on::after {
   white-space: nowrap;
 }
 .modebar .ws:hover { color: var(--text); border-color: var(--accent); }
+/* "seleccionar repositorio..." (nothing chosen yet) + the Commits sub-button. */
+.modebar .ws.empty { font-style: italic; }
+.modebar .ws-commits { font-size: 12px; }
+.modebar .ws-commits.active {
+  color: var(--accent, #4268d8);
+  border-color: var(--accent, #4268d8);
+  font-weight: 600;
+}
 .ws-editor {
   position: fixed;
   top: 44px;
@@ -830,6 +838,28 @@ button.filt.on::after {
 .turn-repo-head .trh-counts { font-weight: 400; font-size: 12px; color: var(--muted); }
 .turn-repo-head .trh-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .turn-repo-head.closed { opacity: 0.75; }
+/* Folder sub-header inside a turn's repo group (0.10.0): lighter, indented. */
+.turn-folder-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 2px 22px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.turn-folder-head .trh-chev { width: 10px; flex: none; font-size: 9px; }
+.turn-folder-head .tfh-label {
+  font-family: var(--mono, ui-monospace, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.turn-folder-head.closed { opacity: 0.75; }
 /* One-shot panel focus: the section the fork's file click asked to open. */
 .focus-flash {
   animation: da-focus-flash 2.4s ease-out;

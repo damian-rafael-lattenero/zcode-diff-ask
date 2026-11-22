@@ -28,22 +28,18 @@ import {
 const DIFF_URI = "diff://workspace";
 const app = new App({ name: "diff-ask", version: "0.1.0" }, {});
 
-// Modos del panel: qué diff se muestra y contra qué base.
-//   working   → git diff HEAD + untracked (el clásico)
-//   unpushed  → commits sin pushear + cambios locales, vs @{upstream}
-//   turns     → TURNOS: cada mensaje del usuario fotografía el workspace
-//               (HEAD + blobs de git); el diff de un turno = su foto vs la
-//               del prompt siguiente; el ÚLTIMO, contra el working tree VIVO
-//               (nace abierto por default). Señal: ~/.zcode/diff-ask/
-//               turn-events.jsonl (la escribe el bot para Telegram y el fork
-//               para desktop).
-//   commits   → historial: últimos commits / búsqueda por hash o título;
-//               un click abre el diff de ese commit (vs primer padre)
+// Panel modes (0.10.0: TWO tabs — Damian's spec 22/11):
+//   turns     → TURNS: the LAST executed turn with ALL its files (grouped by
+//               repo and folder, git vs "Fuera de git" separated); the list
+//               pages 10 at a time into the past.
+//   working   → WORK BY REPOSITORY: the 📁 selector lives only here; the
+//               default is the repo with the MOST changes of the last turn
+//               (suggest_workspace); no suggestion → "seleccionar
+//               repositorio...". The "Commits" button (internal sub-view, no
+//               tab of its own) opens the chosen repo's history.
 const MODES = [
   { id: "turns", label: "Turnos", title: "Turno a turno: qué cambió en cada uno — commits y archivos sucios de TODOS los repos/worktrees que tocó (el último, en vivo)" },
-  { id: "unpushed", label: "Sin pushear", title: "Commits sin pushear + cambios locales vs el upstream" },
-  { id: "working", label: "Trabajo por repositorio", title: "Cambios sin commitear del repositorio elegido con 📁 (vs HEAD + untracked)" },
-  { id: "commits", label: "Commits", title: "Historial de commits: buscá por hash o título, abrí el diff de uno" },
+  { id: "working", label: "Trabajo por repositorio", title: "Cambios sin commitear del repositorio elegido con 📁 (vs HEAD + untracked); su botón Commits abre el historial" },
 ];
 let mode = "turns";
 let commitSel = null; // hash en vista de diff de commit (null = lista)
@@ -58,7 +54,6 @@ const OUTSIDE_LABEL = "~";
 const collapsedGroups = new Set();
 
 function diffUriFor() {
-  if (mode === "unpushed") return `${DIFF_URI}?mode=unpushed`;
   if (mode === "turns" && turnSel) return `diff://turn/${encodeURIComponent(turnSel)}`;
   if (mode === "commits" && commitSel) return `diff://commit/${encodeURIComponent(commitSel)}`;
   return DIFF_URI;
@@ -66,7 +61,6 @@ function diffUriFor() {
 
 // Scope del mensaje: que el agente sepa QUÉ diff se le pregunta.
 function scopeLabel() {
-  if (mode === "unpushed") return diffData?.upstream ? `sin pushear, vs ${diffData.upstream}` : "sin pushear";
   if (mode === "turns" && diffData?.turn) {
     const tn = diffData.turn;
     const repos = (tn.repos ?? []).map((r) => r.label).join(", ");
@@ -82,6 +76,14 @@ function scopeLabel() {
 // cambiar a cualquier repo local — al cambiar se limpia TODO el estado
 // anclado (archivos colapsados, pila, commits) porque era de la carpeta vieja.
 let currentWorkspace = null;
+// Has a repo actually been CHOSEN for the repo tab (by the last-turn
+// suggestion or by the user)? Until it is, the repo tab shows its picker
+// prompt instead of diffing whatever repo the session happens to live in
+// (spec 22/11: an all-outside last turn ⇒ "seleccionar repositorio...").
+let wsChosen = false;
+// One in-flight suggestion at a time (refresh storms must not stampede
+// suggest_workspace).
+let wsSuggesting = false;
 
 function wsLabel() {
   if (!currentWorkspace) return "…";
@@ -234,12 +236,13 @@ function openWorkspacePicker() {
   filter.focus();
 }
 
-async function applyWorkspace(p) {
+async function applyWorkspace(p, { silent = false } = {}) {
   try {
     const res = await app.callServerTool({ name: "set_workspace", arguments: { path: p } });
     const sc = res?.structuredContent;
     if (!sc?.ok) throw new Error(sc?.message ?? "no se pudo cambiar la carpeta");
     currentWorkspace = sc.workspace;
+    wsChosen = true;
     collapsedPaths.clear();
     seenPaths.clear();
     pendingAsks.length = 0;
@@ -250,7 +253,7 @@ async function applyWorkspace(p) {
     await endAllEdits();
     renderPile();
     await refresh(true);
-    chip(`📁 ${wsLabel()}`);
+    if (!silent) chip(`📁 ${wsLabel()}`);
     return true;
   } catch (e) {
     chip(`⚠ ${e?.message ?? e}`);
@@ -395,11 +398,11 @@ function editingCount() {
   return n;
 }
 
-// ¿este archivo se puede editar en la vista ACTUAL? Sólo vistas del working
-// tree (Trabajo, Sin pushear, turno EN VIVO) y con contenido completo.
+// Can this file be edited in the CURRENT view? Only the repo tab's working
+// tree view, and only with full content.
 function editableNow(f) {
   if (typeof f.after !== "string" || f.binary || f.status === "D") return false;
-  if (mode === "working" || mode === "unpushed") return true;
+  if (mode === "working") return true;
   // turns are CROSS-REPO (files from worktrees of other repos, path
   // namespaced "<repo>/<path>"): the inline editor writes through the active
   // workspace and would hit the wrong repo — read-only there.
@@ -809,10 +812,11 @@ function findGo(dir, first = false) {
   const cur = find.hits[find.cur];
   if (cur.row.isConnected) {
     cur.row.setAttribute("data-da-find", "cur");
-    // la coincidencia puede vivir en un archivo colapsado: expandirlo
+    // the hit can live in a collapsed file: expand it
     if (cur.entry.section.classList.contains("collapsed")) {
       cur.entry.section.classList.remove("collapsed");
       collapsedPaths.delete(cur.entry.path);
+      hydrateFileDiff(cur.entry);
       scheduleAnchors();
     }
     cur.row.scrollIntoView({ block: "center" });
@@ -1109,7 +1113,7 @@ function renderPile() {
 // (let alone drop) them against other content.
 function pruneStaleAsks() {
   if (!pendingAsks.length) return;
-  if (diffData?.mode !== "working" && diffData?.mode !== "unpushed") return;
+  if (diffData?.mode !== "working") return;
   let dropped = 0;
   for (let i = pendingAsks.length - 1; i >= 0; i--) {
     const a = pendingAsks[i];
@@ -1428,6 +1432,10 @@ function selectedRowsOf(entry) {
 // Pinta la selección de un archivo: franja tintada por fila + NÚMERO relleno
 // (la cajita ES el número) + ＋ grande debajo de la última seleccionada.
 function renderSelUI(entry) {
+  if (!entry.fd) {
+    entry.body.querySelector(".sel-layer")?.remove(); // lazy: no rows to paint
+    return;
+  }
   let layer = entry.body.querySelector(".sel-layer");
   if (!layer) {
     layer = document.createElement("div");
@@ -1470,9 +1478,9 @@ function renderSelUI(entry) {
   big.onclick = () => openComposerMulti(entry);
   layer.appendChild(big);
   // Chunk revert (IDE-style): the blocks covered by the selection go back to
-  // the original. Needs full before content; turns are CROSS-REPO/read-only
-  // (the write would land in the wrong active repo).
-  if (typeof entry.fileData?.before === "string" && mode !== "turns") {
+  // the original. Needs full before content; only the repo tab's working
+  // view writes (turns/commits are read-only views).
+  if (typeof entry.fileData?.before === "string" && mode === "working") {
     const rev = document.createElement("button");
     rev.className = "big-plus big-revert";
     rev.textContent = "↩";
@@ -2837,7 +2845,7 @@ function scheduleAnchors() {
     // con cada tecla del editor y nuestras capas (tokens, tachados, franjas)
     // escribirían encima de filas vivas con contenido viejo.
     for (const entry of rendered.values()) {
-      if (!entry.fileData || entry.edit) continue;
+      if (!entry.fd || !entry.fileData || entry.edit) continue; // lazy: skip not-hydrated
       const l = getFiletypeFromFileName(entry.fileData.oldPath ?? entry.fileData.path);
       if (l && HL_LANGS.has(l)) hlColorize(entry, l);
       if (fragSel.has(entry.path)) renderFragUI(entry); // overlays tras repaint
@@ -2994,6 +3002,7 @@ function stashComposersOf(entry) {
 function clearRendered() {
   boxDrag = null;
   hideHoverPlus();
+  hideSelPop("re-render"); // the rows the popup anchors to are about to die
   for (const entry of rendered.values()) endEdit(entry, "complete");
   for (const entry of rendered.values()) {
     stashComposersOf(entry);
@@ -3034,16 +3043,78 @@ function turnRepoHead(label, repo) {
   return head;
 }
 
-// Hide the file sections under collapsed group headers (walk the siblings).
+// Folder sub-header inside a turn's repo group (spec 22/11: files
+// "categorizados por repositorios y carpetas"). Collapsible like repo heads,
+// keyed "label:dir" so the same folder in different repos stays independent.
+function turnFolderHead(label, dir) {
+  const key = `${label}:${dir}`;
+  const head = document.createElement("div");
+  head.className = "turn-folder-head" + (collapsedGroups.has(key) ? " closed" : "");
+  head.dataset.group = key;
+  head.innerHTML = `<span class="trh-chev"></span><span class="tfh-label"></span>`;
+  head.querySelector(".trh-chev").textContent = collapsedGroups.has(key) ? "▸" : "▾";
+  head.querySelector(".tfh-label").textContent = dir || "(raíz)";
+  head.title = dir ? `Carpeta ${dir}` : "Archivos en la raíz del repositorio";
+  head.onclick = () => {
+    if (collapsedGroups.has(key)) collapsedGroups.delete(key);
+    else collapsedGroups.add(key);
+    head.classList.toggle("closed", collapsedGroups.has(key));
+    head.querySelector(".trh-chev").textContent = collapsedGroups.has(key) ? "▸" : "▾";
+    applyGroupCollapse(document.getElementById("root"));
+  };
+  return head;
+}
+
+// The folder a turn file belongs to (relative to its repo root). Git-repo
+// files ride "label/relPath"; outside files ride "~/rel" or an absolute path.
+function turnFolderOf(f) {
+  let p = f.path;
+  if (f.repoLabel && f.repoLabel !== OUTSIDE_LABEL && p.startsWith(`${f.repoLabel}/`))
+    p = p.slice(f.repoLabel.length + 1);
+  else if (f.repoLabel === OUTSIDE_LABEL && p.startsWith("~/")) p = p.slice(2);
+  const cut = p.lastIndexOf("/");
+  return cut < 0 ? "" : p.slice(0, cut);
+}
+
+// Display order for the turns view: keep the server's REPO blocks (outside
+// git last) but sort files by path inside each block so folder sub-headers
+// group contiguous siblings. Display-only — the payload order is untouched.
+function turnFilesForDisplay(files) {
+  const out = [];
+  let i = 0;
+  while (i < files.length) {
+    let j = i;
+    const label = files[i].repoLabel ?? "";
+    while (j < files.length && (files[j].repoLabel ?? "") === label) j++;
+    out.push(...files.slice(i, j).sort((a, b) => a.path.localeCompare(b.path)));
+    i = j;
+  }
+  return out;
+}
+
+// Hide the file sections under collapsed group headers (repo AND folder
+// heads walk the siblings; a collapsed repo head hides its folder heads too).
 function applyGroupCollapse(root) {
+  let hideAll = false; // a collapsed repo head hides its folders too
   let group = null;
   for (const el of root.children) {
     if (el.classList?.contains("turn-repo-head")) {
+      hideAll = collapsedGroups.has(el.dataset.group ?? "");
+      group = null;
+      el.style.display = "";
+      continue;
+    }
+    if (el.classList?.contains("turn-folder-head")) {
+      if (hideAll) {
+        el.style.display = "none";
+        continue;
+      }
+      el.style.display = "";
       group = el.dataset.group ?? null;
       continue;
     }
-    if (group !== null && el.classList?.contains("file"))
-      el.style.display = collapsedGroups.has(group) ? "none" : "";
+    if (el.classList?.contains("file"))
+      el.style.display = group !== null && collapsedGroups.has(group) ? "none" : "";
   }
 }
 
@@ -3073,10 +3144,20 @@ function renderFileInner(f) {
   const counts = head.querySelector(".counts");
   if (f.added !== undefined || f.deleted !== undefined)
     counts.textContent = `+${f.added ?? 0} −${f.deleted ?? 0}`;
+  const entry = {
+    section, body: null, fd: null, path: f.path, patch: f.patch ?? "", fileData: f,
+    beforeLines: typeof f.before === "string" ? f.before.split("\n") : null,
+    afterLines: typeof f.after === "string" ? f.after.split("\n") : null,
+  };
   head.addEventListener("click", (e) => {
     if (e.target.closest("button")) return;
-    if (section.classList.toggle("collapsed")) collapsedPaths.add(f.path);
-    else collapsedPaths.delete(f.path);
+    if (section.classList.toggle("collapsed")) {
+      collapsedPaths.add(f.path);
+      dehydrateFileDiff(entry);
+    } else {
+      collapsedPaths.delete(f.path);
+      hydrateFileDiff(entry);
+    }
     scheduleAnchors(); // rAF: reposicionar cuando el layout ya cambió
   });
   section.appendChild(head);
@@ -3084,16 +3165,12 @@ function renderFileInner(f) {
   const body = document.createElement("div");
   body.className = "file-body";
   section.appendChild(body);
+  entry.body = body;
 
-  const entry = {
-    section, body, fd: null, path: f.path, patch: f.patch ?? "", fileData: f,
-    beforeLines: typeof f.before === "string" ? f.before.split("\n") : null,
-    afterLines: typeof f.after === "string" ? f.after.split("\n") : null,
-  };
   rendered.set(f.path, entry);
-  // ✏️ edición en vivo (sólo vistas del working tree con contenido completo).
-  // TOGGLE: entra al modo edición; si ya está editando ESTE archivo, guarda
-  // (autosave final, estilo IntelliJ) y sale.
+  // ✏️ live edit (working-tree views with full content only). TOGGLE: enter
+  // edit mode; when already editing THIS file, save (final autosave,
+  // IntelliJ style) and leave.
   if (editableNow(f)) {
     const editBtn = document.createElement("button");
     editBtn.className = "ghost fedit";
@@ -3102,18 +3179,24 @@ function renderFileInner(f) {
     editBtn.onclick = (e) => {
       e.stopPropagation();
       if (entry.edit) saveEntry(entry).finally(() => endEdit(entry, "complete"));
-      else startEditing(entry);
+      else {
+        // editing needs the diff mounted: expand + hydrate first
+        entry.section.classList.remove("collapsed");
+        collapsedPaths.delete(entry.path);
+        hydrateFileDiff(entry);
+        startEditing(entry);
+      }
     };
     entry.editBtn = editBtn;
     head.querySelector(".fplus").after(editBtn);
   }
-  // (Los botones de modo brocha "?" y "↩↩" se ELIMINARON — spec Damian
-  // 28/10. Los flujos siguen: pintar acumula con coexistencia por chars, el
-  // popup ＋/↩ aparece tras cada pintada, Enter ejecuta el revert de todo lo
-  // pintado y el ＋ del popup pregunta por los fragmentos pintados.)
-  // Whole-file revert (only modified files with full before content; turns are
-  // cross-repo/read-only — the write would land in the wrong active repo).
-  if (typeof f.before === "string" && f.status !== "A" && f.status !== "?" && mode !== "turns") {
+  // (The brush-mode "?" and "↩↩" buttons were REMOVED — Damian's spec 28/10.
+  // The flows remain: painting accumulates with char-level coexistence, the
+  // ＋/↩ popup shows after each paint, Enter runs the revert of everything
+  // painted and the popup's ＋ asks about the painted fragments.)
+  // Whole-file revert (only modified files with full before content; only
+  // the repo tab's working view writes — turns/commits are read-only views).
+  if (typeof f.before === "string" && f.status !== "A" && f.status !== "?" && mode === "working") {
     const revBtn = document.createElement("button");
     revBtn.className = "ghost frev";
     revBtn.textContent = "↩";
@@ -3125,7 +3208,7 @@ function renderFileInner(f) {
     head.querySelector(".fplus").before(revBtn); // PRIMERO del toolbar
   }
 
-  // ＋ a nivel archivo: ancla al archivo entero, cita = mini-resumen.
+  // File-level ＋: anchors the whole file, quote = mini-summary.
   head.querySelector(".fplus").onclick = (e) => {
     e.stopPropagation();
     const summary = `${status}${f.oldPath ? ` · ${f.oldPath} → ${f.path}` : ""} · +${f.added ?? "?"} −${f.deleted ?? "?"}`;
@@ -3133,6 +3216,7 @@ function renderFileInner(f) {
   };
 
   if (f.binary) {
+    entry.noDiff = true;
     const info = document.createElement("div");
     info.className = "plain-note";
     info.textContent = "Archivo binario — sin diff de texto.";
@@ -3144,6 +3228,7 @@ function renderFileInner(f) {
   // window): no content ever existed to diff — an honest note instead of an
   // empty FileDiff box.
   if (f.gone) {
+    entry.noDiff = true;
     const info = document.createElement("div");
     info.className = "plain-note";
     info.textContent = "Tocado en el turno y ya no existe (fuera de git) — sin contenido previo que mostrar.";
@@ -3151,39 +3236,49 @@ function renderFileInner(f) {
     return;
   }
 
+  // Lazy body (0.10.0 perf): the FileDiff is constructed on FIRST expand —
+  // a 600-file payload must not build 600 diffs up front. Files that were
+  // already open (seenPaths policy) re-hydrate right away.
+  if (!section.classList.contains("collapsed")) hydrateFileDiff(entry);
+}
+
+// Construct the pierre FileDiff for one entry, on demand (expand, focus,
+// edit). Synchronous on purpose: deterministic for the e2e rig.
+function hydrateFileDiff(entry) {
+  if (entry.fd || entry.noDiff || !entry.body) return;
+  const f = entry.fileData;
   const fd = new FileDiff({
     themeType: theme,
     diffStyle: "unified",
-    // El gutter es NUESTRO (drag propio abajo): el ＋ nativo y la selección
-    // de la lib no arrancan en el webview de la app, y su hover tapaba la
-    // zona de agarre. Click/drag sobre los números = nuestro sistema.
+    // The gutter is OURS (own drag below): the lib's native ＋ and selection
+    // never start in the app's webview, and its hover covered the grab zone.
+    // Click/drag over the numbers = our system.
     lineHoverHighlight: "both",
-    // 10 líneas de contexto alrededor de cada cambio; los tramos más largos
-    // quedan como separador expandible (click = ver más código, read-only).
+    // 10 context lines around each change; longer stretches become an
+    // expandable separator (click = see more code, read-only).
     hunkSeparators: "line-info",
     collapsedContextThreshold: 10,
-    // Reactivo: pierre avisa cuando se expande un separador (antes: esperar
-    // 250ms a ver si movió las filas). rAF coalesce múltiples eventos.
+    // Reactive: pierre reports separator expansion (previously: wait 250ms
+    // and hope the rows moved). rAF coalesces multiple events.
     onHunkExpand: () => scheduleAnchors(),
   });
   entry.fd = fd;
   // <diffs-container> carries the shadow-DOM shell + core styles the
   // FileDiff renders into — a plain div renders unstyled.
   const container = document.createElement("diffs-container");
-  body.appendChild(container);
-  applyLineFilter(entry); // el archivo nuevo nace con los filtros corrientes
+  entry.body.appendChild(container);
+  applyLineFilter(entry); // the fresh file is born with the current filters
 
-  // Lenguaje para el highlighting (HL_LANGS a nivel módulo): la librería no
-  // lo infiere sola en el render por contenidos — sin esto pinta plain.
+  // Highlight language (module-level HL_LANGS): the lib does not infer it
+  // from contents at render time — without this it paints plain.
   const hlLang = (() => {
     const l = getFiletypeFromFileName(f.oldPath ?? f.path);
     return l && HL_LANGS.has(l) ? l : undefined;
   })();
-  if (hlLang) hlColorize(entry, hlLang);
 
   if (typeof f.before === "string" || typeof f.after === "string") {
-    // Contenido completo: diff local expandible (los números de línea del
-    // gutter son los del archivo real, la cita sale de acá directo).
+    // Full content: local expandable diff (the gutter's line numbers are the
+    // real file's; quotes come straight from here).
     fd.render({
       fileContainer: container,
       oldFile:
@@ -3197,30 +3292,46 @@ function renderFileInner(f) {
     });
     fd.setThemeType(theme);
     attachStructureObserver(entry);
+    if (hlLang) hlColorize(entry, hlLang);
     return;
   }
 
   if (!f.patch) {
+    entry.noDiff = true;
     const info = document.createElement("div");
     info.className = "plain-note";
     info.textContent =
-      status === "R" ? "Renombre sin cambios de contenido." : "Sin parche (archivo grande o sin cambios de texto).";
-    body.appendChild(info);
+      f.status === "R" ? "Renombre sin cambios de contenido." : "Sin parche (archivo grande o sin cambios de texto).";
+    entry.body.appendChild(info);
     return;
   }
 
   const parsed = parsePatchFiles(f.patch, `da-${rendered.size}`);
   const meta = parsed[0]?.files?.[0];
   if (!meta) {
+    entry.noDiff = true;
     const info = document.createElement("div");
     info.className = "plain-note";
     info.textContent = "El parche de este archivo no se pudo parsear.";
-    body.appendChild(info);
+    entry.body.appendChild(info);
     return;
   }
   fd.render({ fileContainer: container, fileDiff: meta });
   fd.setThemeType(theme);
   attachStructureObserver(entry);
+}
+
+// Collapse DESTROYS the FileDiff: memory stays bounded by the expanded set
+// (a long browsing session used to accumulate hundreds of live shadow-DOM
+// diffs). Content stays in fileData — re-expanding re-diffs one file.
+function dehydrateFileDiff(entry) {
+  if (!entry.fd) return;
+  try { entry.fd.cleanUp(); } catch { /* already gone */ }
+  entry.structureObserver?.disconnect();
+  entry.structureObserver = null;
+  entry.body.textContent = ""; // drops the diffs-container + every layer
+  entry.fd = null;
+  entry._wcSig = null;
 }
 
 // Composer del ＋ por archivo: mismo look, sin setSelectedLines (no hay
@@ -3269,30 +3380,90 @@ function openComposerFile(entry, path, summary) {
   ta.focus();
 }
 
-// La barra de modos vive SIEMPRE arriba (también en estados de error, para
-// poder salir de un modo sin upstream/marcador sin quedarse trabado).
+// The mode bar lives ALWAYS on top (in error states too, so a broken repo
+// can never trap the user in a dead-end view).
 function renderModebar(root) {
   const modebar = document.createElement("div");
   modebar.className = "modebar";
+  // "commits" is an internal sub-view of the repo tab: the TAB stays active.
+  const activeMode = mode === "commits" ? "working" : mode;
   for (const m of MODES) {
     const b = document.createElement("button");
     b.dataset.mode = m.id;
     b.textContent = m.label;
     b.title = m.title;
-    if (m.id === mode) b.classList.add("active");
+    if (m.id === activeMode) b.classList.add("active");
     b.onclick = () => setMode(m.id);
     modebar.appendChild(b);
   }
-  // 📁: qué carpeta se está diffeando (título = ruta completa) y cambio.
-  const ws = document.createElement("button");
-  ws.className = "ghost ws";
-  ws.textContent = `📁 ${wsLabel()}`;
-  ws.title = currentWorkspace
-    ? `${currentWorkspace}\n(click para cambiar la carpeta del diff)`
-    : "Cambiar la carpeta del diff";
-  ws.onclick = openWorkspacePicker;
-  modebar.appendChild(ws);
+  // 📁 repo selector + Commits button: ONLY in the repo tab (and its Commits
+  // sub-view). Turnos is global — there is no single repo to pick there.
+  if (mode === "working" || mode === "commits") {
+    const ws = document.createElement("button");
+    ws.className = "ghost ws" + (wsChosen ? "" : " empty");
+    ws.textContent = wsChosen ? `📁 ${wsLabel()}` : "📁 seleccionar repositorio...";
+    ws.title = wsChosen && currentWorkspace
+      ? `${currentWorkspace}\n(click para cambiar la carpeta del diff)`
+      : "Elegir el repositorio cuyo trabajo querés ver";
+    ws.onclick = openWorkspacePicker;
+    modebar.appendChild(ws);
+    if (wsChosen) {
+      const cb = document.createElement("button");
+      cb.className = "ghost ws-commits";
+      cb.textContent = "Commits";
+      cb.title = "Historial de commits de este repositorio";
+      if (mode === "commits") cb.classList.add("active");
+      cb.onclick = () => openCommits();
+      modebar.appendChild(cb);
+    }
+  }
   root.appendChild(modebar);
+}
+
+// The repo tab with NO repo chosen (yet): an explicit picker prompt — NOT a
+// diff of whatever repo the session happens to live in (spec 22/11).
+function renderRepoPickerPrompt() {
+  const root = document.getElementById("root");
+  hideSelPop("re-render"); // replaces the rows any popup anchors to
+  root.textContent = "";
+  renderModebar(root);
+  const box = document.createElement("div");
+  box.className = "state";
+  const p = document.createElement("div");
+  p.textContent = "Sin repositorio elegido: el último turno no dejó cambios en ningún repo git (o no hay turnos).";
+  const b = document.createElement("button");
+  b.className = "ghost ws-switch";
+  b.textContent = "📁 seleccionar repositorio…";
+  b.title = "Elegir el repositorio cuyo trabajo querés ver";
+  b.onclick = openWorkspacePicker;
+  box.append(p, b);
+  root.appendChild(box);
+  document.documentElement.dataset.repo = "no";
+}
+
+// Repo-tab entry without a chosen repo: ask the server which repo the LAST
+// turn changed the most and adopt it (spec 22/11). No suggestion (no turns /
+// all outside git / repo gone) or a failed apply → stay unchosen and show
+// the picker prompt until the user picks by hand.
+async function ensureWorkspaceForRepoTab() {
+  if (wsChosen || wsSuggesting) return;
+  wsSuggesting = true;
+  try {
+    const res = await app.callServerTool({ name: "suggest_workspace", arguments: {} });
+    const sc = res?.structuredContent;
+    if (sc?.ok && sc.workspace) {
+      if (await applyWorkspace(sc.workspace, { silent: true }))
+        chip(`📁 ${wsLabel()} — el repo con más cambios del último turno`);
+      else renderRepoPickerPrompt();
+      return;
+    }
+    renderRepoPickerPrompt();
+  } catch (e) {
+    chip(`⚠ sugerencia: ${e?.message ?? e}`);
+    renderRepoPickerPrompt();
+  } finally {
+    wsSuggesting = false;
+  }
 }
 
 // Fatal workspace state (folder deleted/corrupt, read failed): WARN and always
@@ -3300,6 +3471,7 @@ function renderModebar(root) {
 // another folder" button. A dead repo must never brick the panel into a dead
 // end where no control works.
 function renderRepoError(root, message) {
+  hideSelPop("re-render"); // replaces the rows any popup anchors to
   renderModebar(root);
   const box = document.createElement("div");
   box.className = "state error";
@@ -3378,7 +3550,9 @@ function renderAll() {
     bits.push(`<span class="tot-a">+${t.added}</span>`, `<span class="tot-d">−${t.deleted}</span>`);
   } else {
     bits.push(`${esc(diffData.branch)} @ ${esc(diffData.head)}`);
-    if (mode === "unpushed" && diffData.upstream) {
+    // Upstream chips ride the working header since 0.10.0 (the "Sin pushear"
+    // tab is gone — the info stays, the dedicated view doesn't).
+    if (diffData.upstream) {
       const ab = [];
       if (diffData.ahead !== undefined) ab.push(`<span class="tot-a">↑${diffData.ahead}</span>`);
       if (diffData.behind !== undefined) ab.push(`<span class="tot-d">↓${diffData.behind}</span>`);
@@ -3410,11 +3584,19 @@ function renderAll() {
   };
   header.querySelector(".fold").onclick = () => {
     for (const f of diffData.files) collapsedPaths.add(f.path);
-    for (const [p, e] of rendered) e.section.classList.toggle("collapsed", collapsedPaths.has(p));
+    for (const [p, e] of rendered) {
+      e.section.classList.toggle("collapsed", collapsedPaths.has(p));
+      if (collapsedPaths.has(p)) dehydrateFileDiff(e); // lazy: collapsed = unmounted
+    }
   };
   header.querySelector(".unfold").onclick = () => {
     collapsedPaths.clear();
-    for (const e of rendered.values()) e.section.classList.remove("collapsed");
+    // ⊞ is an explicit "show everything": hydrate all (the one deliberate
+    // mass-mount — browsing stays lazy everywhere else).
+    for (const e of rendered.values()) {
+      e.section.classList.remove("collapsed");
+      hydrateFileDiff(e);
+    }
   };
   header.querySelectorAll(".filt").forEach((b) => {
     b.onclick = () => {
@@ -3428,7 +3610,7 @@ function renderAll() {
 
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Modos arriba: Turnos (qué cambió en cada turno, en TODOS los repos; el último en vivo) · Sin pushear (upstream) · Trabajo por repositorio (sin commitear vs HEAD, del repo elegido con 📁) · Commits. ⌘F busca en el diff (Enter cicla) · ＋/−/≡ filtran líneas agregadas/borradas/contexto. Click en un NÚMERO = seleccionarlo (arrastrás y pintás varios, salteados también) → ＋ grande abre la pregunta · hover en una línea → ＋ · ＋ del encabezado = archivo. Abajo: libres; ⌘↵ manda todo junto.";
+  hint.textContent = "Modos arriba: Turnos (qué cambió en cada turno, en TODOS los repos; el último en vivo, agrupado por repo y carpeta) · Trabajo por repositorio (sin commitear vs HEAD, del repo elegido con 📁 — su botón Commits abre el historial). ⌘F busca en el diff (Enter cicla) · ＋/−/≡ filtran líneas agregadas/borradas/contexto. Click en un NÚMERO = seleccionarlo (arrastrás y pintás varios, salteados también) → ＋ grande abre la pregunta · hover en una línea → ＋ · ＋ del encabezado = archivo. Abajo: libres; ⌘↵ manda todo junto.";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
@@ -3453,18 +3635,26 @@ function renderAll() {
   }
   // Turns: files arrive grouped by repo (contiguous — the server emits them
   // repo by repo, the non-git "~" group LAST). A header per group makes each
-  // file's repo visible at a glance — ALWAYS, even with a single repo: the
-  // list of involved folders IS the point. Groups collapse on click.
+  // file's repo visible at a glance — ALWAYS, even with a single repo — and
+  // (0.10.0) a folder sub-header inside each group sorts the browsing
+  // ("categorizados por repositorios y carpetas"). Groups collapse on click.
   const repoCounts = new Map(
     (diffData.turn?.repos ?? []).map((r) => [r.label, r]),
   );
   if (mode === "turns" && diffData.turn) {
     let lastLabel = null;
-    for (const f of diffData.files) {
+    let lastDir = null;
+    for (const f of turnFilesForDisplay(diffData.files)) {
       const label = f.repoLabel ?? "";
       if (label !== lastLabel) {
         lastLabel = label;
+        lastDir = null;
         root.appendChild(turnRepoHead(label, repoCounts.get(label)));
+      }
+      const dir = turnFolderOf(f);
+      if (dir !== lastDir) {
+        lastDir = dir;
+        root.appendChild(turnFolderHead(label, dir));
       }
       renderFile(f);
     }
@@ -3508,7 +3698,9 @@ function renderAll() {
       collapsedPaths.delete(diffData.focusPath);
       e.section.classList.remove("collapsed");
       collapsedGroups.delete(e.fileData.repoLabel ?? "");
+      collapsedGroups.delete(`${e.fileData.repoLabel ?? ""}:${turnFolderOf(e.fileData)}`);
       applyGroupCollapse(root);
+      hydrateFileDiff(e); // lazy: the focused file mounts now
       e.section.scrollIntoView({ behavior: "smooth", block: "start" });
       e.section.classList.add("focus-flash");
       setTimeout(() => e.section.classList.remove("focus-flash"), 2400);
@@ -3550,6 +3742,7 @@ async function loadCommits(reset = false) {
 
 function renderCommits() {
   const root = document.getElementById("root");
+  hideSelPop("re-render"); // replaces the rows any popup anchors to
   root.textContent = "";
 
   const toolbar = document.createElement("div");
@@ -3559,6 +3752,12 @@ function renderCommits() {
   const bar = document.createElement("div");
   bar.className = "commits-search";
   bar.innerHTML = `<input type="search" placeholder="Hash o texto del título… (Enter busca)">`;
+  const back = document.createElement("button");
+  back.className = "ghost back-ws";
+  back.textContent = "← Trabajo del repo";
+  back.title = `Volver al árbol de trabajo de ${wsLabel()}`;
+  back.onclick = () => backToWorking();
+  bar.prepend(back);
   const input = bar.querySelector("input");
   input.value = commitsState.query;
   input.addEventListener("keydown", (e) => {
@@ -3614,12 +3813,13 @@ function renderCommits() {
 // confirmación inline (un click lo arma, el segundo confirma).
 
 // Turns list, paginated like Commits (Damian 22/11: 2000+ rows froze the
-// panel). reset=true re-reads page 1 (reactive refresh + entry points);
-// reset=false appends the next 20 (the "…" button).
+// panel; 0.10.0: pages of 10 — spec "de a diez hacia el pasado"). reset=true
+// re-reads page 1 (reactive refresh + entry points); reset=false appends the
+// next 10 (the "…" button).
 async function loadTurns(reset = false) {
   if (reset) turnsState = { list: [], skip: 0, hasMore: false, total: 0 };
   const gen = refreshGen;
-  const uri = `turn://list?skip=${turnsState.skip}&limit=20`;
+  const uri = `turn://list?skip=${turnsState.skip}&limit=10`;
   const res = await withTimeout(app.readServerResource({ uri }), "turns");
   if (gen !== refreshGen) return; // superseded: don't render a stale list
   const data = JSON.parse(res?.contents?.[0]?.text ?? "{}");
@@ -3679,6 +3879,7 @@ async function deleteTurnById(id) {
 
 function renderTurns() {
   const root = document.getElementById("root");
+  hideSelPop("re-render"); // replaces the rows any popup anchors to
   root.textContent = "";
 
   const toolbar = document.createElement("div");
@@ -3777,7 +3978,7 @@ function renderTurns() {
     const more = document.createElement("button");
     more.className = "more-btn";
     more.textContent = "…";
-    more.title = "Cargar 20 turnos más";
+    more.title = "Cargar 10 turnos más";
     more.onclick = () => loadTurns();
     root.appendChild(more);
   }
@@ -3809,8 +4010,8 @@ async function resubscribe(uri) {
   }
 }
 
-// Cambio de modo: chips arriba. Sale de Commits/Turnos limpia la selección y
-// la búsqueda; entrar a Turnos abre el ÚLTIMO turno directo (en vivo).
+// Mode switch (top tabs). Leaving Commits/Turns clears the selection and the
+// search; entering Turnos opens the LAST turn directly (live if one is open).
 async function setMode(m) {
   if (m === mode) return;
   await endAllEdits();
@@ -3825,9 +4026,42 @@ async function setMode(m) {
   await refresh(true);
 }
 
+// The repo tab's Commits sub-view: reached ONLY through its button (keeps
+// the chosen workspace); backToWorking returns to the same repo's tree.
+async function openCommits() {
+  if (!wsChosen || mode === "commits") return;
+  await endAllEdits();
+  mode = "commits";
+  commitSel = null;
+  commitsState = { query: "", skip: 0, list: [], hasMore: false };
+  document.querySelectorAll(".modebar button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.mode === "working");
+  });
+  await refresh(true);
+}
+
+async function backToWorking() {
+  if (mode !== "commits") return;
+  await endAllEdits();
+  mode = "working";
+  commitSel = null;
+  document.querySelectorAll(".modebar button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.mode === "working");
+  });
+  await refresh(true);
+}
+
 let pendingRefresh = false;
 let refreshInFlight = null;
 let refreshGen = 0;
+// Stable signature of the payload behind the current DOM: volatile timestamps
+// stripped (generatedAt changes on EVERY server read; a live turn's
+// stoppedAt is "now"). Two reads of unchanged data compare equal → refresh
+// skips the destroy/rebuild instead of re-diffing every FileDiff. Keyed by
+// URI: switching views and back must re-render even if the payload matches
+// the PREVIOUS view's stored signature.
+const payloadSig = (raw) => raw.replace(/"(generatedAt|stoppedAt)":"[^"]+"/g, "");
+let lastRendered = { uri: null, sig: null };
 
 // Every server read gets a hard client-side timeout: a hung read must never
 // wedge the panel — on timeout the catch below renders an error state WITH
@@ -3876,10 +4110,20 @@ async function refresh(explicit = false) {
   const gen = ++refreshGen; // supersedes any in-flight run aimed elsewhere
   const run = (async () => {
   const root = document.getElementById("root");
-  hideSelPop("re-render"); // re-render: la entrada que cierra el popup deja de existir
+  // NOTE: the ↩/＋ popup is NOT hidden here anymore (0.10.0): an unchanged
+  // payload short-circuits below and the rows it anchors to never die —
+  // hiding up-front killed freshly painted popups on reactive storms (e2e
+  // flake). clearRendered()/renderTurns()/renderCommits() hide it exactly
+  // when the DOM they anchor to is replaced.
   if (explicit) root.classList.add("loading");
   try {
-    if (mode === "commits" && !commitSel) {
+    if ((mode === "working" || mode === "commits") && !wsChosen) {
+      // No repo chosen yet: don't read the server's session workspace — show
+      // the picker prompt and run the one-shot last-turn suggestion (spec
+      // 22/11). The suggestion's applyWorkspace refreshes on its own.
+      renderRepoPickerPrompt();
+      ensureWorkspaceForRepoTab();
+    } else if (mode === "commits" && !commitSel) {
       await loadCommits();
     } else if (mode === "turns" && !turnSel) {
       await loadTurns(true);
@@ -3888,10 +4132,20 @@ async function refresh(explicit = false) {
       // pendingTurnFocus (the fork's end-of-turn file click): the payload of
       // ANY view can ask us to switch to a turn — follow the hint with ONE
       // extra read, then render that view.
+      let lastRaw = null;
       for (let hop = 0; hop < 2; hop++) {
         const res = await withTimeout(app.readServerResource({ uri }), "diff");
         if (isStale(gen)) return; // a newer refresh owns the UI now
-        diffData = JSON.parse(res?.contents?.[0]?.text ?? "{}");
+        const raw = res?.contents?.[0]?.text ?? "{}";
+        lastRaw = raw;
+        if (uri === lastRendered.uri && payloadSig(raw) === lastRendered.sig) {
+          // Same payload as what's already on screen: keep the DOM (and its
+          // expanded FileDiffs) — reactive storms must not rebuild the view.
+          diffData = JSON.parse(raw);
+          resubscribe(uri);
+          return;
+        }
+        diffData = JSON.parse(raw);
         if (diffData?.workspace) currentWorkspace = diffData.workspace;
         document.documentElement.dataset.repo = diffData?.error ? "no" : "yes";
         const nav = diffData?.pendingTurnFocus;
@@ -3906,6 +4160,7 @@ async function refresh(explicit = false) {
         uri = diffUriFor();
       }
       renderAll();
+      if (lastRaw !== null) lastRendered = { uri, sig: payloadSig(lastRaw) };
       resubscribe(uri);
     }
     if (isStale(gen)) return;
@@ -3991,6 +4246,12 @@ if (window.__DA_TEST__) {
     hl: { loaded: isHighlighterLoaded, loading: isHighlighterLoading, null: isHighlighterNull },
     get rendered() { return rendered; },
     get diffData() { return diffData; },
+    get wsChosen() { return wsChosen; },
+    set wsChosen(v) { wsChosen = Boolean(v); },
+    get mode() { return mode; },
+    get turnSel() { return turnSel; },
+    get turnsState() { return turnsState; },
+    openCommits,
     renderAll,
     get pendingAsks() { return pendingAsks; },
     get boxSel() { return boxSel; },
@@ -4014,6 +4275,10 @@ if (window.__DA_TEST__) {
   };
   diffData = window.__DA_TEST__;
   currentWorkspace = window.__DA_TEST__.workspace ?? null;
+  // The harness ships a workspace: treat it as chosen so the repo tab
+  // behaves like a live panel (tests can reset __DA.wsChosen to exercise
+  // the picker-prompt/suggestion flow).
+  wsChosen = Boolean(currentWorkspace);
   applyTheme({ theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light" });
   renderAll();
   renderPile();
@@ -4053,6 +4318,8 @@ if (window.__DA_TEST__) {
   app.callServerTool = async ({ name, arguments: a }) => {
     if (name === "set_workspace")
       return { structuredContent: { ok: true, workspace: a?.path ?? currentWorkspace } };
+    if (name === "suggest_workspace")
+      return { structuredContent: { ok: true, workspace: null, turnId: null, reason: "no_turns" } };
     if (name === "write_file")
       return { structuredContent: { ok: true, hash: "stub-hash" } };
     return { structuredContent: { ok: true, at: new Date().toISOString() } };
