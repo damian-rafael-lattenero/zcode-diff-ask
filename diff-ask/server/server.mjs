@@ -1203,33 +1203,52 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
   };
 }
 
-export function listTurns() {
+// ---- turn list pagination ------------------------------------------------
+// 2000+ stored turns used to ride ONE payload with FULL prompts — megabytes
+// per reactive read, the panel choked. Now: newest first (live turn on top),
+// slices of `limit` + hasMore, and summaries are PREVIEWS (first line, capped)
+// — the full prompt lives in the turn's diff payload (buildTurnDiff).
+const TURN_PAGE = 20;
+const TURN_PREVIEW_MAX = 300;
+
+export function listTurns({ skip = 0, limit = TURN_PAGE } = {}) {
   const recs = readTurnFiles();
-  const turns = recs.map((t) => ({
-    id: t.id,
-    at: t.startedAt,
-    stoppedAt: t.stoppedAt,
-    prompt: t.prompt,
-    reply: t.reply ?? "",
-    workspace: t.workspace,
-    repoCount: (t.repos ?? []).length,
-    fileCount: turnFileCount(t),
-    isLive: false,
-    interrupted: Boolean(t.interrupted),
-  }));
-  if (openTurn)
-    turns.unshift({
-      id: "latest",
-      at: new Date(openTurn.startMs).toISOString(),
-      stoppedAt: "",
-      prompt: openTurn.prompt,
-      reply: "",
-      workspace: openTurn.cwd,
-      repoCount: 0,
-      fileCount: 0,
-      isLive: true,
-    });
-  return { count: turns.length, turns };
+  const total = recs.length + (openTurn ? 1 : 0);
+  const from = Math.max(0, Math.min(Number(skip) || 0, total));
+  const lim = Math.max(1, Math.min(Number(limit) || TURN_PAGE, 100));
+  const preview = (s) => String(s ?? "").split("\n")[0].slice(0, TURN_PREVIEW_MAX);
+  const at = (i) => {
+    if (openTurn && i === 0)
+      return {
+        id: "latest",
+        at: new Date(openTurn.startMs).toISOString(),
+        stoppedAt: "",
+        prompt: preview(openTurn.prompt),
+        reply: "",
+        workspace: openTurn.cwd,
+        repoCount: 0,
+        fileCount: 0,
+        isLive: true,
+        interrupted: false,
+      };
+    const t = recs[i - (openTurn ? 1 : 0)];
+    return {
+      id: t.id,
+      at: t.startedAt,
+      stoppedAt: t.stoppedAt,
+      prompt: preview(t.prompt),
+      reply: preview(t.reply),
+      workspace: t.workspace,
+      repoCount: (t.repos ?? []).length,
+      fileCount: turnFileCount(t),
+      isLive: false,
+      interrupted: Boolean(t.interrupted),
+    };
+  };
+  const turns = [];
+  for (let i = from; i < total && turns.length <= lim; i++) turns.push(at(i));
+  const hasMore = turns.length > lim;
+  return { count: total, skip: from, limit: lim, hasMore, turns: turns.slice(0, lim) };
 }
 
 export function deleteTurn(id, { workspace = activeWorkspace } = {}) {
@@ -1485,8 +1504,14 @@ const TOOLS = [
   {
     name: "list_turns",
     description:
-      "List recorded turns (newest first, GLOBAL across sessions): a turn is one prompt→stop window. Each entry: id, startedAt/stoppedAt, the user prompt, the agent's reply summary, how many repos/worktrees were touched and how many files changed. The first entry may be the OPEN turn (isLive).",
-    inputSchema: { type: "object", properties: {} },
+      "List recorded turns (newest first, GLOBAL across sessions, paginated in small pages — use skip to page deeper): a turn is one prompt→stop window. Each entry: id, startedAt/stoppedAt, a PREVIEW of the user prompt and the agent's reply, how many repos/worktrees were touched and how many files changed. The first entry may be the OPEN turn (isLive); call get_turn_diff for the full prompt and its files.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skip: { type: "integer", minimum: 0, default: 0, description: "Skip the first N turns (pagination, newest first)." },
+        limit: { type: "integer", minimum: 1, maximum: 100, default: 20, description: "How many turns per page." },
+      },
+    },
     annotations: { readOnlyHint: true },
   },
   {
@@ -1593,7 +1618,10 @@ function uriDiffData(uri) {
   }
   if (u.protocol === "turn:" && u.host === "list") {
     ensureInboxWatcher();
-    return Promise.resolve(listTurns());
+    return Promise.resolve(listTurns({
+      skip: parseInt(u.searchParams.get("skip") ?? "0", 10) || 0,
+      limit: parseInt(u.searchParams.get("limit") ?? "20", 10) || 20,
+    }));
   }
   if (u.protocol === "log:" && u.host === "commits") {
     const skip = parseInt(u.searchParams.get("skip") ?? "0", 10) || 0;
@@ -1642,10 +1670,13 @@ async function handleRequest(msg) {
           data = await buildCommitDiff(String(params.arguments?.commit ?? ""));
           break;
         case "list_turns": {
-          data = listTurns();
+          data = listTurns({
+            skip: Number(params.arguments?.skip ?? 0) || 0,
+            limit: Math.min(Number(params.arguments?.limit ?? 20) || 20, 100),
+          });
           return {
             structuredContent: data,
-            content: [{ type: "text", text: `${data.count} turno(s).` }],
+            content: [{ type: "text", text: `${data.turns.length} de ${data.count} turno(s).` }],
           };
         }
         case "get_turn_diff":

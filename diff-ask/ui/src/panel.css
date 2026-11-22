@@ -801,6 +801,15 @@ button.filt.on::after {
 }
 .turn-live:empty { display: none; }
 .turn-row button { flex: none; padding: 2px 7px; font-size: 12px; }
+.turn-day {
+  margin: 12px 0 2px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
 .turn-repo-head {
   display: flex;
   align-items: center;
@@ -815,9 +824,24 @@ button.filt.on::after {
   top: 0;
   z-index: 1;
 }
+.turn-repo-head { cursor: pointer; user-select: none; }
+.turn-repo-head .trh-chev { width: 12px; flex: none; font-size: 10px; color: var(--muted); }
 .turn-repo-head .trh-icon { font-size: 14px; }
 .turn-repo-head .trh-counts { font-weight: 400; font-size: 12px; color: var(--muted); }
 .turn-repo-head .trh-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn-repo-head.closed { opacity: 0.75; }
+/* One-shot panel focus: the section the fork's file click asked to open. */
+.focus-flash {
+  animation: da-focus-flash 2.4s ease-out;
+  outline: 2px solid var(--accent, #4268d8);
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+@keyframes da-focus-flash {
+  0% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent, #4268d8) 55%, transparent); }
+  70% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent, #4268d8) 25%, transparent); }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}
 .prompt-card {
   position: fixed;
   top: 44px;
