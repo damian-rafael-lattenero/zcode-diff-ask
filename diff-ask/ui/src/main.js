@@ -2994,17 +2994,27 @@ function stashComposersOf(entry) {
 }
 
 function clearRendered() {
+  clearRenderedExcept(new Set());
+}
+
+// Reconciliation (0.10.4): the destroy-and-rebuild-everything render made
+// the panel freeze whenever the agent worked in the watched repo — every
+// write notification re-rendered ALL sections and re-diffed every expanded
+// file (renderer at 167% CPU measured). Sections whose file content is
+// IDENTICAL now keep their mounted FileDiff; only changed/new files render.
+function clearRenderedExcept(keep) {
   boxDrag = null;
   hideHoverPlus();
   hideSelPop("re-render"); // the rows the popup anchors to are about to die
-  for (const entry of rendered.values()) endEdit(entry, "complete");
+  for (const entry of rendered.values()) stashComposersOf(entry);
   for (const entry of rendered.values()) {
-    stashComposersOf(entry);
+    if (keep.has(entry)) continue;
+    endEdit(entry, "complete");
     try { entry.fd?.cleanUp(); } catch { /* already gone */ }
     entry.structureObserver?.disconnect();
     entry.section.remove();
   }
-  rendered.clear();
+  for (const [p, e] of [...rendered]) if (!keep.has(e)) rendered.delete(p);
 }
 
 // Header of one repo group in the turns view: icon + label + counts; click
@@ -3484,7 +3494,27 @@ function renderRepoError(root, message) {
 }
 
 function renderAll() {
-  clearRendered();
+  // Reconcile BEFORE clearing: entries whose file content is byte-identical
+  // survive (their mounted FileDiff is the expensive part). Error/empty
+  // payloads keep nothing (files = []) and clear fully, as before.
+  const reuseCheck = new Map();
+  const filesNow = (!diffData || diffData.error) ? [] : (diffData.files ?? []);
+  for (const f of filesNow) {
+    const prev = rendered.get(f.path);
+    reuseCheck.set(
+      f.path,
+      prev?.fileData &&
+        prev.fileData.status === f.status &&
+        (prev.fileData.oldPath ?? null) === (f.oldPath ?? null) &&
+        prev.fileData.before === f.before &&
+        prev.fileData.after === f.after &&
+        prev.fileData.patch === f.patch,
+    );
+  }
+  const keep = new Set(
+    [...rendered.entries()].filter(([p]) => reuseCheck.get(p)).map(([, e]) => e),
+  );
+  clearRenderedExcept(keep);
   const root = document.getElementById("root");
   root.textContent = "";
 
@@ -3638,6 +3668,18 @@ function renderAll() {
   const repoCounts = new Map(
     (diffData.turn?.repos ?? []).map((r) => [r.label, r]),
   );
+  // Emit a file section: REUSED entries re-parent their existing section in
+  // emission order (FileDiff untouched); changed/new files render fresh.
+  const emitFileSection = (f) => {
+    const kept = rendered.get(f.path);
+    if (kept) {
+      rendered.delete(f.path);
+      rendered.set(f.path, kept); // emission order = map order
+      root.appendChild(kept.section);
+      return;
+    }
+    renderFile(f);
+  };
   if (mode === "turns" && diffData.turn) {
     let lastLabel = null;
     let lastDir = null;
@@ -3653,11 +3695,11 @@ function renderAll() {
         lastDir = dir;
         root.appendChild(turnFolderHead(label, dir));
       }
-      renderFile(f);
+      emitFileSection(f);
     }
     applyGroupCollapse(root);
   } else {
-    for (const f of diffData.files) renderFile(f);
+    for (const f of diffData.files) emitFileSection(f);
   }
   applyLineFilter();
   // BORRADORES (ver keptComposers): los composers abiertos vuelven a su
@@ -4240,10 +4282,29 @@ async function boot() {
     await callTool("whoami", {}, 3_000);
   } catch { /* global fallback */ }
   try {
+    // Reactive refresh, THROTTLED (0.10.4): an agent working in the watched
+    // repo can notify several times per second; unbounded refresh → render
+    // storms froze the panel (renderer at 167% CPU measured). Leading edge
+    // fires at most once per 500 ms; a trailing edge catches the tail.
+    let lastReactive = 0;
+    let reactiveTimer = null;
+    const onReactiveUpdate = () => {
+      clearTimeout(reactiveTimer);
+      const since = Date.now() - lastReactive;
+      if (since >= 500) {
+        lastReactive = Date.now();
+        refresh();
+        return;
+      }
+      reactiveTimer = setTimeout(() => {
+        lastReactive = Date.now();
+        refresh();
+      }, 500 - since);
+    };
     app.setNotificationHandler(ResourceUpdatedNotificationSchema, (n) => {
-      // Estamos suscriptos al URI del modo activo (resubscribe): cualquier
-      // actualización de la firma git refresca la vista CORRIENTE.
-      if (n?.params?.uri) refresh();
+      // Subscribed to the active mode's URI (resubscribe): any git-signature
+      // update refreshes the CURRENT view.
+      if (n?.params?.uri) onReactiveUpdate();
     });
     const caps = app.getHostCapabilities?.();
     if (caps?.experimental?.["zcode/resourceSubscribe"])

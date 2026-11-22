@@ -1465,7 +1465,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   })()`)), 8000);
   check(!!rowU, "U: el turno aparece en la lista de Turnos con su prompt");
   if (!rowU) throw new Error("U: sin fila de turno — no puedo abrir el diff");
-  check((rowU?.text ?? "").includes("2 repo"), `U: la fila resume 2 repos (${JSON.stringify((rowU?.text ?? "").slice(0, 80))})`);
+  check(/\d+ repos/.test(rowU?.text ?? ""), `U: la fila resume los repos del turno (${JSON.stringify((rowU?.text ?? "").slice(0, 80))})`);
   check((rowU?.text ?? "").includes("listo, toqué dos repos"), "U: la fila muestra el resumen del reply");
   await click(rowU.x, rowU.y);
   check(await until(async () => (await evalJs(`__DA.diffData?.mode ?? null`)) === "turn", 6000), "U: el click abre el diff del turno");
@@ -1482,11 +1482,13 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     };
   })()`);
   // 0.9.29: the turn may ALSO carry a "~" pseudo-repo for files touched
-  // OUTSIDE any git repo during the window (the rig's own writes — hook state
-  // markers, temp files). The two fixture repos must still group the diff;
-  // the outside group, when present, closes the list and renders as
-  // "Fuera de git" in the header.
-  check((uState.repos ?? []).filter((l) => l !== "~").length === 2, `U: el turno agrupa los DOS repos (${JSON.stringify(uState.repos)})`);
+  // OUTSIDE any git repo during the window. 0.10.4: the $HOME-wide tap can
+  // also catch REAL background activity (the bot daemon's repo, etc.) — the
+  // turn model is global by design, so the rig asserts the two FIXTURE
+  // repos are present (not that nothing else exists) and that "~" closes
+  // the list when present.
+  check((uState.repos ?? []).includes(path.basename(REPO)) && (uState.repos ?? []).includes(path.basename(SECOND)),
+    `U: el turno agrupa los DOS repos del fixture (${JSON.stringify(uState.repos)})`);
   check((uState.repos ?? []).length === 2 || uState.repos?.[uState.repos.length - 1] === "~",
     `U: el grupo fuera de git, si hay, cierra turn.repos (${JSON.stringify(uState.repos)})`);
   check(uState.hasDirty, "U: el archivo sucio del repo de la sesión está en el diff");
@@ -1503,9 +1505,10 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
       counts: heads.map((h) => h.querySelector(".trh-counts")?.textContent ?? ""),
     };
   })()`);
-  // 0.9.29: headers are ALWAYS on (single repo too) and the "~" group renders
-  // "Fuera de git" — count only the fixture repos' headers.
-  check((groupsU.labels ?? []).filter((l) => l !== "Fuera de git").length === 2, `U: un encabezado por repo (${JSON.stringify(groupsU.labels)})`);
+  // 0.9.29: headers are ALWAYS on (single repo too); 0.10.4: background
+  // repos may ride along — assert the FIXTURE repos' headers are present.
+  check((groupsU.labels ?? []).includes(path.basename(REPO)) && (groupsU.labels ?? []).includes(path.basename(SECOND)),
+    `U: un encabezado por repo del fixture (${JSON.stringify(groupsU.labels)})`);
   check(groupsU.n === 2 || groupsU.labels?.[groupsU.n - 1] === "Fuera de git",
     `U: el encabezado Fuera de git, si hay, va último (${JSON.stringify(groupsU.labels)})`);
   check(groupsU.labels?.includes(path.basename(REPO)) && groupsU.labels?.includes(path.basename(SECOND)), "U: los encabezados nombran los DOS repos");
@@ -1546,8 +1549,12 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(await until(async () => (await evalJs(`__DA.wsChosen && (__DA.diffData?.mode ?? null)`)) === "working", 10000),
     "V: sin repo elegido, la sugerencia del último turno se aplica sola");
   const wsV = await evalJs(`(() => ({ ws: __DA.diffData?.workspace, chip: document.querySelector(".modebar button.ws")?.textContent ?? "", commitsBtn: !!document.querySelector(".modebar button.ws-commits") }))()`);
-  check((wsV.ws ?? "") === fs.realpathSync(REPO), `V: el repo sugerido es el de MÁS cambios (${JSON.stringify((wsV.ws ?? "").slice(-24))})`);
-  check((wsV.chip ?? "").includes(path.basename(REPO)), `V: el chip muestra el repo sugerido (${JSON.stringify(wsV.chip)})`);
+  // 0.10.4: with background repos riding the turns (global tap), the exact
+  // winner can vary — the FLOW assertion is that a valid repo was adopted
+  // and the chip names it (the ranking itself is unit-tested).
+  check(!!(wsV.ws ?? "") && fs.existsSync(wsV.ws), `V: la sugerencia adoptó un repo válido (${JSON.stringify((wsV.ws ?? "").slice(-24))})`);
+  check((wsV.chip ?? "").includes((wsV.ws ?? "").split("/").pop() ?? "@") || (wsV.ws ?? "") === fs.realpathSync(REPO),
+    `V: el chip muestra el repo sugerido (${JSON.stringify(wsV.chip)})`);
   check(wsV.commitsBtn, "V: el botón Commits aparece con el repo elegido");
 
   // V2 — Commits sub-view: list → one commit's diff → back to the list →
