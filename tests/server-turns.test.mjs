@@ -420,3 +420,57 @@ test("session filter: list/build scoped al env, prompt ajeno no interrumpe, clea
     process.env.ZCODE_SESSION_ID = "";
   }
 });
+
+test("turn id determinista: re-finalización sobreescribe; interrumpido zombie NO pisa completado; dedupe legacy", async () => {
+  clearTurns();
+  const D = makeRepo();
+  commitAt(D, T0 - 100_000, "d.py", "v1\n", "base D");
+  await setActiveWorkspace(D);
+
+  // a window that completes with a reply
+  sendEvent({ type: "prompt", sid: "sK", cwd: D, prompt: "ventana que completa", at: new Date(T0).toISOString() });
+  await processInbox();
+  sendEvent({ type: "stop", sid: "sK", cwd: D, reply: "respuesta real", at: new Date(T0 + 10_000).toISOString() });
+  await processInbox();
+  let list = listTurns();
+  assert.equal(list.count, 1);
+  assert.equal(list.turns[0].reply, "respuesta real");
+  assert.equal(list.turns[0].interrupted, false);
+  const doneId = list.turns[0].id;
+
+  // a zombie re-opens the SAME prompt window and gets superseded → its
+  // interrupted finalize must NOT regress the completed record
+  sendEvent({ type: "prompt", sid: "sK", cwd: D, prompt: "ventana que completa", at: new Date(T0).toISOString() });
+  await processInbox();
+  sendEvent({ type: "prompt", sid: "sK", cwd: D, prompt: "siguiente prompt", at: new Date(T0 + 20_000).toISOString() });
+  await processInbox();
+  list = listTurns();
+  const kept = list.turns.find((t) => t.prompt === "ventana que completa");
+  assert.ok(kept, "la ventana completada sigue");
+  assert.equal(kept.interrupted, false, "el finalize interrumpido del zombie NO pisó el turno completado");
+  assert.equal(kept.reply, "respuesta real");
+  assert.equal(kept.id, doneId, "mismo id determinista (startMs-keyed) tras la re-apertura");
+
+  // the same window re-finalized WITH a real stop overwrites in place (one file)
+  sendEvent({ type: "prompt", sid: "sK", cwd: D, prompt: "ventana que completa", at: new Date(T0).toISOString() });
+  await processInbox();
+  sendEvent({ type: "stop", sid: "sK", cwd: D, reply: "respuesta mejorada", at: new Date(T0 + 30_000).toISOString() });
+  await processInbox();
+  list = listTurns();
+  const windows = list.turns.filter((t) => t.prompt === "ventana que completa");
+  assert.equal(windows.length, 1, "una sola fila por ventana de prompt (id determinista)");
+  assert.equal(windows[0].reply, "respuesta mejorada", "el stop real sobreescribe en el mismo archivo");
+
+  // legacy pollution: hand-written stopMs-keyed duplicates collapse at read
+  const dupes = [
+    { id: "legac0001-sK", sid: "sK", workspace: D, prompt: "legado", reply: "", startedAt: new Date(T0 + 40_000).toISOString(), stoppedAt: new Date(T0 + 50_000).toISOString(), interrupted: true, repos: [], outside: [] },
+    { id: "legac0002-sK", sid: "sK", workspace: D, prompt: "legado", reply: "la buena", startedAt: new Date(T0 + 40_000).toISOString(), stoppedAt: new Date(T0 + 60_000).toISOString(), repos: [], outside: [] },
+    { id: "legac0003-sK", sid: "sK", workspace: D, prompt: "legado", reply: "", startedAt: new Date(T0 + 40_000).toISOString(), stoppedAt: new Date(T0 + 45_000).toISOString(), interrupted: true, repos: [], outside: [] },
+  ];
+  for (const d of dupes) fs.writeFileSync(path.join(STATE, "turns2", `${d.id}.json`), JSON.stringify(d));
+  list = listTurns();
+  const legacy = list.turns.filter((t) => t.prompt === "legado");
+  assert.equal(legacy.length, 1, "los duplicados legacy colapsan a una fila (sid+startedAt)");
+  assert.equal(legacy[0].reply, "la buena", "gana la copia COMPLETADA");
+  assert.equal(legacy[0].interrupted, false);
+});

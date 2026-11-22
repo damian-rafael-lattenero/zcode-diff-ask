@@ -883,7 +883,10 @@ async function finalizeOpenTurn({ interrupted }) {
     gitRoots: snap.gitRoots,
   });
   const rec = {
-    id: `${stopMs.toString(36)}-${(t.sid || "x").slice(0, 8)}`,
+    // Deterministic per prompt window (0.10.2): keyed by startMs — a window
+    // re-finalized by a restart race OVERWRITES the same file instead of
+    // piling duplicate records (legacy stopMs-keyed ids never collided).
+    id: `${t.startMs.toString(36)}-${(t.sid || "x").slice(0, 8)}`,
     sid: t.sid,
     workspace: t.cwd,
     prompt: t.prompt,
@@ -896,7 +899,15 @@ async function finalizeOpenTurn({ interrupted }) {
   };
   try {
     fs.mkdirSync(TURNS2_DIR, { recursive: true });
+    // A zombie's interrupted supersede must never regress a COMPLETED turn
+    // (the real stop may have landed first on another process).
+    const existing = readTurnFiles().find((r) => r.id === rec.id);
+    if (existing && !existing.interrupted && interrupted) {
+      log(`turno ${rec.id}: finalize interrumpido ignorado (ya está completado)`);
+      return existing;
+    }
     fs.writeFileSync(path.join(TURNS2_DIR, `${rec.id}.json`), JSON.stringify(rec));
+    turnStoreCache = null; // our own write invalidates the cache
   } catch {
     return null;
   }
@@ -963,6 +974,27 @@ function readTurnFiles() {
       if (rec && rec.id) out.push(rec);
     } catch { /* turno corrupto: se ignora */ }
   }
+  // Dedupe by (sid, startedAt) (0.10.2): restart/deploy races finalized the
+  // SAME prompt window more than once and legacy ids (stopMs-keyed) never
+  // collided — the panel showed "Es asi:" three times, most copies stamped
+  // interrupted with empty replies. Prefer the completed record; ties → the
+  // latest stoppedAt.
+  const byKey = new Map();
+  for (const rec of out) {
+    const k = `${String(rec.sid ?? "")}|${String(rec.startedAt ?? "")}`;
+    const prev = byKey.get(k);
+    if (!prev) {
+      byKey.set(k, rec);
+      continue;
+    }
+    const better =
+      (!rec.interrupted && prev.interrupted) ||
+      (Boolean(rec.interrupted) === Boolean(prev.interrupted) &&
+        Date.parse(rec.stoppedAt ?? "") > Date.parse(prev.stoppedAt ?? ""));
+    if (better) byKey.set(k, rec);
+  }
+  out.length = 0;
+  out.push(...byKey.values());
   out.sort((a, b) => Date.parse(b.stoppedAt ?? "") - Date.parse(a.stoppedAt ?? ""));
   turnStoreCache = { key, recs: out };
   return out;
