@@ -48,9 +48,14 @@ const MODES = [
 let mode = "turns";
 let commitSel = null; // hash en vista de diff de commit (null = lista)
 let turnSel = "latest"; // id de turno en vista (null = lista; "latest" = vivo/último)
-let turnsState = { list: [] };
+let turnsState = { list: [], skip: 0, hasMore: false, total: 0 };
 let commitsState = { query: "", skip: 0, list: [], hasMore: false };
 let subscribedUri = null;
+// Repo label (the server's OUTSIDE_LABEL — keep in sync) for files touched
+// outside any git repo: the turns view renders this group as "Fuera de git".
+const OUTSIDE_LABEL = "~";
+// Collapsed turn-repo group labels — survives reactive re-renders.
+const collapsedGroups = new Set();
 
 function diffUriFor() {
   if (mode === "unpushed") return `${DIFF_URI}?mode=unpushed`;
@@ -239,7 +244,7 @@ async function applyWorkspace(p) {
     seenPaths.clear();
     pendingAsks.length = 0;
     commitsState = { query: "", skip: 0, list: [], hasMore: false };
-    turnsState = { list: [] };
+    turnsState = { list: [], skip: 0, hasMore: false, total: 0 };
     commitSel = null;
     turnSel = mode === "turns" ? "latest" : null;
     await endAllEdits();
@@ -2999,6 +3004,49 @@ function clearRendered() {
   rendered.clear();
 }
 
+// Header of one repo group in the turns view: icon + label + counts; click
+// collapses/expands the group's sections (applyGroupCollapse does the DOM).
+function turnRepoHead(label, repo) {
+  const head = document.createElement("div");
+  head.className = "turn-repo-head" + (collapsedGroups.has(label) ? " closed" : "");
+  const outside = label === OUTSIDE_LABEL;
+  head.dataset.group = label;
+  head.innerHTML = `<span class="trh-chev"></span><span class="trh-icon"></span><span class="trh-label"></span><span class="trh-counts"></span>`;
+  head.querySelector(".trh-chev").textContent = collapsedGroups.has(label) ? "▸" : "▾";
+  head.querySelector(".trh-icon").textContent = outside ? "📄" : "🗂";
+  head.querySelector(".trh-label").textContent = outside ? "Fuera de git" : label || "(sin repo)";
+  head.title = outside
+    ? "Archivos que el turno tocó fuera de cualquier repositorio git (se muestran enteros en verde; no hay forma de saber cómo estaban antes)."
+    : `Todos los archivos de este grupo pertenecen al repositorio ${repo?.path ?? label}`;
+  const bits = [];
+  if (repo?.commits) bits.push(`${repo.commits} commit${repo.commits === 1 ? "" : "s"}`);
+  if (repo?.dirty) bits.push(`${repo.dirty} sucio${repo.dirty === 1 ? "" : "s"}`);
+  if (repo?.dirtyHidden) bits.push(`+${repo.dirtyHidden} ruido oculto`);
+  if (repo?.outside) bits.push(`${repo.outside} fuera de git`);
+  head.querySelector(".trh-counts").textContent = bits.join(" · ");
+  head.onclick = () => {
+    if (collapsedGroups.has(label)) collapsedGroups.delete(label);
+    else collapsedGroups.add(label);
+    head.classList.toggle("closed", collapsedGroups.has(label));
+    head.querySelector(".trh-chev").textContent = collapsedGroups.has(label) ? "▸" : "▾";
+    applyGroupCollapse(document.getElementById("root"));
+  };
+  return head;
+}
+
+// Hide the file sections under collapsed group headers (walk the siblings).
+function applyGroupCollapse(root) {
+  let group = null;
+  for (const el of root.children) {
+    if (el.classList?.contains("turn-repo-head")) {
+      group = el.dataset.group ?? null;
+      continue;
+    }
+    if (group !== null && el.classList?.contains("file"))
+      el.style.display = collapsedGroups.has(group) ? "none" : "";
+  }
+}
+
 function renderFile(f) {
   try {
     renderFileInner(f);
@@ -3088,6 +3136,17 @@ function renderFileInner(f) {
     const info = document.createElement("div");
     info.className = "plain-note";
     info.textContent = "Archivo binario — sin diff de texto.";
+    body.appendChild(info);
+    return;
+  }
+
+  // Touched outside git and gone by view time (created+deleted inside the
+  // window): no content ever existed to diff — an honest note instead of an
+  // empty FileDiff box.
+  if (f.gone) {
+    const info = document.createElement("div");
+    info.className = "plain-note";
+    info.textContent = "Tocado en el turno y ya no existe (fuera de git) — sin contenido previo que mostrar.";
     body.appendChild(info);
     return;
   }
@@ -3393,31 +3452,23 @@ function renderAll() {
     }
   }
   // Turns: files arrive grouped by repo (contiguous — the server emits them
-  // repo by repo). A header per group makes each file's repo visible at a
-  // glance; with a single repo no headers are added.
+  // repo by repo, the non-git "~" group LAST). A header per group makes each
+  // file's repo visible at a glance — ALWAYS, even with a single repo: the
+  // list of involved folders IS the point. Groups collapse on click.
   const repoCounts = new Map(
-    (diffData.turn?.repos ?? []).map((r) => [r.label, { commits: r.commits ?? 0, dirty: r.dirty ?? 0, dirtyHidden: r.dirtyHidden ?? 0 }]),
+    (diffData.turn?.repos ?? []).map((r) => [r.label, r]),
   );
-  if (mode === "turns" && diffData.turn && (diffData.turn.repos ?? []).length > 1) {
+  if (mode === "turns" && diffData.turn) {
     let lastLabel = null;
     for (const f of diffData.files) {
       const label = f.repoLabel ?? "";
       if (label !== lastLabel) {
         lastLabel = label;
-        const counts = repoCounts.get(label);
-        const head = document.createElement("div");
-        head.className = "turn-repo-head";
-        head.innerHTML = `<span class="trh-icon">🗂</span><span class="trh-label"></span><span class="trh-counts"></span>`;
-        head.querySelector(".trh-label").textContent = label || "(sin repo)";
-        head.title = `Todos los archivos de este grupo pertenecen al repositorio ${(diffData.turn.repos.find((r) => r.label === label) ?? {}).path ?? label}`;
-        const c = counts?.commits ? ` · ${counts.commits} commit${counts.commits === 1 ? "" : "s"}` : "";
-        const d = counts?.dirty ? ` · ${counts.dirty} sucio${counts.dirty === 1 ? "" : "s"}` : "";
-        const h = counts?.dirtyHidden ? ` · +${counts.dirtyHidden} ruido oculto` : "";
-        head.querySelector(".trh-counts").textContent = `${c}${d}${h}`.trimStart();
-        root.appendChild(head);
+        root.appendChild(turnRepoHead(label, repoCounts.get(label)));
       }
       renderFile(f);
     }
+    applyGroupCollapse(root);
   } else {
     for (const f of diffData.files) renderFile(f);
   }
@@ -3449,6 +3500,20 @@ function renderAll() {
   // The agent may have just edited lines under pending asks: reconcile NOW,
   // with the sections' fresh rows (auto-drop, see pruneStaleAsks).
   pruneStaleAsks();
+  // One-shot panel focus (the fork's end-of-turn file click → server
+  // requestTurnFocus): expand the section + its group, scroll to it, flash it.
+  if (diffData.focusPath) {
+    const e = rendered.get(diffData.focusPath);
+    if (e) {
+      collapsedPaths.delete(diffData.focusPath);
+      e.section.classList.remove("collapsed");
+      collapsedGroups.delete(e.fileData.repoLabel ?? "");
+      applyGroupCollapse(root);
+      e.section.scrollIntoView({ behavior: "smooth", block: "start" });
+      e.section.classList.add("focus-flash");
+      setTimeout(() => e.section.classList.remove("focus-flash"), 2400);
+    }
+  }
   // Si hay búsqueda activa, re-marcar sobre las filas nuevas SIN saltar el
   // scroll (el refresh reactivo no debe moverle la lectura a nadie).
   if (find.q && !document.getElementById("findbar")?.hidden) runFind(find.q, false);
@@ -3548,9 +3613,14 @@ function renderCommits() {
 // el último turno (contra el working tree actual). "Borrar todo" pide
 // confirmación inline (un click lo arma, el segundo confirma).
 
-async function loadTurns() {
+// Turns list, paginated like Commits (Damian 22/11: 2000+ rows froze the
+// panel). reset=true re-reads page 1 (reactive refresh + entry points);
+// reset=false appends the next 20 (the "…" button).
+async function loadTurns(reset = false) {
+  if (reset) turnsState = { list: [], skip: 0, hasMore: false, total: 0 };
   const gen = refreshGen;
-  const res = await withTimeout(app.readServerResource({ uri: "turn://list" }), "turns");
+  const uri = `turn://list?skip=${turnsState.skip}&limit=20`;
+  const res = await withTimeout(app.readServerResource({ uri }), "turns");
   if (gen !== refreshGen) return; // superseded: don't render a stale list
   const data = JSON.parse(res?.contents?.[0]?.text ?? "{}");
   if (data.workspace) currentWorkspace = data.workspace;
@@ -3561,8 +3631,22 @@ async function loadTurns() {
     renderRepoError(root, data.message ?? "No pude leer los turnos.");
     return;
   }
-  turnsState.list = data.turns ?? [];
+  // Append with dedupe ("latest" can overlap pages); skip advances by what is
+  // actually held.
+  const seen = new Set(turnsState.list.map((t) => t.id));
+  for (const t of data.turns ?? []) if (!seen.has(t.id)) turnsState.list.push(t);
+  turnsState.skip = turnsState.list.length;
+  turnsState.hasMore = Boolean(data.hasMore);
+  turnsState.total = data.count ?? turnsState.list.length;
   diffData = null;
+  // pendingTurnFocus (the fork's end-of-turn file click): the LIST view also
+  // honors the hint — jump straight to the focused turn's diff.
+  const nav = data.pendingTurnFocus;
+  if (nav) {
+    turnSel = nav.turn ?? "latest";
+    refresh(true);
+    return;
+  }
   renderTurns();
   resubscribe("turn://list");
 }
@@ -3587,7 +3671,7 @@ async function deleteTurnById(id) {
   try {
     const res = await app.callServerTool({ name: "delete_turn", arguments: { id } });
     if (!res?.structuredContent?.ok) throw new Error(res?.structuredContent?.message ?? "no se pudo borrar");
-    loadTurns();
+    loadTurns(true);
   } catch (e) {
     chip(`⚠ ${e?.message ?? e}`);
   }
@@ -3605,8 +3689,8 @@ function renderTurns() {
   bar.className = "commits-search turns-actions";
   const count = document.createElement("span");
   count.className = "turns-count";
-  count.textContent = turnsState.list.length
-    ? `${turnsState.list.length} turno${turnsState.list.length === 1 ? "" : "s"}`
+  count.textContent = turnsState.total
+    ? `${turnsState.total} turno${turnsState.total === 1 ? "" : "s"} · mostrando ${turnsState.list.length}`
     : "";
   const clear = document.createElement("button");
   clear.className = "ghost danger";
@@ -3639,11 +3723,21 @@ function renderTurns() {
   }
   const list = document.createElement("div");
   list.className = "commit-list turn-list";
+  // Day dividers: rows arrive newest-first — a small header per day keeps
+  // scrolling oriented (Hoy / Ayer / dd/mm/yyyy).
+  let lastDay = null;
   for (const t of turnsState.list) {
+    const day = t.at?.slice(0, 10) ?? "";
+    if (day !== lastDay) {
+      lastDay = day;
+      const divider = document.createElement("div");
+      divider.className = "turn-day";
+      divider.textContent = dayLabel(day);
+      list.appendChild(divider);
+    }
     const row = document.createElement("div");
     row.className = "commit-row turn-row";
     const time = t.at?.slice(11, 16) ?? "";
-    const day = t.at?.slice(0, 10) ?? "";
     row.innerHTML = `
       <span class="turn-time"></span>
       <span class="turn-prompt"></span>
@@ -3651,7 +3745,7 @@ function renderTurns() {
       <span class="turn-live"></span>
       <button class="ghost turn-prompt-btn" title="Ver el prompt y el resumen del turno">💬</button>
       <button class="ghost danger turn-del" title="Borrar este turno">✕</button>`;
-    row.querySelector(".turn-time").textContent = `${day} ${time}`;
+    row.querySelector(".turn-time").textContent = time;
     row.querySelector(".turn-prompt").textContent = (t.prompt || "(sin texto)").split("\n")[0];
     row.querySelector(".turn-prompt").title = [t.prompt, t.reply].filter(Boolean).join("\n\n");
     const meta = [];
@@ -3679,6 +3773,23 @@ function renderTurns() {
     list.appendChild(row);
   }
   root.appendChild(list);
+  if (turnsState.hasMore) {
+    const more = document.createElement("button");
+    more.className = "more-btn";
+    more.textContent = "…";
+    more.title = "Cargar 20 turnos más";
+    more.onclick = () => loadTurns();
+    root.appendChild(more);
+  }
+}
+
+// Label of a turn-list day divider (rows arrive newest-first).
+function dayLabel(day) {
+  if (!day) return "(sin fecha)";
+  const iso = (d) => new Date(d).toISOString().slice(0, 10);
+  if (day === iso(Date.now())) return "Hoy";
+  if (day === iso(Date.now() - 86_400_000)) return "Ayer";
+  return day.split("-").reverse().join("/");
 }
 
 // ------------------------------------------------------------ data flow
@@ -3707,7 +3818,7 @@ async function setMode(m) {
   commitSel = null;
   turnSel = m === "turns" ? "latest" : null;
   commitsState = { query: "", skip: 0, list: [], hasMore: false };
-  turnsState = { list: [] };
+  turnsState = { list: [], skip: 0, hasMore: false, total: 0 };
   document.querySelectorAll(".modebar button").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === m);
   });
@@ -3771,15 +3882,29 @@ async function refresh(explicit = false) {
     if (mode === "commits" && !commitSel) {
       await loadCommits();
     } else if (mode === "turns" && !turnSel) {
-      await loadTurns();
+      await loadTurns(true);
     } else {
-      const uri = diffUriFor();
-      const res = await withTimeout(app.readServerResource({ uri }), "diff");
-      if (isStale(gen)) return; // a newer refresh owns the UI now
-      const text = res?.contents?.[0]?.text ?? "{}";
-      diffData = JSON.parse(text);
-      if (diffData?.workspace) currentWorkspace = diffData.workspace;
-      document.documentElement.dataset.repo = diffData?.error ? "no" : "yes";
+      let uri = diffUriFor();
+      // pendingTurnFocus (the fork's end-of-turn file click): the payload of
+      // ANY view can ask us to switch to a turn — follow the hint with ONE
+      // extra read, then render that view.
+      for (let hop = 0; hop < 2; hop++) {
+        const res = await withTimeout(app.readServerResource({ uri }), "diff");
+        if (isStale(gen)) return; // a newer refresh owns the UI now
+        diffData = JSON.parse(res?.contents?.[0]?.text ?? "{}");
+        if (diffData?.workspace) currentWorkspace = diffData.workspace;
+        document.documentElement.dataset.repo = diffData?.error ? "no" : "yes";
+        const nav = diffData?.pendingTurnFocus;
+        if (!nav || (mode === "turns" && turnSel === nav.turn)) break;
+        turnSel = nav.turn ?? "latest";
+        if (mode !== "turns") {
+          mode = "turns";
+          commitSel = null;
+          document.querySelectorAll(".modebar button").forEach((b) =>
+            b.classList.toggle("active", b.dataset.mode === "turns"));
+        }
+        uri = diffUriFor();
+      }
       renderAll();
       resubscribe(uri);
     }
