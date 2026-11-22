@@ -224,15 +224,23 @@ async function gitShow(ref, p, cwd) {
   return r.out;
 }
 
-// Contenido actual del archivo de trabajo (o null si no existe / muy grande).
-function readWorkFile(p, cwd) {
+// Contenido utf8 de un archivo (o null si no existe / binario / muy grande).
+// NUL check: Buffer first, so a binary file never rides the JSON payload as
+// mojibake (tracked binaries get flagged by numstat later; files outside git
+// only have this guard).
+function readAbsFile(abs) {
   try {
-    const abs = path.join(cwd, p);
-    if (fs.statSync(abs).size > CONTENT_LIMIT) return null;
-    return fs.readFileSync(abs, "utf8");
+    const buf = fs.readFileSync(abs);
+    if (buf.length > CONTENT_LIMIT || buf.includes(0)) return null;
+    return buf.toString("utf8");
   } catch {
     return null;
   }
+}
+
+// Contenido actual del archivo de trabajo (o null si no existe / muy grande).
+function readWorkFile(p, cwd) {
+  return readAbsFile(path.join(cwd, p));
 }
 
 // The heart shared by every "vs a base" mode: file list in (name-status +
@@ -606,6 +614,9 @@ const REPLY_MAX = 8_000;
 const MAX_TURN_COMMITS = 40;
 const MAX_TURN_OUTSIDE = 300;
 const MAX_TURN_DIRTY = 300; // per repo, after the noise filter
+// Repo label (and panel group header) for files touched OUTSIDE any git repo.
+// The panel renders this group as "Fuera de git" — keep both sides in sync.
+const OUTSIDE_LABEL = "~";
 
 function wsKey(ws) {
   return createHash("sha1").update(ws).digest("hex").slice(0, 16);
@@ -831,6 +842,32 @@ async function collectTurnChanges({ cwd, startMs, stopMs, touched, gitRoots }) {
   return { repos: out, outside: outside.slice(0, MAX_TURN_OUTSIDE) };
 }
 
+// One touched path OUTSIDE any git repo → its turn-diff entry. The tap's
+// recorded paths are untrusted boundary data: they parse ONCE here (fp-kb
+// parse-don't-validate) into a shape the rest of the pipeline never re-checks.
+// Live files ride ALL-GREEN (status "?" — the pre-turn content is unknowable
+// without git), vanished ones ride a content-less note. `home` is injectable
+// for tests. Returns null only for empty paths.
+export function outsideEntry(raw, home = os.homedir()) {
+  const p = String(raw ?? "");
+  if (!p) return null;
+  const abs = path.isAbsolute(p) ? p : path.join(home, p);
+  const key = abs.startsWith(home + path.sep) ? `~/${path.relative(home, abs)}` : abs;
+  let gone = true;
+  try {
+    gone = !fs.statSync(abs).isFile();
+  } catch { /* gone: created+deleted inside the window, or never a file */ }
+  return {
+    status: gone ? "D" : "?",
+    path: key,
+    repoLabel: OUTSIDE_LABEL,
+    repo: home,
+    note: gone ? "borrado en el turno (fuera de git)" : "fuera de git",
+    ...(gone ? { gone: true } : {}),
+    _src: { outside: true, abs },
+  };
+}
+
 async function finalizeOpenTurn({ interrupted }) {
   const t = openTurn;
   openTurn = null;
@@ -905,16 +942,17 @@ function readTurnFiles() {
 }
 
 function turnFileCount(rec) {
-  let n = 0;
+  let n = rec.outside?.length ?? 0;
   for (const r of rec.repos ?? []) n += (r.commits?.length ?? 0) + (r.dirty?.length ?? 0);
   return n;
 }
 
 // Builds the panel entries for a turn: every commit hunk and every dirty file
 // of every repo touched in the window, namespaced as "<repo label>/<path>"
-// (the panel keys sections by path, and two repos can hold the same rel path).
-// Content rides the shared bounded pool (mapPool + budget via enrichFiles).
-async function turnEntries(repos) {
+// (the panel keys sections by path, and two repos can hold the same rel path),
+// then the files touched OUTSIDE any git repo (all-green group). Content rides
+// the shared bounded pool (mapPool + budget via enrichFiles).
+async function turnEntries(repos, outside = []) {
   const entries = [];
   const numstat = new Map();
   const seen = new Set();
@@ -947,7 +985,7 @@ async function turnEntries(repos) {
           status: f.status, path: key,
           ...(f.oldPath ? { oldPath: `${label}/${f.oldPath}` } : {}),
           repo: root, repoLabel: label, commit: c.short, note: `commit ${c.short} · ${c.subject}`,
-          _src: { commit: c.hash, rel: f.path, oldRel: f.oldPath },
+          _src: { commit: c.hash, rel: f.path, oldRel: f.oldPath, abs: path.join(root, f.path) },
         });
         const n = got.nums.get(f.path);
         if (n) numstat.set(key, n);
@@ -961,7 +999,7 @@ async function turnEntries(repos) {
         status: f.status, path: key,
         ...(f.oldPath ? { oldPath: `${label}/${f.oldPath}` } : {}),
         repo: root, repoLabel: label, note: "sin commitear",
-        _src: { dirty: true, rel: f.path, oldRel: f.oldPath },
+        _src: { dirty: true, rel: f.path, oldRel: f.oldPath, abs: path.join(root, f.path) },
       });
     }
     // counts for the dirty side: one numstat vs HEAD per repo (untracked files
@@ -976,30 +1014,93 @@ async function turnEntries(repos) {
       }
     }
   }
+  // Files OUTSIDE any git repo, LAST so their group header closes the list
+  // (the panel renders the "~" group as "Fuera de git").
+  for (const raw of outside) {
+    const e = outsideEntry(raw);
+    if (e && !seen.has(e.path)) {
+      seen.add(e.path);
+      entries.push(e);
+    }
+  }
   await enrichFiles({
     entries,
     numstat,
     getBefore: (f) =>
-      f._src.dirty
-        ? f.status === "A" || f.status === "?"
-          ? Promise.resolve(null)
-          : gitShow("HEAD", f._src.oldRel ?? f._src.rel, f.repo)
-        : gitShow(`${f._src.commit}^`, f._src.oldRel ?? f._src.rel, f.repo).then((c) => c ?? ""),
+      f._src.outside
+        ? Promise.resolve(null)
+        : f._src.dirty
+          ? f.status === "A" || f.status === "?"
+            ? Promise.resolve(null)
+            : gitShow("HEAD", f._src.oldRel ?? f._src.rel, f.repo)
+          : gitShow(`${f._src.commit}^`, f._src.oldRel ?? f._src.rel, f.repo).then((c) => c ?? ""),
     getAfter: (f) =>
-      f._src.dirty
-        ? f.status === "D"
+      f._src.outside
+        ? f.gone
           ? Promise.resolve(null)
-          : Promise.resolve(readWorkFile(f._src.rel, f.repo))
-        : gitShow(f._src.commit, f._src.rel, f.repo).then((c) => c ?? ""),
+          : Promise.resolve(readAbsFile(f._src.abs))
+        : f._src.dirty
+          ? f.status === "D"
+            ? Promise.resolve(null)
+            : Promise.resolve(readWorkFile(f._src.rel, f.repo))
+          : gitShow(f._src.commit, f._src.rel, f.repo).then((c) => c ?? ""),
     buildPatches: null,
     cwd: activeWorkspace,
   });
+  // Outside files whose content didn't fit the budget (or is binary): no text
+  // can ride — flag binary so the panel shows its honest plain-note instead of
+  // an empty diff box.
+  for (const f of entries) {
+    if (f._src?.outside && !f.gone && f.after === undefined) f.binary = true;
+  }
   return entries;
+}
+
+// ---- panel focus (the fork's end-of-turn file click) ---------------------
+// The fork calls get_turn_diff { turn, focus } when the user clicks a file in
+// the turn-end summary. The request parks here (TTL'd, one-shot) and resolves
+// to an entry key at the next PANEL read of that turn (payload.focusPath);
+// every other payload carries pendingTurnFocus so the panel switches views
+// first. The tool-call build itself does NOT resolve (it would consume the
+// focus before the panel ever reads it).
+const FOCUS_TTL_MS = 30_000;
+let pendingFocus = null; // { abs, turn, atMs } | null
+
+export function requestTurnFocus(rawPath, turn = "latest", atMs = Date.now()) {
+  const raw = String(rawPath ?? "").trim();
+  if (!raw) return { ok: false, message: "focus vacío" };
+  pendingFocus = {
+    abs: path.resolve(raw.replace(/^~(?=\/|$)/, os.homedir())),
+    turn: String(turn || "latest"),
+    atMs,
+  };
+  for (const uri of subs) sendNotification("notifications/resources/updated", { uri });
+  return { ok: true };
+}
+
+// Hint for payloads that are NOT the focused turn: the panel switches views.
+// Peeks without consuming — only the focused turn's read consumes.
+function peekPendingTurnFocus() {
+  if (!pendingFocus) return null;
+  if (Date.now() - pendingFocus.atMs > FOCUS_TTL_MS) {
+    pendingFocus = null;
+    return null;
+  }
+  return { turn: pendingFocus.turn };
+}
+
+function sameFile(a, b) {
+  if (a === b) return true;
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b);
+  } catch {
+    return false;
+  }
 }
 
 // Diff de un turno: "latest" = turno EN VIVO (ventana abierta hasta ahora);
 // un id = turno guardado. Multi-repo: cada archivo viaja con repoLabel.
-export async function buildTurnDiff(id, { workspace = activeWorkspace } = {}) {
+export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFocus = true } = {}) {
   let rec;
   let isLive = false;
   if (id === "latest" && openTurn) {
@@ -1041,13 +1142,34 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace } = {}) {
       };
     }
   }
-  const entries = await turnEntries(rec.repos ?? []);
+  const entries = await turnEntries(rec.repos ?? [], rec.outside ?? []);
   const pruned = pruneList(entries, false);
+  // Focus resolution (one-shot): the click's absolute path → the entry key the
+  // panel can scroll to. Consumed here so later refreshes don't re-scroll.
+  let focusPath = null;
+  if (resolveFocus && pendingFocus) {
+    if (Date.now() - pendingFocus.atMs > FOCUS_TTL_MS) {
+      pendingFocus = null;
+    } else if (pendingFocus.turn === id) {
+      const hit = entries.find((f) => f._src?.abs && sameFile(f._src.abs, pendingFocus.abs));
+      if (hit) {
+        focusPath = hit.path;
+        pendingFocus = null;
+      }
+    }
+  }
   const atLabel = String(rec.startedAt ?? "").slice(11, 16);
+  const outsideCount = (rec.outside ?? []).length;
   return {
     workspace: rec.workspace || workspace,
     head: "",
     mode: "turn",
+    ...(focusPath ? { focusPath } : {}),
+    // The panel is reading a DIFFERENT turn than the focused one: hint the
+    // switch (the focused turn's own read resolves focusPath).
+    ...(resolveFocus && pendingFocus && pendingFocus.turn !== id
+      ? { pendingTurnFocus: { turn: pendingFocus.turn } }
+      : {}),
     turn: {
       id: rec.id,
       at: rec.startedAt,
@@ -1056,13 +1178,19 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace } = {}) {
       reply: rec.reply ?? "",
       isLive,
       interrupted: Boolean(rec.interrupted),
-      repos: (rec.repos ?? []).map((r) => ({
-        label: r.label,
-        path: r.path,
-        commits: (r.commits ?? []).length,
-        dirty: (r.dirty ?? []).length,
-        ...(r.dirtyHidden ? { dirtyHidden: r.dirtyHidden } : {}),
-      })),
+      repos: [
+        ...(rec.repos ?? []).map((r) => ({
+          label: r.label,
+          path: r.path,
+          commits: (r.commits ?? []).length,
+          dirty: (r.dirty ?? []).length,
+          ...(r.dirtyHidden ? { dirtyHidden: r.dirtyHidden } : {}),
+        })),
+        // The pseudo-repo for files touched outside git (header "Fuera de git").
+        ...(outsideCount
+          ? [{ label: OUTSIDE_LABEL, path: os.homedir(), commits: 0, dirty: 0, outside: outsideCount }]
+          : []),
+      ],
       outside: rec.outside ?? [],
     },
     baseLabel: `turno ${atLabel}`,
@@ -1369,6 +1497,11 @@ const TOOLS = [
       type: "object",
       properties: {
         turn: { type: "string", description: "Turn id, or 'latest' for the open/last turn." },
+        focus: {
+          type: "string",
+          description:
+            "Absolute path of one file to open the panel at (the app's end-of-turn file click; the panel opens that turn scrolled to the file's section). Not for model use.",
+        },
       },
       required: ["turn"],
     },
@@ -1517,7 +1650,12 @@ async function handleRequest(msg) {
         }
         case "get_turn_diff":
           ensureInboxWatcher();
-          data = await buildTurnDiff(String(params.arguments?.turn ?? "latest"));
+          // The fork's end-of-turn click parks a focus request here; the build
+          // below does NOT resolve it — the panel's own resource read is the
+          // one that consumes it (this build would eat it first).
+          if (params.arguments?.focus)
+            requestTurnFocus(params.arguments.focus, params.arguments?.turn ?? "latest");
+          data = await buildTurnDiff(String(params.arguments?.turn ?? "latest"), { resolveFocus: false });
           break;
         case "delete_turn": {
           data = deleteTurn(String(params.arguments?.id ?? ""));
@@ -1591,6 +1729,12 @@ async function handleRequest(msg) {
       const build = uriDiffData(params.uri);
       if (!build) throw new Error(`Unknown resource: ${params.uri}`);
       const data = await build;
+      // Panel-focus hint: a parked click (requestTurnFocus) tells any view
+      // that is NOT the focused turn to switch to it; the focused turn's own
+      // payload carries focusPath (resolved + consumed by buildTurnDiff).
+      const nav = peekPendingTurnFocus();
+      if (nav && data && typeof data === "object" && !data.error && data.mode !== "turn")
+        data.pendingTurnFocus = nav;
       return {
         contents: [
           { uri: params.uri, mimeType: "application/json", text: JSON.stringify(data) },

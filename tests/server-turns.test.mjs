@@ -16,7 +16,7 @@ process.env.ZCODE_DIFF_ASK_STATE = STATE;
 const server = await import("../diff-ask/server/server.mjs");
 const {
   setActiveWorkspace, processInbox, listTurns, buildTurnDiff, deleteTurn, clearTurns,
-  parseTurnEvent, isTapNoise, repoRootOf, noteTapPath,
+  parseTurnEvent, isTapNoise, repoRootOf, noteTapPath, outsideEntry, requestTurnFocus,
 } = server;
 
 const INBOX = path.join(STATE, "turn-events.jsonl");
@@ -114,7 +114,7 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
   assert.equal(t.prompt, "hacé el trabajo");
   assert.equal(t.reply, "hecho: A y B tocados");
   assert.equal(t.repoCount, 2);
-  assert.equal(t.fileCount, 2); // 1 commit (B) + 1 dirty (A)
+  assert.equal(t.fileCount, 3); // 1 commit (B) + 1 dirty (A) + 1 fuera de git (suelto.txt, nunca existió)
 
   const d = await buildTurnDiff(t.id);
   assert.equal(d.mode, "turn");
@@ -131,8 +131,12 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
   assert.equal(fileB.before, "uno\n");
   assert.equal(fileB.after, "uno\ndos\n");
   assert.equal(fileB.commit.length > 0, true);
-  assert.equal(d.turn.repos.length, 2);
-  assert.deepEqual(d.turn.repos.map((r) => r.label).sort(), [labelA, labelB].sort());
+  assert.equal(d.turn.repos.length, 3); // A + B + el pseudo-repo "~" (fuera de git)
+  assert.deepEqual(d.turn.repos.map((r) => r.label).sort(), [labelA, labelB, "~"].sort());
+  const ghost = d.files.find((f) => f.path === path.join(os.tmpdir(), "suelto.txt"));
+  assert.ok(ghost, "el suelto fuera de git entra al diff");
+  assert.equal(ghost.status, "D");
+  assert.equal(ghost.gone, true);
 
   // second turn: prompt supersedes nothing (first is closed); live diff works
   sendEvent({ type: "prompt", sid: "sX", cwd: A, prompt: "segundo", at: new Date(T0 + 120_000).toISOString() });
@@ -190,4 +194,103 @@ test("turn dirty list: node_modules-style junk filtered + cap + hidden count", a
   assert.ok(fileC, "el archivo real está en el payload");
   assert.equal(fileC.after, "ok\nedit\n");
   assert.ok(!d.files.some((f) => f.path.includes("node_modules")), "node_modules jamás en el payload");
+});
+
+test("outsideEntry: key ~/rel bajo home, abs fuera de home, vacío → null", () => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "da-home-"));
+  fs.mkdirSync(path.join(fakeHome, "notes"), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, "notes", "x.md"), "hola\n");
+  const live = outsideEntry("notes/x.md", fakeHome);
+  assert.equal(live.status, "?");
+  assert.equal(live.path, "~/notes/x.md");
+  assert.equal(live.repoLabel, "~");
+  assert.equal(live._src.abs, path.join(fakeHome, "notes", "x.md"));
+  assert.equal(live.gone, undefined);
+  const gone = outsideEntry("notes/y.md", fakeHome);
+  assert.equal(gone.status, "D");
+  assert.equal(gone.gone, true);
+  assert.equal(gone.before, undefined);
+  assert.equal(outsideEntry("", fakeHome), null);
+  const abs = outsideEntry("/tmp/da-abs-zzz.txt", fakeHome);
+  assert.equal(abs.path, "/tmp/da-abs-zzz.txt");
+  assert.equal(abs.status, "D"); // nunca existió
+});
+
+test("outside: archivos fuera de git entran al diff en verde; los borrados, como nota", async () => {
+  const D = makeRepo();
+  commitAt(D, T0 - 100_000, "d.py", "v1\n", "base D");
+  await setActiveWorkspace(D);
+  const loose = fs.mkdtempSync(path.join(os.tmpdir(), "da-loose-"));
+  fs.writeFileSync(path.join(loose, "notas.md"), "linea uno\nlinea dos\n");
+  const vanished = path.join(loose, "fantasma.txt");
+
+  sendEvent({ type: "prompt", sid: "sO", cwd: D, prompt: "turno con sueltos", at: new Date(T0 + 400_000).toISOString() });
+  await processInbox();
+  fs.writeFileSync(path.join(D, "d.py"), "v1\nv2\n");
+  noteTapPath(path.join(D, "d.py"));
+  noteTapPath(path.join(loose, "notas.md"));
+  noteTapPath(vanished); // tocado pero jamás fue un archivo real
+  sendEvent({ type: "stop", sid: "sO", cwd: D, reply: "ok", at: new Date(T0 + 460_000).toISOString() });
+  await processInbox();
+
+  const turn = listTurns().turns.find((t) => t.prompt === "turno con sueltos");
+  assert.equal(turn.fileCount, 3); // dirty d.py + notas.md + fantasma.txt
+  const d = await buildTurnDiff(turn.id);
+  const green = d.files.find((f) => f.path === path.join(loose, "notas.md"));
+  assert.ok(green, "el archivo suelto entra al diff");
+  assert.equal(green.status, "?");
+  assert.equal(green.before, "");
+  assert.equal(green.after, "linea uno\nlinea dos\n");
+  assert.equal(green.added, "2");
+  assert.equal(green.deleted, "0");
+  assert.equal(green.repoLabel, "~");
+  const ghost = d.files.find((f) => f.path === vanished);
+  assert.ok(ghost, "el tocado-y-desaparecido también entra");
+  assert.equal(ghost.status, "D");
+  assert.equal(ghost.gone, true);
+  const outside = d.turn.repos.find((r) => r.label === "~");
+  assert.ok(outside, "el pseudo-repo ~ viaja en turn.repos para el header");
+  assert.equal(outside.outside, 2);
+  assert.equal(outside.commits, 0);
+  assert.equal(outside.dirty, 0);
+});
+
+test("focus: el click del fork resuelve al entry del turno, se consume y expira", async () => {
+  const E = makeRepo();
+  commitAt(E, T0 - 100_000, "e.py", "v1\n", "base E");
+  await setActiveWorkspace(E);
+  const loose = fs.mkdtempSync(path.join(os.tmpdir(), "da-loose2-"));
+  const suelto = path.join(loose, "suelto.md");
+  fs.writeFileSync(suelto, "hola\n");
+
+  sendEvent({ type: "prompt", sid: "sF", cwd: E, prompt: "turno foco", at: new Date(T0 + 500_000).toISOString() });
+  await processInbox();
+  fs.writeFileSync(path.join(E, "e.py"), "v1\nv2\n");
+  noteTapPath(path.join(E, "e.py"));
+  noteTapPath(suelto);
+  sendEvent({ type: "stop", sid: "sF", cwd: E, reply: "ok", at: new Date(T0 + 560_000).toISOString() });
+  await processInbox();
+  const turn = listTurns().turns.find((t) => t.prompt === "turno foco");
+  assert.ok(turn, "el turno foco existe");
+
+  // click sobre el archivo suelto → focusPath = su key (abs, fuera de home)
+  assert.equal(requestTurnFocus(suelto, turn.id).ok, true);
+  const d1 = await buildTurnDiff(turn.id);
+  assert.equal(d1.focusPath, suelto);
+  const d2 = await buildTurnDiff(turn.id);
+  assert.equal(d2.focusPath, undefined, "el focus se consume en el primer read");
+
+  // click sobre un repo-file leyendo OTRO turno: hint de navegación, sin consume
+  requestTurnFocus(path.join(E, "e.py"), turn.id);
+  const other = listTurns().turns.find((t) => t.prompt === "turno con sueltos");
+  const dOther = await buildTurnDiff(other.id);
+  assert.equal(dOther.focusPath, undefined);
+  assert.deepEqual(dOther.pendingTurnFocus, { turn: turn.id });
+  const d3 = await buildTurnDiff(turn.id);
+  assert.equal(d3.focusPath, `${path.basename(E)}/e.py`);
+
+  // TTL vencido: no resuelve
+  requestTurnFocus(suelto, turn.id, Date.now() - 60_000);
+  const d4 = await buildTurnDiff(turn.id);
+  assert.equal(d4.focusPath, undefined);
 });
