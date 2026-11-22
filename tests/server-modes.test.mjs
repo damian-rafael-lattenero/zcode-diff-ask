@@ -1,7 +1,8 @@
-// Tests de integración de los modos del server: unpushed, lista/búsqueda de
-// commits y diff por commit — contra repos git reales en tmp (mismo patrón
-// que el harness visual: nada de mocks de git). Los turnos viven en
-// tests/server-turns.test.mjs (modelo por ventana prompt→stop).
+// Tests de integración de los modos del server: working (con info de
+// upstream), lista/búsqueda de commits y diff por commit — contra repos git
+// reales en tmp (mismo patrón que el harness visual: nada de mocks de git).
+// Los turnos viven en tests/server-turns.test.mjs (modelo por ventana
+// prompt→stop).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -53,7 +54,7 @@ test("parseLogLine: campos separados por 0x1f", () => {
   assert.equal(parseLogLine(""), null);
 });
 
-test("unpushed: commits adelante + working + untracked, con ahead/behind", async () => {
+test("working: sólo lo no commiteado, pero upstream/ahead/behind viajan igual", async () => {
   const dir = makeRepo();
   const base = commitFile(dir, "a.py", "v1\n", "base");
   // upstream simulado: remote-tracking ref + config completa de branch y
@@ -65,34 +66,32 @@ test("unpushed: commits adelante + working + untracked, con ahead/behind", async
   git(dir, "config", "branch.main.remote", "origin");
   git(dir, "config", "branch.main.merge", "refs/heads/main");
 
-  commitFile(dir, "b.py", "nuevo en commit\n", "feat: b");
+  commitFile(dir, "b.py", "nuevo en commit\n", "feat: b"); // commiteado: NO va
   fs.writeFileSync(path.join(dir, "a.py"), "v2\n"); // sin commitear
   fs.writeFileSync(path.join(dir, "c.py"), "untracked\n"); // sin trackear
 
-  const d = await buildDiff({ mode: "unpushed", workspace: dir });
+  const d = await buildDiff({ workspace: dir });
   assert.equal(d.error, undefined);
+  assert.equal(d.mode, "working");
+  // 0.10.0: the unpushed MODE is gone, but the upstream info rides every
+  // payload (the panel's working header shows the ↑/↓ chips).
   assert.equal(d.upstream, "origin/main");
   assert.equal(d.ahead, 1);
   assert.equal(d.behind, 0);
-  // a.py: committed nada, pero working cambió vs origin → M con before v1
+  // working only sees the uncommitted tree: a.py + c.py, not b.py's commit.
+  assert.deepEqual(d.files.map((f) => f.path).sort(), ["a.py", "c.py"]);
   assert.equal(fileOf(d, "a.py").before, "v1\n");
   assert.equal(fileOf(d, "a.py").after, "v2\n");
-  assert.equal(fileOf(d, "b.py").status, "A");
-  assert.equal(fileOf(d, "b.py").before, "");
   assert.equal(fileOf(d, "c.py").status, "?");
-  assert.equal(d.fileCount, 3);
 
-  // El modo working sólo ve lo no commiteado (a.py + c.py), no el commit de b.
-  const w = await buildDiff({ mode: "working", workspace: dir });
-  assert.deepEqual(w.files.map((f) => f.path).sort(), ["a.py", "c.py"]);
-});
-
-test("unpushed sin upstream: error explícito con cómo salir", async () => {
-  const dir = makeRepo();
-  commitFile(dir, "a.py", "v1\n", "base");
-  const d = await buildDiff({ mode: "unpushed", workspace: dir });
-  assert.equal(d.error, "no_upstream");
-  assert.match(d.message, /git push -u/);
+  // sin upstream: no error (working no lo necesita), sólo sin chips.
+  const solo = makeRepo();
+  commitFile(solo, "a.py", "v1\n", "base");
+  fs.writeFileSync(path.join(solo, "a.py"), "v2\n");
+  const d2 = await buildDiff({ workspace: solo });
+  assert.equal(d2.error, undefined);
+  assert.equal(d2.upstream, null);
+  assert.equal(d2.ahead, undefined);
 });
 
 test("listCommits: página de 10 con hasMore, skip, hash y título", async () => {

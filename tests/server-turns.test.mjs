@@ -17,6 +17,7 @@ const server = await import("../diff-ask/server/server.mjs");
 const {
   setActiveWorkspace, processInbox, listTurns, buildTurnDiff, deleteTurn, clearTurns,
   parseTurnEvent, isTapNoise, repoRootOf, noteTapPath, outsideEntry, requestTurnFocus,
+  suggestWorkspace,
 } = server;
 
 const INBOX = path.join(STATE, "turn-events.jsonl");
@@ -293,4 +294,62 @@ test("focus: el click del fork resuelve al entry del turno, se consume y expira"
   requestTurnFocus(suelto, turn.id, Date.now() - 60_000);
   const d4 = await buildTurnDiff(turn.id);
   assert.equal(d4.focusPath, undefined);
+});
+
+test("suggestWorkspace: repo con más cambios del último turno, empate → commits, todo suelto → null", async () => {
+  // Hermetic store: earlier tests finalize superseded turns with stoppedAt =
+  // Date.now() (real clock), which would outrank these T0-dated turns — clear
+  // so the "last turn" this test builds IS the last turn.
+  clearTurns();
+  const P = makeRepo();
+  const Q = makeRepo();
+  commitAt(P, T0 - 100_000, "p.py", "v1\n", "base P");
+  commitAt(Q, T0 - 100_000, "q.py", "v1\n", "base Q");
+  await setActiveWorkspace(P);
+
+  // last turn: 2 commits land in P, 1 dirty file stays in Q → P (score 2 vs 1)
+  sendEvent({ type: "prompt", sid: "sS", cwd: P, prompt: "turno sugerencia", at: new Date(T0 + 600_000).toISOString() });
+  await processInbox();
+  commitAt(P, T0 + 610_000, "p1.py", "x\n", "feat: p1");
+  noteTapPath(path.join(P, ".git", "HEAD"));
+  commitAt(P, T0 + 620_000, "p2.py", "y\n", "feat: p2");
+  fs.writeFileSync(path.join(Q, "q.py"), "v1\nv2\n");
+  noteTapPath(path.join(Q, "q.py"));
+  sendEvent({ type: "stop", sid: "sS", cwd: P, reply: "ok", at: new Date(T0 + 630_000).toISOString() });
+  await processInbox();
+
+  const s = await suggestWorkspace();
+  assert.equal(s.ok, true);
+  assert.equal(s.workspace, P);
+  assert.equal(s.commits, 2);
+  assert.equal(s.dirty, 0);
+  assert.equal(s.turnId, listTurns().turns[0].id, "sugiere sobre el turno más nuevo");
+
+  // tie at score 1: the repo with a COMMIT beats the repo with a dirty file.
+  // (first settle Q's dirty with an out-of-window commit so both start clean)
+  commitAt(Q, T0 + 640_000, "q.py", "v1\nv2\n", "fix: q");
+  sendEvent({ type: "prompt", sid: "sT", cwd: P, prompt: "empate", at: new Date(T0 + 650_000).toISOString() });
+  await processInbox();
+  commitAt(P, T0 + 655_000, "p3.py", "z\n", "feat: p3");
+  noteTapPath(path.join(P, ".git", "HEAD"));
+  fs.writeFileSync(path.join(Q, "q3.py"), "suelto\n");
+  noteTapPath(path.join(Q, "q3.py"));
+  sendEvent({ type: "stop", sid: "sT", cwd: P, reply: "ok", at: new Date(T0 + 660_000).toISOString() });
+  await processInbox();
+  const sT = await suggestWorkspace();
+  assert.equal(sT.workspace, P, "empate 1-1: gana el repo con commit");
+
+  // an all-outside turn (cwd outside git, only loose files) → nothing to
+  // suggest: the panel shows "seleccionar repositorio..." and waits
+  const looseDir = fs.mkdtempSync(path.join(os.tmpdir(), "da-sug-"));
+  fs.writeFileSync(path.join(looseDir, "nota.md"), "hola\n");
+  sendEvent({ type: "prompt", sid: "sS2", cwd: looseDir, prompt: "todo suelto", at: new Date(T0 + 700_000).toISOString() });
+  await processInbox();
+  noteTapPath(path.join(looseDir, "nota.md"));
+  sendEvent({ type: "stop", sid: "sS2", cwd: looseDir, reply: "ok", at: new Date(T0 + 710_000).toISOString() });
+  await processInbox();
+  const s2 = await suggestWorkspace();
+  assert.equal(s2.ok, true);
+  assert.equal(s2.workspace, null);
+  assert.equal(s2.reason, "no_repos");
 });

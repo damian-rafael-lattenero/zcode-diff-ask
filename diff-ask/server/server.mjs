@@ -3,10 +3,10 @@
 //
 // Serves:
 //   ui://diff-ask/panel.html        → the Diff Ask panel (built by ui/build.mjs)
-//   diff://workspace[?mode=…]       → live JSON diff of the session workspace
-//     · mode=working (default)        git diff HEAD + untracked
-//     · mode=unpushed                 git diff @{upstream} + untracked (lo que
-//                                     subiría un push + cambios locales)
+//   diff://workspace                → live JSON diff of the session workspace
+//                                     (git diff HEAD + untracked; the payload
+//                                     also carries upstream/ahead/behind for
+//                                     the panel's header chips)
 //   turn://list                     → turnos registrados (cada prompt = una
 //                                     foto del workspace; índice persistente)
 //   diff://turn/<id|latest>         → diff del turno (foto N vs foto N+1; el
@@ -505,10 +505,12 @@ export async function writeFileGuarded({ path: rel, content, base, expect_base: 
 }
 
 // ------------------------------------------------------- diff vs una base
-// base = HEAD (working) o @{upstream} (unpushed). Los archivos salen de
-// `git diff --name-status -M base` (tracked, renames incluidos) + untracked
-// del porcelain — en unpushed los untracked también son "sin pushear".
-export async function buildDiff({ mode = "working", includePatches = true, workspace = activeWorkspace } = {}) {
+// Working tree vs HEAD (the "unpushed" mode was removed in 0.10.0 — the
+// unpushed VIEW too; what survives is the upstream/ahead/behind info riding
+// every payload so the panel's working header can show its ↑/↓ chips).
+// Tracked files come from `git diff --name-status -M HEAD` (renames included)
+// plus untracked from porcelain.
+export async function buildDiff({ includePatches = true, workspace = activeWorkspace } = {}) {
   const ws = workspace;
   const meta = await repoMeta(ws);
   if (!meta.inside)
@@ -518,23 +520,12 @@ export async function buildDiff({ mode = "working", includePatches = true, works
       workspace: ws,
     };
 
-  let base = "HEAD";
-  let baseLabel = "HEAD";
-  let upstream = null;
+  const base = "HEAD";
+  const baseLabel = "HEAD";
+  const upstream = await resolveUpstream(ws);
   let ahead;
   let behind;
-  if (mode === "unpushed") {
-    upstream = await resolveUpstream(ws);
-    if (!upstream)
-      return {
-        error: "no_upstream",
-        message: `La rama ${meta.branch} no tiene upstream configurado. Configuralo con "git push -u origin ${meta.branch}" (o el remoto que uses) para ver "Sin pushear".`,
-        workspace: ws,
-        branch: meta.branch,
-        head: meta.head,
-      };
-    base = upstream;
-    baseLabel = upstream;
+  if (upstream) {
     const c = await runGit(["rev-list", "--left-right", "--count", `${upstream}...HEAD`], { cwd: ws });
     const m = c.out.trim().match(/^(\d+)\s+(\d+)$/);
     if (m) {
@@ -581,7 +572,7 @@ export async function buildDiff({ mode = "working", includePatches = true, works
     workspace: ws,
     branch: meta.branch,
     head: meta.head,
-    mode,
+    mode: "working",
     baseLabel,
     upstream,
     ahead,
@@ -1267,6 +1258,39 @@ export function clearTurns({ workspace = activeWorkspace } = {}) {
   return { ok: true, remaining: 0 };
 }
 
+// Default workspace for the panel's "Trabajo por repositorio" tab (spec
+// 22/11): the git repo with the MOST changes of the last recorded turn —
+// commits + dirty files (dirtyHidden is noise by definition and doesn't
+// count). An all-outside turn (or no turns at all) suggests nothing: the tab
+// then shows "seleccionar repositorio..." and waits for a manual pick. The
+// newest SAVED turn is the deterministic source (a live turn's repos are only
+// computed at Stop).
+export async function suggestWorkspace() {
+  const rec = readTurnFiles()[0] ?? null;
+  if (!rec) return { ok: true, turnId: null, workspace: null, reason: "no_turns" };
+  const best = (rec.repos ?? [])
+    .filter((r) => r.path && ((r.commits?.length ?? 0) + (r.dirty?.length ?? 0)) > 0)
+    .sort(
+      (a, b) =>
+        (b.commits.length + b.dirty.length) - (a.commits.length + a.dirty.length) ||
+        b.commits.length - a.commits.length ||
+        String(a.path).localeCompare(String(b.path)),
+    )[0] ?? null;
+  if (!best) return { ok: true, turnId: rec.id, workspace: null, reason: "no_repos" };
+  // The repo may be gone (a deleted worktree): an honest null beats a
+  // suggestion the panel can't apply.
+  const inside = await runGit(["rev-parse", "--is-inside-work-tree"], { cwd: best.path });
+  if (!inside.ok) return { ok: true, turnId: rec.id, workspace: null, reason: "repo_gone" };
+  return {
+    ok: true,
+    turnId: rec.id,
+    workspace: best.path,
+    label: best.label ?? path.basename(best.path),
+    commits: best.commits.length,
+    dirty: best.dirty.length,
+  };
+}
+
 // ------------------------------------------------------------ commits
 
 export async function listCommits({ skip = 0, limit = 10, query = "", workspace = activeWorkspace } = {}) {
@@ -1387,8 +1411,8 @@ function sendNotification(method, params) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
 }
 
-// La firma incluye el upstream: en modo "Sin pushear" un fetch que mueva
-// origin/* también tiene que refrescar el panel.
+// La firma incluye el upstream: un fetch que mueva origin/* también cambia
+// los chips ↑/↓ del header de working y tiene que refrescar el panel.
 async function signature() {
   const [s, n, h, u] = await Promise.all([
     runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
@@ -1449,16 +1473,10 @@ const TOOLS = [
   {
     name: "get_diff",
     description:
-      "Get the live diff of the session workspace as structured JSON: per-file path, status, added/deleted counts and unified patch. Opens the Diff Ask panel, where the user can also press '+' on any diff line to ask about that exact line. Modes: working (default, git diff HEAD + untracked) and unpushed (everything a push would send plus local changes, vs @{upstream}). For per-turn diffs use list_turns + get_turn_diff.",
+      "Get the live diff of the session workspace as structured JSON: per-file path, status, added/deleted counts and unified patch (working tree vs HEAD + untracked; the payload also carries upstream/ahead/behind when an upstream exists). Opens the Diff Ask panel, where the user can also press '+' on any diff line to ask about that exact line. For per-turn diffs use list_turns + get_turn_diff.",
     inputSchema: {
       type: "object",
       properties: {
-        mode: {
-          type: "string",
-          enum: ["working", "unpushed"],
-          default: "working",
-          description: "Which changes to diff: working (vs HEAD) or unpushed (vs @{upstream}).",
-        },
         include_patches: {
           type: "boolean",
           default: true,
@@ -1578,6 +1596,13 @@ const TOOLS = [
     },
   },
   {
+    name: "suggest_workspace",
+    description:
+      "Suggest the default workspace for the panel's repo tab: the git repo with the most changes (commits + dirty files) of the LAST recorded turn. Returns workspace=null (reason: no_turns | no_repos | repo_gone) when nothing can be suggested — the panel then waits for a manual pick.",
+    inputSchema: { type: "object", properties: {} },
+    annotations: { readOnlyHint: true },
+  },
+  {
     name: "list_git_projects",
     description:
       "List local git repositories under a folder (recursive, bounded depth, skips node_modules/Library/hidden — except .worktrees agent-worktree containers) for the panel's 📁 repo picker. Default folder: parent of the active workspace.",
@@ -1594,7 +1619,6 @@ const TOOLS = [
 const RESOURCES = [
   { uri: PANEL_URI, name: "panel", mimeType: "text/html;profile=mcp-app" },
   { uri: DIFF_URI, name: "workspace-diff", mimeType: "application/json" },
-  { uri: "diff://workspace?mode=unpushed", name: "workspace-diff-unpushed", mimeType: "application/json" },
   { uri: "turn://list", name: "turns", mimeType: "application/json" },
   { uri: "log://commits", name: "commits", mimeType: "application/json" },
 ];
@@ -1602,10 +1626,7 @@ const RESOURCES = [
 function uriDiffData(uri) {
   const u = new URL(uri);
   if (u.protocol === "diff:") {
-    if (u.host === "workspace") {
-      const mode = u.searchParams.get("mode") ?? "working";
-      return buildDiff({ mode: mode === "unpushed" ? "unpushed" : "working" });
-    }
+    if (u.host === "workspace") return buildDiff();
     if (u.host === "turn") {
       const id = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
       ensureInboxWatcher();
@@ -1653,10 +1674,7 @@ async function handleRequest(msg) {
       let data;
       switch (params.name) {
         case "get_diff":
-          data = await buildDiff({
-            mode: params.arguments?.mode === "unpushed" ? "unpushed" : "working",
-            includePatches: params.arguments?.include_patches !== false,
-          });
+          data = await buildDiff({ includePatches: params.arguments?.include_patches !== false });
           break;
         case "list_commits": {
           data = await listCommits({
@@ -1725,6 +1743,20 @@ async function handleRequest(msg) {
           return {
             structuredContent: data,
             content: [{ type: "text", text: data.ok ? `${data.repos.length} repos bajo ${data.under}` : data.message }],
+          };
+        }
+        case "suggest_workspace": {
+          data = await suggestWorkspace();
+          return {
+            structuredContent: data,
+            content: [
+              {
+                type: "text",
+                text: data.workspace
+                  ? `Sugerencia: ${data.workspace} (${data.commits} commit(s) + ${data.dirty} sucio(s), turno ${data.turnId}).`
+                  : `Sin sugerencia (${data.reason}).`,
+              },
+            ],
           };
         }
         default:
