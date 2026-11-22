@@ -1453,7 +1453,14 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
       meta: document.querySelector(".header .meta")?.textContent ?? "",
     };
   })()`);
-  check((uState.repos ?? []).length === 2, `U: el turno agrupa los DOS repos (${JSON.stringify(uState.repos)})`);
+  // 0.9.29: the turn may ALSO carry a "~" pseudo-repo for files touched
+  // OUTSIDE any git repo during the window (the rig's own writes — hook state
+  // markers, temp files). The two fixture repos must still group the diff;
+  // the outside group, when present, closes the list and renders as
+  // "Fuera de git" in the header.
+  check((uState.repos ?? []).filter((l) => l !== "~").length === 2, `U: el turno agrupa los DOS repos (${JSON.stringify(uState.repos)})`);
+  check((uState.repos ?? []).length === 2 || uState.repos?.[uState.repos.length - 1] === "~",
+    `U: el grupo fuera de git, si hay, cierra turn.repos (${JSON.stringify(uState.repos)})`);
   check(uState.hasDirty, "U: el archivo sucio del repo de la sesión está en el diff");
   check(uState.hasCommit, "U: el COMMIT del segundo repo está en el diff");
   check(uState.editable === 0 && uState.revertable === 0, `U: turno = read-only cross-repo (edit=${uState.editable} rev=${uState.revertable})`);
@@ -1468,7 +1475,11 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
       counts: heads.map((h) => h.querySelector(".trh-counts")?.textContent ?? ""),
     };
   })()`);
-  check(groupsU.n === 2, `U: un encabezado por repo (${JSON.stringify(groupsU.labels)})`);
+  // 0.9.29: headers are ALWAYS on (single repo too) and the "~" group renders
+  // "Fuera de git" — count only the fixture repos' headers.
+  check((groupsU.labels ?? []).filter((l) => l !== "Fuera de git").length === 2, `U: un encabezado por repo (${JSON.stringify(groupsU.labels)})`);
+  check(groupsU.n === 2 || groupsU.labels?.[groupsU.n - 1] === "Fuera de git",
+    `U: el encabezado Fuera de git, si hay, va último (${JSON.stringify(groupsU.labels)})`);
   check(groupsU.labels?.includes(path.basename(REPO)) && groupsU.labels?.includes(path.basename(SECOND)), "U: los encabezados nombran los DOS repos");
   check(groupsU.counts?.some((c) => c.includes("2 commits")), "U: el encabezado del segundo repo muestra sus 2 commits");
   const orderU = await evalJs(`(() => {
