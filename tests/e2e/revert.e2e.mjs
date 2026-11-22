@@ -674,8 +674,24 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     "git/disco: se fue SOLO la palabra 'delta' — la línea nueva SIGUE en el archivo");
   check(afterJ.includes('return new Response("delta", { status: 200 });') && afterJ.includes("});"),
     "las líneas hermanas del bloque NO se tocaron");
-  check(await until(async () => !(await evalJs(`__E2E.hasRowText(${JSON.stringify(SERVER_TS)}, "/delta")`))),
-    "panel recargado: la palabra /delta desapareció del diff");
+  const jReload = await until(async () => !(await evalJs(`__E2E.hasRowText(${JSON.stringify(SERVER_TS)}, "/delta")`)), 8000);
+  if (!jReload) {
+    console.error("    diag J:", JSON.stringify(await evalJs(`(() => {
+      const f = (__DA.diffData?.files ?? []).find((x) => x.path === ${JSON.stringify(SERVER_TS)});
+      const e = __DA.rendered.get(${JSON.stringify(SERVER_TS)});
+      return {
+        gen: __DA.diffData?.generatedAt ?? null,
+        dataHasDelta: (f?.after ?? f?.patch ?? "").includes("/delta"),
+        frags: (__DA.fragSel.get(${JSON.stringify(SERVER_TS)}) ?? []).map((x) => x.text),
+        hydrated: !!e?.fd,
+        refreshCalls: __DA.refreshCalls,
+        refreshBusy: __DA.refreshBusy,
+        lastUri: __DA.lastRenderedUri,
+        mode: __DA.mode,
+      };
+    })()`)));
+  }
+  check(jReload, "panel recargado: la palabra /delta desapareció del diff");
   await shot("09-tras-enter-quirurgico-adicion-pura.png");
 
   await panelStable();
@@ -1539,6 +1555,16 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   await clickAt('.modebar button.ws-commits');
   check(await until(async () => (await evalJs(`document.querySelectorAll(".commit-row").length > 0 && !!document.querySelector(".back-ws")`)), 8000),
     "V: Commits abre la lista del repo elegido con su botón volver");
+  // 0.10.3: the ACTIVE Commits sub-button must keep its subtle outline — the
+  // generic tab fill (.modebar button.active) used to paint it solid.
+  const styleV = await evalJs(`(() => {
+    const tab = document.querySelector('.modebar button[data-mode="working"]');
+    const cb = document.querySelector(".modebar button.ws-commits");
+    if (!tab || !cb) return null;
+    return { tabBg: getComputedStyle(tab).backgroundColor, cbBg: getComputedStyle(cb).backgroundColor, cbCls: cb.className };
+  })()`);
+  check(!!styleV && styleV.tabBg !== styleV.cbBg && /active/.test(styleV.cbCls),
+    `V: Commits activo NO usa el relleno del tab (${JSON.stringify(styleV)})`);
   const rowV = await evalJs(`(() => { const b = document.querySelector(".commit-row"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
   if (!rowV) throw new Error("V: sin commit rows");
   await click(rowV.x, rowV.y);

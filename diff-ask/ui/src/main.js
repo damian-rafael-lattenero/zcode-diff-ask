@@ -214,7 +214,7 @@ function openWorkspacePicker() {
     d.textContent = "buscando repos…";
     list.appendChild(d);
     try {
-      const res = await app.callServerTool({ name: "list_git_projects", arguments: { under: root } });
+      const res = await callTool("list_git_projects", { under: root });
       const sc = res?.structuredContent;
       if (!sc?.ok) throw new Error(sc?.message ?? "no pude listar");
       repos = sc.repos ?? [];
@@ -241,7 +241,7 @@ function openWorkspacePicker() {
 
 async function applyWorkspace(p, { silent = false } = {}) {
   try {
-    const res = await app.callServerTool({ name: "set_workspace", arguments: { path: p } });
+    const res = await callTool("set_workspace", { path: p });
     const sc = res?.structuredContent;
     if (!sc?.ok) throw new Error(sc?.message ?? "no se pudo cambiar la carpeta");
     currentWorkspace = sc.workspace;
@@ -503,10 +503,7 @@ async function saveEntry(entry) {
   const content = e.editor.getText();
   if (content === e.lastSaved) return;
   try {
-    const res = await app.callServerTool({
-      name: "write_file",
-      arguments: { path: entry.path, content, base: e.lastSaved },
-    });
+    const res = await callTool("write_file", { path: entry.path, content, base: e.lastSaved });
     const sc = res?.structuredContent;
     if (sc?.ok) {
       e.lastSaved = content;
@@ -558,14 +555,11 @@ async function discardAllEdits() {
   for (const entry of [...rendered.values()]) {
     if (!entry.edit) continue;
     try {
-      const res = await app.callServerTool({
-        name: "write_file",
-        arguments: {
-          path: entry.path,
-          content: entry.edit.origin,
-          base: entry.edit.lastSaved,
-          on_conflict: "drop",
-        },
+      const res = await callTool("write_file", {
+        path: entry.path,
+        content: entry.edit.origin,
+        base: entry.edit.lastSaved,
+        on_conflict: "drop",
       });
       if (res?.structuredContent?.conflict)
         showEditBanner(`${entry.path}: ${res.structuredContent.message}`);
@@ -586,10 +580,7 @@ async function discardAllEdits() {
 // (el editor tiene su propio estado del documento).
 async function writeReverted(entry, content, label) {
   try {
-    const res = await app.callServerTool({
-      name: "write_file",
-      arguments: { path: entry.path, content, base: entry.fileData.after },
-    });
+    const res = await callTool("write_file", { path: entry.path, content, base: entry.fileData.after });
     const sc = res?.structuredContent;
     if (sc?.ok) {
       setBoxSel(entry, new Set());
@@ -3454,7 +3445,7 @@ async function ensureWorkspaceForRepoTab() {
   wsSuggestTried = true;
   wsSuggesting = true;
   try {
-    const res = await app.callServerTool({ name: "suggest_workspace", arguments: {} });
+    const res = await callTool("suggest_workspace", {});
     const sc = res?.structuredContent;
     if (sc?.ok && sc.workspace) {
       if (await applyWorkspace(sc.workspace, { silent: true }))
@@ -3878,7 +3869,7 @@ function openPromptCard(turn) {
 
 async function deleteTurnById(id) {
   try {
-    const res = await app.callServerTool({ name: "delete_turn", arguments: { id } });
+    const res = await callTool("delete_turn", { id });
     if (!res?.structuredContent?.ok) throw new Error(res?.structuredContent?.message ?? "no se pudo borrar");
     loadTurns(true);
   } catch (e) {
@@ -3908,7 +3899,7 @@ function renderTurns() {
   clear.title = "Borrar TODOS los turnos (global, todas las sesiones)";
   clear.onclick = () => {
     if (clear.dataset.armed) {
-      app.callServerTool({ name: "clear_turns", arguments: {} })
+      callTool("clear_turns", {})
         .then(() => loadTurns())
         .catch((e) => chip(`⚠ ${e?.message ?? e}`));
       return;
@@ -4021,15 +4012,21 @@ async function resubscribe(uri) {
 
 // Mode switch (top tabs). Leaving Commits/Turns clears the selection and the
 // search; entering Turnos opens the LAST turn directly (live if one is open).
+// Same-tab click = explicit re-entry: a stuck view must always have a way
+// out (report 22/11: repo tab unresponsive, clicking its own tab did
+// nothing).
 async function setMode(m) {
-  if (m === mode) return;
+  if (m === mode) {
+    refresh(true);
+    return;
+  }
   await endAllEdits();
   mode = m;
   commitSel = null;
   turnSel = m === "turns" ? "latest" : null;
   commitsState = { query: "", skip: 0, list: [], hasMore: false };
   turnsState = { list: [], skip: 0, hasMore: false, total: 0, sessionFilter: null };
-  document.querySelectorAll(".modebar button").forEach((b) => {
+  document.querySelectorAll(".modebar button[data-mode]").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === m);
   });
   await refresh(true);
@@ -4043,7 +4040,7 @@ async function openCommits() {
   mode = "commits";
   commitSel = null;
   commitsState = { query: "", skip: 0, list: [], hasMore: false };
-  document.querySelectorAll(".modebar button").forEach((b) => {
+  document.querySelectorAll(".modebar button[data-mode]").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === "working");
   });
   await refresh(true);
@@ -4054,7 +4051,7 @@ async function backToWorking() {
   await endAllEdits();
   mode = "working";
   commitSel = null;
-  document.querySelectorAll(".modebar button").forEach((b) => {
+  document.querySelectorAll(".modebar button[data-mode]").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === "working");
   });
   await refresh(true);
@@ -4082,15 +4079,23 @@ const dropRenderedSig = () => {
 // wedge the panel — on timeout the catch below renders an error state WITH
 // the mode bar, so the next click recovers.
 const READ_TIMEOUT_MS = 25_000;
-function withTimeout(p, what) {
+function withTimeout(p, what, ms = READ_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const t = setTimeout(
-      () => reject(new Error(`${what}: sin respuesta en ${READ_TIMEOUT_MS / 1000}s`)),
-      READ_TIMEOUT_MS,
+      () => reject(new Error(`${what}: sin respuesta en ${Math.round(ms / 1000)}s`)),
+      ms,
     );
     p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
   });
 }
+
+// Every panel→server TOOL call is bounded too (0.10.3): reads already had a
+// timeout, but tool calls (suggestion, set_workspace, picker, write_file…)
+// could hang forever on a stalled bridge — the repo tab froze with the
+// server itself healthy (report 22/11, survived reopening the panel).
+const TOOL_TIMEOUT_MS = 20_000;
+const callTool = (name, args = {}, ms = TOOL_TIMEOUT_MS) =>
+  withTimeout(app.callServerTool({ name, arguments: args }), `${name}()`, ms);
 
 // Target of the current view. refresh() only coalesces SAME-target calls; a
 // different target means the user navigated (mode/commit/workspace changed)
@@ -4111,8 +4116,10 @@ function refreshTarget() {
 }
 
 const isStale = (gen) => gen !== refreshGen;
+let refreshCalls = 0; // e2e telemetry: did the refresh loop even run?
 
 async function refresh(explicit = false) {
+  refreshCalls++;
   // The editor does not survive a re-render: while an edit session is open,
   // the REACTIVE refresh is deferred (it is applied once editing ends). The
   // explicit one (⟳, mode change) saves everything, closes sessions, goes on.
@@ -4227,9 +4234,10 @@ async function boot() {
   // and the server caches the session id from it — this cheap call teaches
   // the server WHICH task this panel serves, so every later turn read
   // (even bare resources/read, which has no _meta) is scoped to this task.
-  // Best-effort: without it the server stays global.
+  // Best-effort AND bounded (3s): a stalled tool bridge must never block the
+  // boot itself — without the handshake the server simply stays global.
   try {
-    await app.callServerTool({ name: "whoami", arguments: {} });
+    await callTool("whoami", {}, 3_000);
   } catch { /* global fallback */ }
   try {
     app.setNotificationHandler(ResourceUpdatedNotificationSchema, (n) => {
@@ -4274,6 +4282,9 @@ if (window.__DA_TEST__) {
     get diffData() { return diffData; },
     get wsChosen() { return wsChosen; },
     set wsChosen(v) { wsChosen = Boolean(v); },
+    get refreshCalls() { return refreshCalls; },
+    get refreshBusy() { return Boolean(refreshInFlight); },
+    get lastRenderedUri() { return lastRendered.uri; },
     get mode() { return mode; },
     get turnSel() { return turnSel; },
     get turnsState() { return turnsState; },

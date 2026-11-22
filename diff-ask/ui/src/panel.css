@@ -551,7 +551,9 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   color: var(--muted);
 }
 .modebar button:hover { color: var(--text); }
-.modebar button.active {
+/* Filled pill for the REAL tabs only ([data-mode]) — the Commits sub-button
+   also toggles .active and must not catch this fill (looked "painted over"). */
+.modebar button[data-mode].active {
   background: var(--accent);
   color: var(--accent-contrast);
   border-color: var(--accent);
@@ -691,9 +693,11 @@ button.filt.on::after {
 /* "seleccionar repositorio..." (nothing chosen yet) + the Commits sub-button. */
 .modebar .ws.empty { font-style: italic; }
 .modebar .ws-commits { font-size: 12px; }
+/* Sub-view open: a subtle outline "current" state — never the tab fill. */
 .modebar .ws-commits.active {
   color: var(--accent, #4268d8);
   border-color: var(--accent, #4268d8);
+  background: color-mix(in oklab, var(--accent, #4268d8) 10%, transparent);
   font-weight: 600;
 }
 .ws-editor {
