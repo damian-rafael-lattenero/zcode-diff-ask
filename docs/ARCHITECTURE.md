@@ -64,16 +64,20 @@ Sin dependencias: MCP por stdio a mano (JSON-RPC línea por línea), y toda la
 potencia es `git` + `fs.watch`.
 
 **Resources**
-- `diff://workspace[?mode=]` — el diff completo: `working` (HEAD+untracked),
-  `unpushed` (@{upstream}+working, con ↑ahead ↓behind), `last-turn`.
-  El payload incluye por archivo: status, before/after COMPLETOS (cuando el
-  tamaño lo permite), patch unificado, y los `hunks` parseados con su
-  `hunkContent` (la estructura cambio-por-cambio que el revert camina).
-- `turn://list`, `diff://turn/<id|latest>` — sistema de **turnos 📸**: cada
+- `diff://workspace` — el diff completo: `working` (HEAD+untracked). Desde
+  0.10.0 el modo `unpushed` no existe (la vista se eliminó); lo que sobrevive
+  es la info `upstream`/`ahead`/`behind` viajando en CADA payload working
+  (los chips ↑/↓ del header del panel). El payload incluye por archivo:
+  status, before/after COMPLETOS (cuando el tamaño lo permite), patch
+  unificado, y los `hunks` parseados con su `hunkContent` (la estructura
+  cambio-por-cambio que el revert camina).
+- `turn://list`, `diff://turn/<id|latest>` — sistema de **turnos v2**: cada
   prompt del usuario (vía hook user-scope → `~/.zcode/diff-ask/turn-events.jsonl`)
-  fotografía el workspace ANTES de que el agente edite (HEAD + blobs
-  `hash-object -w` por archivo sucio). El diff del turno N = foto(N) vs
-  foto(N+1) = el efecto neto; el último diffea contra el working tree VIVO.
+  abre una ventana prompt→stop; mientras está abierta un FSEvents sobre $HOME
+  acumula los paths tocados y al Stop el server agrupa por repo: los commits
+  hechos EN la ventana + los archivos sucios al final + los archivos tocados
+  fuera de cualquier repo. Un JSON por turno en `turns2/`, global entre
+  sesiones; `latest` diffea el turno abierto contra el árbol VIVO.
 - `log://commits`, `diff://commit/<hash>` — navegador de commits (páginas de
   10 + búsqueda por hash/título).
 
@@ -82,9 +86,11 @@ debounce 600 ms) → solo notifica si cambió la **firma de git** (status +
 numstat + HEAD + upstream). El panel re-lee el resource al recibir
 `resources/updated`.
 
-**Tools**: `get_diff(mode)` (abre el panel), `list_commits`,
-`get_commit_diff`, `list_turns`/`get_turn_diff`, `mark_turn_snapshot` (📸
-manual), `set_workspace` (cambiar de repo: re-valida, re-arma watchers) y
+**Tools**: `get_diff` (abre el panel), `list_commits`,
+`get_commit_diff`, `list_turns`/`get_turn_diff`, `delete_turn`/`clear_turns`,
+`set_workspace` (cambiar de repo: re-valida, re-arma watchers),
+`suggest_workspace` (0.10.0: el repo con más cambios del último turno — el
+default del tab "Trabajo por repositorio"), `list_git_projects` (picker 📁) y
 **`write_file`** — la única puerta de escritura, con política de conflicto:
 
 ```

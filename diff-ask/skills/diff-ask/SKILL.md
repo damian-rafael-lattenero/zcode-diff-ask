@@ -25,24 +25,21 @@ A Diff Ask message contains a block like:
 
 ## Getting the diff yourself
 
-Call the `get_diff` tool (from this plugin) for structured JSON: branch, head, and per-file path/status/added-deleted counts/unified patch. It also opens the Diff Ask panel for the user.
+Call the `get_diff` tool (from this plugin) for structured JSON: branch, head, and per-file path/status/added-deleted counts/unified patch. It also opens the Diff Ask panel for the user. The working payload also carries `upstream`/`ahead`/`behind` when the branch has one.
 
-Diff modes (`mode` argument):
+Turns (what each user prompt achieved — commits made in the window plus files left dirty, across every repo the turn touched):
 
-- `working` (default) — uncommitted changes vs HEAD plus untracked files.
-- `unpushed` — everything a push would send plus local changes, vs `@{upstream}` (fails with `no_upstream` if the branch has no upstream).
-
-Turns (what each user prompt achieved — commits included, workspace snapshots stored as git blobs):
-
-- `list_turns` — every recorded turn of the workspace (newest first): id, timestamp, full prompt, isLatest.
-- `get_turn_diff` — diff of one turn (its prompt's snapshot vs the next prompt's; `latest` diffs against the live working tree).
+- `list_turns` — recorded turns, newest first, paginated (use `skip`): id, timestamps, prompt/reply previews, repo and file counts. The first entry may be the OPEN turn (`isLive`).
+- `get_turn_diff` — diff of one turn (`latest` = the open turn live, or the last saved one): every file namespaced by repo label, commit files and dirty files, plus the "Fuera de git" group for files outside any repo. Opens the panel on that turn.
 
 Commits:
 
 - `list_commits` — latest commits (title/author/date, paginate with `skip`) or search by hash/prefix/title (`query`).
 - `get_commit_diff` — full diff of one commit vs its first parent (root commits diff against the empty tree); opens the panel on that commit.
 
-The panel's question header names its scope, e.g. `Diff Ask — 2 preguntas al diff (sin pushear, vs origin/main):` or `(commit a1b2c3d fix: algo)` or `(último turno 📸)`. Answer about THAT diff: for unpushed/commit questions the quoted lines may differ from the current working tree — re-read the file at the right revision/line before concluding.
+Panel tabs (0.10.0): **Turnos** (the last executed turn, grouped by repo and folder) and **Trabajo por repositorio** (its 📁 picker defaults to the repo the last turn changed the most — `suggest_workspace`; its Commits button opens that repo's history).
+
+The panel's question header names its scope, e.g. `Diff Ask — 2 preguntas al diff (turno 10:03 — repos: …):` or `(commit a1b2c3d fix: algo)`. Answer about THAT diff: for turn/commit questions the quoted lines may differ from the current working tree — re-read the file at the right revision/line before concluding.
 
 ## Pinning an answer onto the file (optional, high value)
 

@@ -45,13 +45,16 @@ Documentación de profundidad:
   reales, cómo funciona el rig e2e con mouse real, y los pozos que fuimos
   aprendiendo.
 
-## Qué hay (state 0.9.20)
+## Qué hay (state 0.10.0)
 
 | Feature | Dónde |
 |---|---|
 | Diff vivo reactivo (fs.watch → firma git → SSE) | server + panel |
-| 4 modos (orden): **Turnos** (default) / Sin pushear / Trabajo por repositorio / Commits | server (`diff://workspace?mode=…`) |
+| 2 tabs (0.10.0): **Turnos** (default — el último turno ejecutado, agrupado por repo Y carpeta, git vs "Fuera de git", lista de a 10 hacia el pasado) / **Trabajo por repositorio** (selector 📁 solo acá; default = repo con más cambios del último turno vía `suggest_workspace`; su botón **Commits** abre el historial del repo elegido) | server + panel |
 | Turnos v2: ventana prompt→stop por hooks (UserPromptSubmit/Stop), FSEvents sobre $HOME, commits de la ventana + sucios al final, agrupado por repo/worktree | `turns2/` + `turn-tap.nu` |
+| **Render lazy** (0.10.0): cada archivo monta su diff recién al expandirlo; colapsar lo destruye — la memoria queda acotada a lo expandido y un turno de 600 archivos no tilda el panel | `hydrateFileDiff`/`dehydrateFileDiff` (panel) |
+| Refresh con short-circuit: payload idéntico → no se reconstruye el DOM | `payloadSig` (panel) |
+| Chips ↑ahead/↓behind vs upstream en el header de trabajo (la vista "Sin pushear" se eliminó en 0.10.0; la info queda) | server (payload working) + panel |
 | Preguntas ancladas ＋ (línea, rango de cajitas, archivo) | panel + skill |
 | Revert por línea (riel derecho), por selección, por archivo | `revertLines` (lib) |
 | **Pincel quirúrgico**: pintar chars/palabras, coexistencia por chars, Enter, brocha acumulativa sin popups | `revertFrags` + `surgeryLine`/`restoreOldWords` (lib) |
@@ -108,12 +111,12 @@ Decisiones clave (resumen; el detalle con el por qué en
 
 | Nivel | Qué | Cantidad | Tiempo |
 |---|---|---|---|
-| Unit | lib.js pura + server MCP (con repos git reales en tmp) | 101 | **~9 s** |
+| Unit | lib.js pura + server MCP (con repos git reales en tmp) | 105 | **~9 s** |
 | Integración | lib → `write_file` → `git diff` cierra el circuito en repo tmp real | (dentro de unit) | — |
-| E2E | Chromium real + CDP, **mouse y teclado reales**, panel dist real + server real, cada revert verificado con git | 165 checks | **~2 min** (la sección del mega commit suma render de 600 secciones) |
+| E2E | Chromium real + CDP, **mouse y teclado reales**, panel dist real + server real, cada revert verificado con git | 182 checks | **~2 min** (la sección del mega commit suma render de 600 secciones) |
 
 ```bash
-npm test          # 101 unit + integración (~9 s)
+npm test          # 105 unit + integración (~9 s)
 npm run test:e2e  # rig completo con mouse real (~2 min)
 ```
 
