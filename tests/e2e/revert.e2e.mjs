@@ -1632,6 +1632,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   clearInterval(drainNotifications);
   await shot("08-final.png").catch(() => {});
   try { fs.rmSync(path.join(os.homedir(), "Projects", ".worktrees", "e2e-picker-fixture-wt"), { recursive: true, force: true }); } catch {} // fixture del picker (P)
+  try { if (SECOND) fs.rmSync(SECOND, { recursive: true, force: true }); } catch {} // U's second repo — inline cleanup is skipped when a section throws mid-way (leaked da-e2e-turn-* twice)
   try { ws.close(); } catch {}
   chrome.kill("SIGKILL");
   server.kill("SIGKILL");
