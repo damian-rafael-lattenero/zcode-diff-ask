@@ -1,0 +1,22 @@
+name: CI
+
+# The server check (tools/check-server.mjs) and the unit suite (node --test
+# tests/) — the e2e leg stays out (it drives the desktop app; CI has none).
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: npm }
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
