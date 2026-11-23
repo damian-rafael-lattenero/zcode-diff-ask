@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node diff-ask/ui/build.mjs",
     "check": "node tools/check-server.mjs",
-    "test": "node --test tests/",
+    "test": "node --test --test-timeout=15000 tests/",
     "test:e2e": "node tests/e2e/revert.e2e.mjs"
   },
   "devDependencies": {

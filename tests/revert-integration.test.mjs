@@ -120,17 +120,24 @@ test("watcher: un write externo → notificación resources/updated", async () =
     stdio: ["pipe", "pipe", "ignore"],
   });
   const send = (o) => server.stdin.write(JSON.stringify(o) + "\n");
+  // ONE stdout listener feeds BOTH promises — the subscribe's ANSWER
+  // ("id":1) arms the gate, the notification fires it. A fixed 300 ms boot
+  // guess flakes on a cold runner (the subscribe would land after the
+  // write and the notification would never come — measured on CI).
   let buf = "";
-  const notify = new Promise((resolve) => {
-    server.stdout.on("data", (d) => {
-      buf += d;
-      for (const line of buf.split("\n")) {
-        if (line.includes("notifications/resources/updated")) return resolve(true);
-      }
-    });
+  let wakeAnswer = () => {};
+  let wakeNotify = () => {};
+  const answer = new Promise((r) => { wakeAnswer = r; });
+  const notify = new Promise((r) => { wakeNotify = r; });
+  server.stdout.on("data", (d) => {
+    buf += d;
+    for (const line of buf.split("\n")) {
+      if (line.includes('"id":1')) wakeAnswer(true);
+      if (line.includes("notifications/resources/updated")) wakeNotify(true);
+    }
   });
   send({ jsonrpc: "2.0", id: 1, method: "resources/subscribe", params: { uri: "diff://workspace" } });
-  await new Promise((r) => setTimeout(r, 300));
+  await answer; // the watcher is ARMED — no boot guess
   fs.writeFileSync(path.join(repo, "doc.md"), CHANGED); // cambio externo
   const got = await Promise.race([notify, new Promise((r) => setTimeout(() => r(false), 6000))]);
   server.kill("SIGKILL");
