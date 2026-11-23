@@ -91,6 +91,20 @@ potencia es `git` + `fs.watch`.
   completes the turn) and arms the watcher at startup. The panel stamps
   its sid (`turn://list?sid=`, `diff://turn/…?sid=`) so its view always
   follows its OWN task.
+  **A turn's files are ZCode's own (0.10.10, `app-store.mjs` + `turn-files.mjs`)**:
+  when the app knows the session, the turn's file list is the session's
+  workspace checkpoints inside the prompt→stop window — the very list the
+  app's end-of-turn summary shows (its `aggregateWorkspaceCheckpoints`
+  ported, including the jsdiff-9 patch applier an Edit checkpoint needs
+  because it stores no after-content), aggregated first-before →
+  final-after per file. The edge reads the app's sqlite session store and
+  tool-result artifacts read-only; a store it cannot read answers an honest
+  null and the capture model below stays in charge (bot lines, the rig).
+  The FSEvents tap + git capture therefore still runs ONLY for sessions the
+  app does not know: commits and dirty files no longer inflate a turn that
+  wrote nothing, and `suggest_workspace` follows the turn's written files.
+  Known gap: the app's panel also hides generated-UI source files
+  (`::visualize` references parsed from the reply) — not ported here.
 - `log://commits`, `diff://commit/<hash>` — navegador de commits (páginas de
   10 + búsqueda por hash/título).
 

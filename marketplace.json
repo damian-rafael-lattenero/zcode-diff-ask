@@ -4,8 +4,8 @@
     {
       "name": "diff-ask",
       "source": "./diff-ask",
-      "version": "0.10.9",
-      "description": "Ask questions about your workspace diff, anchored to exact lines: hover + to question a line, drag line numbers for ranges, free-form questions from the ask bar, one message with everything. Two tabs: Turns (the last executed turn with every file, grouped by repo and folder, git vs outside git) and Work by repository (defaults to the repo the last turn changed the most, with its own commit browser).",
+      "version": "0.10.10",
+      "description": "Ask questions about your workspace diff, anchored to exact lines: hover + to question a line, drag line numbers for ranges, free-form questions from the ask bar, one message with everything. Two tabs: Turns (the files each turn wrote — the same list ZCode's end-of-turn summary shows, grouped by repo and folder) and Work by repository (defaults to the repo the last turn wrote the most in, with its own commit browser).",
       "displayName": "Diff Ask"
     }
   ]

@@ -27,17 +27,17 @@ A Diff Ask message contains a block like:
 
 Call the `get_diff` tool (from this plugin) for structured JSON: branch, head, and per-file path/status/added-deleted counts/unified patch. It also opens the Diff Ask panel for the user. The working payload also carries `upstream`/`ahead`/`behind` when the branch has one.
 
-Turns (what each user prompt achieved — commits made in the window plus files left dirty, across every repo the turn touched):
+Turns (what each user prompt achieved — the files its tools wrote, which is the same list ZCode's end-of-turn summary shows; sessions the app does not know fall back to commits made in the window plus files left dirty):
 
 - `list_turns` — recorded turns, newest first, paginated (use `skip`): id, timestamps, prompt/reply previews, repo and file counts. The first entry may be the OPEN turn (`isLive`). Turns are scoped to the calling session when it is known (panel/model request context); otherwise they span all sessions.
-- `get_turn_diff` — diff of one turn (`latest` = the open turn live, or the last saved one): every file namespaced by repo label, commit files and dirty files, plus the "Fuera de git" group for files outside any repo. Opens the panel on that turn.
+- `get_turn_diff` — diff of one turn (`latest` = the open turn live, or the last saved one): every file namespaced by repo label, with its first-before → final-after content, plus the "Fuera de git" group for files outside any repo. Opens the panel on that turn. A turn that wrote nothing lists nothing — commands, commits and pre-existing dirty files are not "files written".
 
 Commits:
 
 - `list_commits` — latest commits (title/author/date, paginate with `skip`) or search by hash/prefix/title (`query`).
 - `get_commit_diff` — full diff of one commit vs its first parent (root commits diff against the empty tree); opens the panel on that commit.
 
-Panel tabs (0.10.0): **Turnos** (the last executed turn, grouped by repo and folder) and **Trabajo por repositorio** (its 📁 picker defaults to the repo the last turn changed the most — `suggest_workspace`; its Commits button opens that repo's history).
+Panel tabs (0.10.0): **Turnos** (each turn's written files — the same list the app's end-of-turn summary shows — grouped by repo and folder) and **Trabajo por repositorio** (its 📁 picker defaults to the repo the last turn that wrote files worked in — `suggest_workspace`; its Commits button opens that repo's history).
 
 The panel's question header names its scope, e.g. `Diff Ask — 2 preguntas al diff (turno 10:03 — repos: …):` or `(commit a1b2c3d fix: algo)`. Answer about THAT diff: for turn/commit questions the quoted lines may differ from the current working tree — re-read the file at the right revision/line before concluding.
 
