@@ -639,22 +639,34 @@ export function parseTurnEvent(line) {
 // Paths are relative to $HOME. Build dirs, caches, dependency trees and the
 // server's own state/logs would drown the turn; .git internals are handled
 // separately (they mark the repo as "commits to scan").
+// One stored outside path (("~/rel") or absolute) → its $HOME-relative form,
+// or null when it is not under $HOME (absolute foreign paths have no noise
+// rules). Shared by the tap and the read-time drops so both speak the same
+// language about a path.
+export function homeRelOutside(raw) {
+  const p = String(raw ?? "");
+  if (p.startsWith("~/")) return p.slice(2);
+  const home = os.homedir();
+  if (p.startsWith(home + "/")) return p.slice(home.length + 1);
+  return null;
+}
+
 export function isTapNoise(rel) {
   const p = String(rel ?? "").replaceAll("\\", "/");
   return (
     /(^|\/)(Library|\.Trash|Caches|\.cache|node_modules|\.venv|venv|__pycache__|\.next|DerivedData|\.gradle|\.m2|target\/debug|target\/release)(\/|$)/.test(p) ||
     /\.(log|lock|tmp|swp|swo|sqlite-wal|sqlite-shm)$/.test(p) ||
-    p.startsWith(".zcode/diff-ask/") || // the tap's own state (avoid self-feedback)
-    // Derived install copies (0.10.6): marketplace/cache/registry mirrors of
-    // plugin repos — every session's install writes them, so machine-wide
-    // capture leaked them into EVERY open task's turn. The source-of-truth
-    // repo files are captured by the owning session via its own workspace.
-    p.startsWith(".zcode/cli/plugins/") ||
-    p.startsWith(".zcode/cli/log/") ||
-    p.startsWith(".zcode/cli/db/") ||
-    p.startsWith(".zcode/cli/exec/") ||
-    p.startsWith(".zcode/agent-brain/") ||
-    p.startsWith(".zcode/hooks/logs/")
+    // ~/.zcode is session TERRITORY only where the session actually speaks:
+    // its plans and its memories (0.10.9). Everything else under .zcode is
+    // machine plumbing with no owning session — bot daemons' heartbeats and
+    // state locks, the recorder, runtime/provider locks, memory diagnostics,
+    // tool-call artifacts of OTHER sessions — and it used to land in
+    // whatever turn happened to be open (measured 23/11: a bot-kotlin turn
+    // carried 300 capped outside entries, all noise). One rule, no
+    // enumeration of daemons: allow-list the two speaking subtrees.
+    (p.startsWith(".zcode/") &&
+      !p.startsWith(".zcode/plans/") &&
+      !p.startsWith(".zcode/cli/memories/"))
   );
 }
 
@@ -1220,7 +1232,14 @@ function sidTurns(scopeSid) {
 }
 
 function turnFileCount(rec) {
-  let n = rec.outside?.length ?? 0;
+  // The outside count rides the same read-time noise drop as buildTurnDiff
+  // (0.10.9): old records stored daemon plumbing — the list row must not
+  // advertise 300 files the view will never show.
+  let n = 0;
+  for (const o of rec.outside ?? []) {
+    const rel = homeRelOutside(o?.path ?? o);
+    if (rel === null || !isTapNoise(rel)) n++;
+  }
   for (const r of rec.repos ?? []) n += (r.commits?.length ?? 0) + (r.dirty?.length ?? 0);
   return n;
 }
@@ -1434,6 +1453,16 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
         if (foreignRoots.size)
           rec = { ...rec, repos: (rec.repos ?? []).filter((r) => !foreignRoots.has(r.path)) };
       }
+      // Read-time noise drop (0.10.9): records stored BEFORE the ~/.zcode
+      // allow-list carry daemon plumbing in their outside list (bot state,
+      // locks, recorder, diagnostics, artifacts) — the same isTapNoise
+      // predicate filters them at read, so old records render clean without
+      // migrating the store. Outside paths are "~/rel" or absolute.
+      const outside = (rec.outside ?? []).filter((o) => {
+        const rel = homeRelOutside(o?.path ?? o);
+        return rel === null || !isTapNoise(rel);
+      });
+      if (outside.length !== (rec.outside ?? []).length) rec = { ...rec, outside };
     }
     if (!rec) {
       if (id !== "latest")

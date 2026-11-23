@@ -75,7 +75,13 @@ test("isTapNoise: caches/builds/logs/estado propio fuera; código adentro", () =
   assert.equal(isTapNoise("Projects/a/app.log"), true);
   assert.equal(isTapNoise(".zcode/diff-ask/turn-events.jsonl"), true);
   assert.equal(isTapNoise("Projects/a/src/main.rs"), false);
-  assert.equal(isTapNoise(".zcode/hooks/turn-tap.nu"), false);
+  assert.equal(isTapNoise(".zcode/hooks/turn-tap.nu"), true, "hooks plumbing = noise since 0.10.9");
+  assert.equal(isTapNoise(".zcode/plans/plan-sess_x.md"), false, "the session's plans speak");
+  assert.equal(isTapNoise(".zcode/cli/memories/projects/x/memory.md"), false, "the session's memories speak");
+  assert.equal(isTapNoise(".zcode/bot-kotlin/state/hb-stream-effects"), true, "bot daemon heartbeats = noise");
+  assert.equal(isTapNoise(".zcode/cli/memory-diagnostics/memory-1.jsonl"), true, "app diagnostics = noise");
+  assert.equal(isTapNoise(".zcode/cli/artifacts/sess_5b7/call-x.json"), true, "tool-call artifacts = noise");
+  assert.equal(isTapNoise(".zcode/bot-recordings/replay.jsonl"), true, "recorder = noise");
 });
 
 test("repoRootOf: archivo en repo/subcarpeta → raíz; fuera de repos → null", () => {
@@ -118,7 +124,7 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
   noteTapPath(path.join(A, "a.py"));
   commitAt(WT, T0 + 30_000, "x.py", "uno\ndos\n", "feat: x avanza");
   noteTapPath(path.join(WT, ".git", "HEAD")); // commit marker → worktree repo included
-  const suelto = path.join(os.homedir(), ".zcode", `da-unit-suelto-${Date.now()}.txt`);
+  const suelto = path.join(os.homedir(), ".zcode", "plans", `da-unit-suelto-${Date.now()}.txt`);
   noteTapPath(suelto); // touched but never a real file → the honest "gone" note
 
   // stop event closes it
@@ -243,7 +249,7 @@ test("outside: archivos fuera de git entran al diff en verde; los borrados, como
   commitAt(D, T0 - 100_000, "d.py", "v1\n", "base D");
   await setActiveWorkspace(D);
   // territory (~/.zcode): loose non-git files live there since 0.10.6
-  const loose = path.join(os.homedir(), ".zcode", `da-unit-loose-${Date.now()}`);
+  const loose = path.join(os.homedir(), ".zcode", "plans", `da-unit-loose-${Date.now()}`);
   fs.mkdirSync(loose, { recursive: true });
   fs.writeFileSync(path.join(loose, "notas.md"), "linea uno\nlinea dos\n");
   const vanished = path.join(loose, "fantasma.txt");
@@ -285,7 +291,7 @@ test("focus: el click del fork resuelve al entry del turno, se consume y expira"
   const E = makeRepo();
   commitAt(E, T0 - 100_000, "e.py", "v1\n", "base E");
   await setActiveWorkspace(E);
-  const loose = path.join(os.homedir(), ".zcode", `da-unit-loose2-${Date.now()}`);
+  const loose = path.join(os.homedir(), ".zcode", "plans", `da-unit-loose2-${Date.now()}`);
   fs.mkdirSync(loose, { recursive: true });
   const suelto = path.join(loose, "suelto.md");
   fs.writeFileSync(suelto, "hola\n");
@@ -661,4 +667,38 @@ test("regresión 0.10.8 (carrera de restart): el stop que llega a la vida SIGUIE
   const files = fs.readdirSync(path.join(RSTATE, "turns2")).filter((n) => n.endsWith(".json"));
   assert.equal(files.length, 1, `el store grabó SOLO el turno del restart (${files.join(", ")})`);
   assert.ok(files[0].endsWith("-sR.json"), files[0]);
+});
+
+test("regresión 0.10.9 (ruido de daemons): el read-time dropea el plumbing de ~/.zcode de records viejos", async () => {
+  // Records stored BEFORE the allow-list (like the bot-kotlin turns of
+  // 23/11: 300 capped outside entries, all daemon plumbing) must render
+  // clean at read time — the same isTapNoise predicate, applied to the
+  // saved outside list. No store migration.
+  await clearTurns();
+  const A = makeRepo();
+  const id = `${(T0 + 700_000).toString(36)}-sN`;
+  const rec = {
+    id, sid: "sN", workspace: A, prompt: "turno con ruido viejo", reply: "ok",
+    startedAt: new Date(T0 + 700_000).toISOString(),
+    stoppedAt: new Date(T0 + 760_000).toISOString(),
+    repos: [],
+    outside: [
+      "~/notrepo/a.txt",                                // plain outside — KEPT
+      "~/.zcode/bot-kotlin/state/hb-stream-effects",    // daemon heartbeat — DROPPED
+      "~/.zcode/bot-recordings/replay-2026.jsonl",      // recorder — DROPPED
+      "~/.zcode/cli/memory-diagnostics/memory-1.jsonl", // diagnostics — DROPPED
+      "~/.zcode/cli/artifacts/sess_5b7/call-x.json",    // tool artifacts — DROPPED
+      "~/.zcode/plans/plan-sess_x.md",                  // the session speaks — KEPT
+      "~/.zcode/cli/memories/projects/x/memory.md",     // the session speaks — KEPT
+    ],
+  };
+  fs.mkdirSync(path.join(STATE, "turns2"), { recursive: true });
+  fs.writeFileSync(path.join(STATE, "turns2", `${id}.json`), JSON.stringify(rec));
+  const d = await buildTurnDiff(id);
+  assert.equal(d.error, undefined);
+  const paths = (d.files ?? []).map((f) => f.path);
+  for (const kept of ["~/notrepo/a.txt", "~/.zcode/plans/plan-sess_x.md", "~/.zcode/cli/memories/projects/x/memory.md"])
+    assert.ok(paths.includes(kept), `kept ${kept} (${JSON.stringify(paths)})`);
+  for (const dropped of ["hb-stream-effects", "replay-2026", "memory-1.jsonl", "call-x.json"])
+    assert.ok(!paths.some((p) => p.includes(dropped)), `dropped ${dropped} (${JSON.stringify(paths)})`);
 });
