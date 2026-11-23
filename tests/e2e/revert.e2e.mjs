@@ -31,6 +31,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createAppStore, edited, written } from "../lib/app-store-fixture.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "../..");
@@ -61,8 +62,19 @@ execFileSync("node", [path.join(HERE, "apply-fixture-mods.mjs")], { stdio: "inhe
 // real ~/.zcode/diff-ask — the turn tap tests write events into it.
 const TURN_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "da-e2e-state-"));
 const TURN_INBOX = path.join(TURN_STATE, "turn-events.jsonl");
+// A fake of ZCode's own session store (0.10.10), built by section X. Until
+// then the paths do not exist: every earlier turn runs the capture model,
+// hermetically — never against the real app database.
+const APP_DIR = path.join(TURN_STATE, "app");
 const server = spawn("node", [path.join(REPO, "diff-ask/server/server.mjs")], {
-  env: { ...process.env, ZCODE_WORKSPACE_ROOT: REPO, ZCODE_DIFF_ASK_STATE: TURN_STATE, ZCODE_SESSION_ID: "" },
+  env: {
+    ...process.env,
+    ZCODE_WORKSPACE_ROOT: REPO,
+    ZCODE_DIFF_ASK_STATE: TURN_STATE,
+    ZCODE_SESSION_ID: "",
+    ZCODE_DIFF_ASK_APP_DB: path.join(APP_DIR, "app.sqlite"),
+    ZCODE_DIFF_ASK_APP_ARTIFACTS: path.join(APP_DIR, "artifacts"),
+  },
   stdio: ["pipe", "pipe", "pipe"],
 });
 let rpcId = 0;
@@ -545,11 +557,21 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   // derecha→izquierda: del centro de la ÚLTIMA letra al centro de la quinta
   // (arrancar 1.5px más allá del borde derecho era tierra de nadie entre
   // palabras: bajo load del sistema el drag ahí no seleccionaba nada)
+  // Forense (this check kept failing under load): WHO is really under the drag's
+  // start point, and what does the screen look like if it paints nothing.
+  if (loc && !loc.error) {
+    const dx = (loc.chars[9].left + loc.chars[9].right) / 2;
+    const under = await evalJs(`__E2E.rowAt(${JSON.stringify(NOTES)}, ${dx}, ${loc.y})`);
+    console.error("    D forense: start", JSON.stringify({ x: dx, y: loc.y, char9: loc.chars[9], under, active: (await evalJs(`document.activeElement?.className ?? ""`)) }));
+    await shot("04-pre-D.png");
+  }
   await drag((loc.chars[9].left + loc.chars[9].right) / 2, loc.y, (loc.chars[5].left + loc.chars[5].right) / 2, loc.y);
   await waitPaint(NOTES, 1);
   frags = await evalJs(`__E2E.frags(${JSON.stringify(NOTES)})`);
   const cit = frags[0]?.text ?? "";
-  check(frags.length === 1 && frags[0].offA < frags[0].offB && cit.length >= 2 && "explicitly".includes(cit),
+  const dOk = frags.length === 1 && frags[0].offA < frags[0].offB && cit.length >= 2 && "explicitly".includes(cit);
+  if (!dOk) await shot("04-D-fail.png");
+  check(dOk,
     `drag derecha→izquierda pinta letras de 'explicitly' normalizadas offA<offB (${JSON.stringify(cit)})`);
 
   await panelStable();
@@ -1714,6 +1736,94 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
       "W: el read del panel con sid explícito ve SU task");
     // cleanup: this rig state is tmp, but keep later sections' lists clean
     await evalJs(`fetch("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool: "clear_turns", args: {}, meta: { "com.zcode/request-context": { session_id: "e2e-w-work" } } }) }).then(() => 0)`);
+  }
+
+  // ============ X. 0.10.10: a turn shows what ZCode's summary shows =======
+  // ZCode's end-of-turn summary comes from the session's workspace
+  // checkpoints. The turn view must list exactly those files — not the dirty
+  // tree, not what a shell wrote, not background noise.
+  const X_DIR = path.join(REPO, "tests/diffs/x-e2e-app");
+  const appStore = createAppStore(APP_DIR);
+  try {
+    const xSid = "e2e-x-app";
+    appStore.know(xSid);
+    const xMark = `X-turno-de-la-app-${Date.now().toString(36)}`;
+    fs.mkdirSync(X_DIR, { recursive: true });
+    const [xOne, xTwo, xShell] = ["one.ts", "two.ts", "shell-only.txt"].map((f) => path.join(X_DIR, f));
+    const t0x = Date.now();
+    sendTurnEvent({ type: "prompt", sid: xSid, cwd: REPO, prompt: xMark, at: new Date(t0x).toISOString() });
+    // Written by the agent's tools — the app checkpoints each one…
+    fs.writeFileSync(xOne, "export const one = 1;\n");
+    appStore.checkpoint(xSid, t0x + 1000, "Write", [written(xOne, "export const one = 1;\n")]);
+    fs.writeFileSync(xTwo, "const two = 2;\nconst THREE = 3;\n");
+    appStore.checkpoint(xSid, t0x + 1500, "Edit", [edited(xTwo, "const two = 2;\nconst three = 3;\n", "const two = 2;\nconst THREE = 3;\n")]);
+    // …and by a shell command only, which the app never checkpoints.
+    fs.writeFileSync(xShell, "made by a shell command\n");
+    sendTurnEvent({ type: "stop", sid: xSid, cwd: REPO, reply: "X listo", at: new Date(t0x + 3000).toISOString() });
+
+    // The rig's panel learned no sid at boot, so its reads follow the
+    // server's cached one — and section W left it on ITS task. Speak for X's
+    // task first, exactly as a real panel does at boot (whoami).
+    await evalJs(`fetch("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool: "whoami", args: {}, meta: { "com.zcode/request-context": { session_id: ${JSON.stringify(xSid)} } } }) }).then(() => 0)`);
+
+    await evalJs(`document.querySelector('.modebar button[data-mode="turns"]')?.click()`);
+    await until(async () => !!(await evalJs(`document.querySelector(".header .back")`)), 6000);
+    await evalJs(`document.querySelector(".header .back")?.click()`); // ← the list
+    // Page-side snippet: an element's text, whitespace-normalized.
+    const rowText = (expr) => `((${expr}).textContent ?? "").replace(/\\s+/g, " ").trim()`;
+    const rowX = await until(async () => evalJs(`(() => {
+      const row = [...document.querySelectorAll(".turn-row")].find((r) => (r.textContent ?? "").includes(${JSON.stringify(xMark)}));
+      return row ? ${rowText("(row)")} : null;
+    })()`), 8000);
+    check(/1 repos? · 2 archivos/.test(rowX ?? ""), `X: la fila cuenta lo que cuenta el resumen de ZCode (${JSON.stringify((rowX ?? "").slice(-70))})`);
+
+    const pickX = await pickByPrompt(xMark);
+    check(!!pickX && pickX.files === 2, `X: el turno abre con EXACTAMENTE sus dos archivos (${JSON.stringify(pickX)})`);
+    const viewX = await evalJs(`(() => ({
+      source: __DA.diffData?.turn?.source ?? null,
+      files: (__DA.diffData?.files ?? []).map((f) => ({ path: f.path, status: f.status, before: f.before, after: f.after, added: f.added, deleted: f.deleted })),
+      heads: [...document.querySelectorAll(".turn-repo-head")].map((h) => ${rowText("(h)")}),
+    }))()`);
+    const rel = (f) => `${path.basename(REPO)}/tests/diffs/x-e2e-app/${f}`;
+    check(viewX.source === "app", `X: el turno viene de la app (${viewX.source})`);
+    check(JSON.stringify(viewX.files.map((f) => f.path)) === JSON.stringify([rel("one.ts"), rel("two.ts")]),
+      `X: solo los dos archivos que la app checkpointeó (${JSON.stringify(viewX.files.map((f) => f.path))})`);
+    check(viewX.files[1]?.before === "const two = 2;\nconst three = 3;\n" && viewX.files[1]?.after === "const two = 2;\nconst THREE = 3;\n",
+      `X: el Edit muestra el antes y el DESPUÉS reconstruidos (${JSON.stringify([viewX.files[1]?.before, viewX.files[1]?.after])})`);
+    check(viewX.files.map((f) => `${f.added}/${f.deleted}`).join(",") === "1/0,1/1", `X: los +N −M son los de la app (${JSON.stringify(viewX.files.map((f) => [f.added, f.deleted]))})`);
+    check(/2 archivos/.test(viewX.heads.join(" | ")) && !/commit|sucio|ruido/.test(viewX.heads.join(" | ")),
+      `X: el encabezado del repo cuenta archivos, no commits ni sucios (${JSON.stringify(viewX.heads)})`);
+    await shot("22-app-turn.png");
+    await evalJs(`document.querySelector(".header .back")?.click()`); // ← the list
+    await until(async () => !!(await evalJs(`document.querySelector(".turn-row")`)), 6000);
+
+    // The fixture tree is dirty all over (the rig's edits) and the shell file
+    // exists on disk: a turn that wrote NOTHING shows nothing, like the app.
+    const x2 = `X-sin-escrituras-${Date.now().toString(36)}`;
+    // Real turns sit tens of seconds apart; stamp this one 30 s after the
+    // first one's stop so the two windows never touch.
+    const t0x2 = t0x + 3000 + 30_000;
+    sendTurnEvent({ type: "prompt", sid: xSid, cwd: REPO, prompt: x2, at: new Date(t0x2).toISOString() });
+    sendTurnEvent({ type: "stop", sid: xSid, cwd: REPO, reply: "nada", at: new Date(t0x2 + 1000).toISOString() });
+    const p2 = await until(async () => evalJs(`(() => {
+      const row = [...document.querySelectorAll(".turn-row")].find((r) => (r.textContent ?? "").includes(${JSON.stringify(x2)}));
+      if (!row) return null;
+      const r = row.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2, text: ${rowText("(row)")} };
+    })()`), 8000);
+    // The row omits its counts at zero: what matters is that it claims none.
+    check(!!p2 && !/\d+ archivos|\d+ repos? ·/.test(p2?.text ?? ""), `X: la fila del turno sin escrituras no afirma archivos (${JSON.stringify(p2?.text?.slice(-50))})`);
+    if (p2) await click(p2.x, p2.y);
+    const emptyX = await until(async () => {
+      const v = await evalJs(`(() => ({ id: __DA.diffData?.turn?.id ?? null, n: (__DA.diffData?.files ?? []).length, state: ${rowText("(document.querySelector('.state.clean') ?? document.createElement('i'))")} }))()`);
+      return v.id && v.id !== pickX?.id ? v : null;
+    }, 8000);
+    check(!!emptyX && emptyX.n === 0 && /no escribió archivos/.test(emptyX.state ?? ""),
+      `X: el turno sin escrituras dice la verdad, sin inventar cambios (${JSON.stringify(emptyX)})`);
+    await evalJs(`document.querySelector(".header .back")?.click()`); // ← the list
+  } finally {
+    appStore.close();
+    fs.rmSync(X_DIR, { recursive: true, force: true });
   }
 
   // ============ salud general del panel ============

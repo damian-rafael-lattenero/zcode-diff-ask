@@ -38,7 +38,7 @@ const app = new App({ name: "diff-ask", version: "0.1.0" }, {});
 //               repositorio...". The "Commits" button (internal sub-view, no
 //               tab of its own) opens the chosen repo's history.
 const MODES = [
-  { id: "turns", label: "Turnos", title: "Turno a turno: qué cambió en cada uno — commits y archivos sucios de TODOS los repos/worktrees que tocó (el último, en vivo)" },
+  { id: "turns", label: "Turnos", title: "Turno a turno: los archivos que cada uno escribió — los mismos que lista el resumen de fin de turno de ZCode, agrupados por repo y carpeta (el último, en vivo)" },
   { id: "working", label: "Trabajo por repositorio", title: "Cambios sin commitear del repositorio elegido con 📁 (vs HEAD + untracked); su botón Commits abre el historial" },
 ];
 let mode = "turns";
@@ -3035,10 +3035,15 @@ function turnRepoHead(label, repo) {
   head.querySelector(".trh-chev").textContent = collapsedGroups.has(label) ? "▸" : "▾";
   head.querySelector(".trh-icon").textContent = outside ? "📄" : "🗂";
   head.querySelector(".trh-label").textContent = outside ? "Fuera de git" : label || "(sin repo)";
+  // An app-backed turn (0.10.10) knows every file's before and after; the
+  // captured model only meets loose files as they are now.
   head.title = outside
-    ? "Archivos que el turno tocó fuera de cualquier repositorio git (se muestran enteros en verde; no hay forma de saber cómo estaban antes)."
+    ? diffData?.turn?.source === "app"
+      ? "Archivos que el turno escribió fuera de cualquier repositorio git (con su contenido de antes y de después)."
+      : "Archivos que el turno tocó fuera de cualquier repositorio git (se muestran enteros en verde; no hay forma de saber cómo estaban antes)."
     : `Todos los archivos de este grupo pertenecen al repositorio ${repo?.path ?? label}`;
   const bits = [];
+  if (repo?.files !== undefined) bits.push(`${repo.files} archivo${repo.files === 1 ? "" : "s"}`);
   if (repo?.commits) bits.push(`${repo.commits} commit${repo.commits === 1 ? "" : "s"}`);
   if (repo?.dirty) bits.push(`${repo.dirty} sucio${repo.dirty === 1 ? "" : "s"}`);
   if (repo?.dirtyHidden) bits.push(`+${repo.dirtyHidden} ruido oculto`);
@@ -3574,12 +3579,16 @@ function renderAll() {
     if (tn.isLive) bits.push('<span class="tot-a">en vivo</span>');
     if (tn.interrupted) bits.push('<span class="tot-m">interrumpido por el próximo prompt</span>');
     for (const r of tn.repos ?? []) {
+      // An app-backed turn counts the files it wrote (0.10.10); the captured
+      // model counts commits and dirty files.
+      const fl = r.files !== undefined ? ` · ${r.files} archivo${r.files === 1 ? "" : "s"}` : "";
       const c = r.commits ? ` · ${r.commits} commit${r.commits === 1 ? "" : "s"}` : "";
       const d = r.dirty ? ` · ${r.dirty} sucio${r.dirty === 1 ? "" : "s"}` : "";
       const h = r.dirtyHidden ? ` (+${r.dirtyHidden} ruido oculto)` : "";
-      bits.push(`<b>${esc(r.label)}</b>${c}${d}${h}`);
+      bits.push(`<b>${esc(r.label)}</b>${fl}${c}${d}${h}`);
     }
-    if (!(tn.repos ?? []).length) bits.push('<span class="tot-m">sin repos tocados</span>');
+    if (!(tn.repos ?? []).length)
+      bits.push(`<span class="tot-m">${tn.source === "app" ? "sin archivos escritos" : "sin repos tocados"}</span>`);
     bits.push(`${diffData.fileCount} archivo${diffData.fileCount === 1 ? "" : "s"}`);
     bits.push(`<span class="tot-a">+${t.added}</span>`, `<span class="tot-d">−${t.deleted}</span>`);
   } else {
@@ -3644,13 +3653,16 @@ function renderAll() {
 
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Modos arriba: Turnos (qué cambió en cada turno, en TODOS los repos; el último en vivo, agrupado por repo y carpeta) · Trabajo por repositorio (sin commitear vs HEAD, del repo elegido con 📁 — su botón Commits abre el historial). ⌘F busca en el diff (Enter cicla) · ＋/−/≡ filtran líneas agregadas/borradas/contexto. Click en un NÚMERO = seleccionarlo (arrastrás y pintás varios, salteados también) → ＋ grande abre la pregunta · hover en una línea → ＋ · ＋ del encabezado = archivo. Abajo: libres; ⌘↵ manda todo junto.";
+  hint.textContent = "Modos arriba: Turnos (los archivos que escribió cada turno — los mismos que lista el resumen de fin de turno de ZCode; el último en vivo, agrupado por repo y carpeta) · Trabajo por repositorio (sin commitear vs HEAD, del repo elegido con 📁 — su botón Commits abre el historial). ⌘F busca en el diff (Enter cicla) · ＋/−/≡ filtran líneas agregadas/borradas/contexto. Click en un NÚMERO = seleccionarlo (arrastrás y pintás varios, salteados también) → ＋ grande abre la pregunta · hover en una línea → ＋ · ＋ del encabezado = archivo. Abajo: libres; ⌘↵ manda todo junto.";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
     const clean = document.createElement("div");
     clean.className = "state clean";
-    clean.textContent = `Árbol limpio — sin cambios contra ${diffData.baseLabel ?? "HEAD"}.`;
+    clean.textContent =
+      mode === "turns" && diffData.turn?.source === "app"
+        ? "Este turno no escribió archivos: el resumen de fin de turno de ZCode tampoco lista ninguno."
+        : `Árbol limpio — sin cambios contra ${diffData.baseLabel ?? "HEAD"}.`;
     root.appendChild(clean);
     keptComposers = []; // el diff quedó vacío: las preguntas ancladas no tienen ancla
     return;
@@ -3967,7 +3979,7 @@ function renderTurns() {
   if (!turnsState.list.length) {
     const st = document.createElement("div");
     st.className = "state";
-    st.textContent = "Todavía no hay turnos. Cada mensaje en la sesión abre un turno y el fin de la respuesta lo cierra: quedan los commits hechos y los archivos sucios de todos los repos que tocó.";
+    st.textContent = "Todavía no hay turnos. Cada mensaje en la sesión abre un turno y el fin de la respuesta lo cierra: cada uno lista los archivos que escribió, igual que el resumen de fin de turno de ZCode.";
     root.appendChild(st);
     return;
   }

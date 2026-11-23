@@ -48,6 +48,7 @@ export const edited = (p, before, after) => ({
 
 /** @param {string} dir a fresh tmp dir for this store */
 export function createAppStore(dir) {
+  fs.mkdirSync(dir, { recursive: true });
   const dbPath = path.join(dir, "app.sqlite");
   const artifacts = path.join(dir, "artifacts");
   const db = new DatabaseSync(dbPath);

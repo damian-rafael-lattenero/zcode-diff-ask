@@ -1068,15 +1068,16 @@ export function outsideEntry(raw, home = os.homedir()) {
 }
 
 // The app's file changes of one turn window, or null when the app has no
-// truth for that session (0.10.10). The window is the prompt→stop bracket
-// widened by the turn guard band (measured 23/11 on 18 real turns: the
-// first checkpoint lands ≥17 s after the prompt, the last ≥9 s before the
-// stop, and the next turn writes ≥17 s later).
+// truth for that session (0.10.10). The window is the prompt→stop bracket:
+// open at the prompt itself (measured 23/11 on 18 real turns: the first
+// checkpoint lands ≥17 s after it, and a band there would let a turn claim
+// the previous turn's last writes), closed 2 s past the stop (a row the app
+// flushes late still belongs to the turn; the next one writes ≥17 s later).
 async function turnItems({ sid, startedAt, stoppedAt }) {
   const fromMs = Date.parse(startedAt ?? "");
   const toMs = Date.parse(stoppedAt ?? "");
   if (!sid || !Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
-  return appTurnFiles({ sid, fromMs: fromMs - TURN_GUARD_MS, toMs: toMs + TURN_GUARD_MS });
+  return appTurnFiles({ sid, fromMs, toMs: toMs + TURN_GUARD_MS });
 }
 
 async function finalizeWindow(t, { interrupted }) {

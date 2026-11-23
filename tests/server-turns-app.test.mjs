@@ -198,6 +198,22 @@ test("only the turn's own checkpoints count — and a window that grew is re-rea
   assert.deepEqual(d.files.map((f) => path.basename(f.path)), ["a.ts", "b.ts"], "the neighbours' files stay out");
 });
 
+test("the window is exact at both ends: a write 1 s before the prompt is the previous turn's, one 1 s after the stop still belongs to this turn", async () => {
+  await clearTurns();
+  const { store, T, sid } = scene();
+  const A = makeRepo();
+  const file = (n) => path.join(A, `${n}.ts`);
+  store.checkpoint(sid, T - 1000, "Write", [written(file("previous"), "p\n")]);
+  store.checkpoint(sid, T + 10_000, "Write", [written(file("mine"), "m\n")]);
+  store.checkpoint(sid, T + 61_000, "Write", [written(file("late"), "l\n")]); // flushed after the stop
+  store.checkpoint(sid, T + 65_000, "Write", [written(file("next"), "n\n")]);
+  await setActiveWorkspace(A);
+  await openTurn(sid, A, T, "borde justo");
+  await closeTurn(sid, A, T + 60_000);
+  const d = await buildTurnDiff((await recordOf("borde justo")).id);
+  assert.deepEqual(d.files.map((f) => path.basename(f.path)), ["late.ts", "mine.ts"]);
+});
+
 test("other repos group under their own repo, files outside any repo close the list, a vanished artifact is skipped", async () => {
   await clearTurns();
   const { store, T, sid } = scene();
