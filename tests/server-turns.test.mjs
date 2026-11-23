@@ -12,6 +12,11 @@ import path from "node:path";
 
 const STATE = fs.mkdtempSync(path.join(os.tmpdir(), "da-state2-"));
 process.env.ZCODE_DIFF_ASK_STATE = STATE;
+// Hermetic app store (0.10.10): turns may read ZCode's own session DB for
+// the files a turn wrote. These tests exercise the CAPTURE model (sessions
+// the app does not know) — point the edge at a database that does not exist.
+// The app-backed path has its own file with a real fake store.
+process.env.ZCODE_DIFF_ASK_APP_DB = path.join(STATE, "no-app-db.sqlite");
 // Neutralize an inherited ZCODE_SESSION_ID (the fork stamps it into every
 // Bash child): these tests exercise the GLOBAL store; the session-scoped
 // filter has its own test below, which sets/restores the var explicitly.
@@ -104,7 +109,7 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
   // prompt event opens the turn
   sendEvent({ type: "prompt", sid: "sX", cwd: A, prompt: "hacé el trabajo", at: new Date(T0).toISOString() });
   await processInbox();
-  let list = listTurns();
+  let list = (await listTurns());
   assert.equal(list.count, 1);
   assert.equal(list.turns[0].isLive, true);
 
@@ -130,7 +135,7 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
   // stop event closes it
   sendEvent({ type: "stop", sid: "sX", cwd: A, reply: "hecho: A y B tocados", at: new Date(T0 + 60_000).toISOString() });
   await processInbox();
-  list = listTurns();
+  list = (await listTurns());
   assert.equal(list.count, 1);
   const t = list.turns[0];
   assert.equal(t.isLive, false);
@@ -173,7 +178,7 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
   // an unfinished turn is persisted as interrupted when a NEW prompt lands
   sendEvent({ type: "prompt", sid: "sX", cwd: A, prompt: "tercero", at: new Date(T0 + 180_000).toISOString() });
   await processInbox();
-  list = listTurns();
+  list = (await listTurns());
   assert.ok(list.turns.some((x) => x.interrupted && x.prompt === "segundo"), "el turno sin stop queda marcado interrumpido");
   // hygiene: CLOSE the leftover window — its open interval would otherwise
   // cover later tests' writes and the "~" attribution would drop them
@@ -186,7 +191,7 @@ test("flujo v2: 2 repos (commits en ventana + dirty), live, delete/clear", async
   assert.equal((await deleteTurn("no-existe")).error, "unknown_turn");
   try { fs.rmSync(WT, { recursive: true, force: true }); } catch { /* cleanup */ }
   await clearTurns();
-  assert.ok(listTurns().count <= 1); // only the live one may remain
+  assert.ok((await listTurns()).count <= 1); // only the live one may remain
   assert.equal((await buildTurnDiff("no-existe")).error, "unknown_turn");
 });
 
@@ -209,7 +214,7 @@ test("turn dirty list: node_modules-style junk filtered + cap + hidden count", a
   sendEvent({ type: "stop", sid: "sN", cwd: C, reply: "hecho", at: new Date(T0 + 360_000).toISOString() });
   await processInbox();
 
-  const list = listTurns();
+  const list = (await listTurns());
   const turn = list.turns.find((t) => t.prompt === "turno con ruido");
   assert.ok(turn, "el turno existe");
   assert.equal(turn.fileCount, 1, "sólo el archivo real entra al turno");
@@ -263,7 +268,7 @@ test("outside: archivos fuera de git entran al diff en verde; los borrados, como
   sendEvent({ type: "stop", sid: "sO", cwd: D, reply: "ok", at: new Date(T0 + 460_000).toISOString() });
   await processInbox();
 
-  const turn = listTurns().turns.find((t) => t.prompt === "turno con sueltos");
+  const turn = (await listTurns()).turns.find((t) => t.prompt === "turno con sueltos");
   assert.equal(turn.fileCount, 3); // dirty d.py + notas.md + fantasma.txt
   const d = await buildTurnDiff(turn.id);
   // outside keys under $HOME are home-relative ("~/...")
@@ -303,7 +308,7 @@ test("focus: el click del fork resuelve al entry del turno, se consume y expira"
   noteTapPath(suelto);
   sendEvent({ type: "stop", sid: "sF", cwd: E, reply: "ok", at: new Date(T0 + 560_000).toISOString() });
   await processInbox();
-  const turn = listTurns().turns.find((t) => t.prompt === "turno foco");
+  const turn = (await listTurns()).turns.find((t) => t.prompt === "turno foco");
   assert.ok(turn, "el turno foco existe");
 
   // click sobre el archivo suelto → focusPath = su key (home-relative "~/")
@@ -316,7 +321,7 @@ test("focus: el click del fork resuelve al entry del turno, se consume y expira"
 
   // click sobre un repo-file leyendo OTRO turno: hint de navegación, sin consume
   requestTurnFocus(path.join(E, "e.py"), turn.id);
-  const other = listTurns().turns.find((t) => t.prompt === "turno con sueltos");
+  const other = (await listTurns()).turns.find((t) => t.prompt === "turno con sueltos");
   const dOther = await buildTurnDiff(other.id);
   assert.equal(dOther.focusPath, undefined);
   assert.deepEqual(dOther.pendingTurnFocus, { turn: turn.id });
@@ -356,7 +361,7 @@ test("suggestWorkspace: repo con más cambios del último turno, empate → comm
   assert.equal(s.workspace, P);
   assert.equal(s.commits, 2);
   assert.equal(s.dirty, 0);
-  assert.equal(s.turnId, listTurns().turns[0].id, "sugiere sobre el turno más nuevo");
+  assert.equal(s.turnId, (await listTurns()).turns[0].id, "sugiere sobre el turno más nuevo");
 
   // tie at score 1: the repo with a COMMIT beats the repo with a dirty file.
   // (first settle Q's dirty with an out-of-window commit so both start clean)
@@ -402,7 +407,7 @@ test("session filter: list/build scoped al env, prompt ajeno no interrumpe, clea
   noteTapPath(path.join(B, "b.py"));
   sendEvent({ type: "stop", sid: "sF", cwd: B, reply: "ok F", at: new Date(T0 + 10_000).toISOString() });
   await processInbox();
-  assert.equal(listTurns().count, 1, "sin filtro: el turno extranjero está");
+  assert.equal((await listTurns()).count, 1, "sin filtro: el turno extranjero está");
 
   // scope to sA: from here the server only sees sA events as its own
   process.env.ZCODE_SESSION_ID = "sA";
@@ -417,7 +422,7 @@ test("session filter: list/build scoped al env, prompt ajeno no interrumpe, clea
     await processInbox();
     sendEvent({ type: "stop", sid: "sA", cwd: A, reply: "ok A", at: new Date(T0 + 35_000).toISOString() });
     await processInbox();
-    const list = listTurns();
+    const list = (await listTurns());
     assert.equal(list.count, 1, "con filtro: sólo los turnos de sA");
     assert.equal(list.sessionFilter, "sA");
     assert.equal(list.turns[0].prompt, "turno propio");
@@ -434,21 +439,21 @@ test("session filter: list/build scoped al env, prompt ajeno no interrumpe, clea
     // READ above is scoped (0.10.8).
     sendEvent({ type: "stop", sid: "sF", cwd: B, reply: "ajeno cerrado", at: new Date(T0 + 36_000).toISOString() });
     await processInbox();
-    assert.equal(listTurns().count, 1, "el turno ajeno grabado NO entra a la vista de sA");
+    assert.equal((await listTurns()).count, 1, "el turno ajeno grabado NO entra a la vista de sA");
 
     // scoped clear: wipes ONLY sA's turns; sF's stay on disk
     const cleared = await clearTurns();
     assert.equal(cleared.scoped, "sA");
-    assert.equal(listTurns().count, 0);
+    assert.equal((await listTurns()).count, 0);
     process.env.ZCODE_SESSION_ID = "";
-    assert.equal(listTurns().count, 2, "sin filtro: los DOS turnos de sF sobrevivieron al clear scoped");
+    assert.equal((await listTurns()).count, 2, "sin filtro: los DOS turnos de sF sobrevivieron al clear scoped");
 
     // store cache: a NEW turn file is picked up by the next read (invalidation)
     sendEvent({ type: "prompt", sid: "sG", cwd: B, prompt: "otro turno", at: new Date(T0 + 40_000).toISOString() });
     await processInbox();
     sendEvent({ type: "stop", sid: "sG", cwd: B, reply: "ok G", at: new Date(T0 + 50_000).toISOString() });
     await processInbox();
-    assert.equal(listTurns().count, 3, "el cache del store se invalida cuando el dir cambia");
+    assert.equal((await listTurns()).count, 3, "el cache del store se invalida cuando el dir cambia");
 
     // whoami reflects the env identity
     process.env.ZCODE_SESSION_ID = "sZ";
@@ -471,7 +476,7 @@ test("turn id determinista: re-finalización sobreescribe; interrumpido zombie N
   await processInbox();
   sendEvent({ type: "stop", sid: "sK", cwd: D, reply: "respuesta real", at: new Date(T0 + 10_000).toISOString() });
   await processInbox();
-  let list = listTurns();
+  let list = (await listTurns());
   assert.equal(list.count, 1);
   assert.equal(list.turns[0].reply, "respuesta real");
   assert.equal(list.turns[0].interrupted, false);
@@ -483,7 +488,7 @@ test("turn id determinista: re-finalización sobreescribe; interrumpido zombie N
   await processInbox();
   sendEvent({ type: "prompt", sid: "sK", cwd: D, prompt: "siguiente prompt", at: new Date(T0 + 20_000).toISOString() });
   await processInbox();
-  list = listTurns();
+  list = (await listTurns());
   const kept = list.turns.find((t) => t.prompt === "ventana que completa");
   assert.ok(kept, "la ventana completada sigue");
   assert.equal(kept.interrupted, false, "el finalize interrumpido del zombie NO pisó el turno completado");
@@ -495,7 +500,7 @@ test("turn id determinista: re-finalización sobreescribe; interrumpido zombie N
   await processInbox();
   sendEvent({ type: "stop", sid: "sK", cwd: D, reply: "respuesta mejorada", at: new Date(T0 + 30_000).toISOString() });
   await processInbox();
-  list = listTurns();
+  list = (await listTurns());
   const windows = list.turns.filter((t) => t.prompt === "ventana que completa");
   assert.equal(windows.length, 1, "una sola fila por ventana de prompt (id determinista)");
   assert.equal(windows[0].reply, "respuesta mejorada", "el stop real sobreescribe en el mismo archivo");
@@ -507,7 +512,7 @@ test("turn id determinista: re-finalización sobreescribe; interrumpido zombie N
     { id: "legac0003-sK", sid: "sK", workspace: D, prompt: "legado", reply: "", startedAt: new Date(T0 + 40_000).toISOString(), stoppedAt: new Date(T0 + 45_000).toISOString(), interrupted: true, repos: [], outside: [] },
   ];
   for (const d of dupes) fs.writeFileSync(path.join(STATE, "turns2", `${d.id}.json`), JSON.stringify(d));
-  list = listTurns();
+  list = (await listTurns());
   const legacy = list.turns.filter((t) => t.prompt === "legado");
   assert.equal(legacy.length, 1, "los duplicados legacy colapsan a una fila (sid+startedAt)");
   assert.equal(legacy[0].reply, "la buena", "gana la copia COMPLETADA");
@@ -579,28 +584,31 @@ test("regresión 0.10.8 (fallo en vivo): sticky sid del _meta NUNCA dropea los e
   commitAt(A, T0 - 100_000, "a.py", "v1\n", "base");
   await setActiveWorkspace(A);
 
-  // the PANEL of task sPanel talks to the server (sticky sid ← _meta)
-  noteRequestMeta({ "com.zcode/request-context": { session_id: "sPanel" } });
-  assert.equal(whoAmI().sessionId, "sPanel", "el sticky sid quedó en sPanel (como la app)");
-
-  // ...while task sWork works: prompt + stop events land in the GLOBAL inbox
-  sendEvent({ type: "prompt", sid: "sWork", cwd: A, prompt: "turno de la otra task", at: new Date(T0).toISOString() });
-  await processInbox(); // the OLD gate dropped this prompt (sid ≠ sticky)
-  fs.writeFileSync(path.join(A, "a.py"), "v1\nedit\n");
-  noteTapPath(path.join(A, "a.py"));
-  sendEvent({ type: "stop", sid: "sWork", cwd: A, reply: "trabajo hecho", at: new Date(T0 + 5_000).toISOString() });
-  await processInbox(); // ...and dropped this stop: the turn was LOST
-
-  // the store recorded sWork's turn anyway...
-  assert.equal(listTurns().count, 0, "la vista de sPanel sigue vacía (scoped)");
-  // the PANEL's explicit-scope read (turn://list?sid=…): even with the
-  // server's sticky sid at sPanel, the panel's view pins ITS OWN task.
-  const panelView = listTurns({ sid: "sWork" });
-  assert.equal(panelView.count, 1, "el read con sid explícito ve SU task");
-  assert.equal(panelView.sessionFilter, "sWork");
-  process.env.ZCODE_SESSION_ID = "sWork";
+  // The sticky sid never self-clears in product code: EVERYTHING after it
+  // is set runs inside the try, so a failing assert cannot leak it into the
+  // next test.
   try {
-    const list = listTurns();
+    // the PANEL of task sPanel talks to the server (sticky sid ← _meta)
+    noteRequestMeta({ "com.zcode/request-context": { session_id: "sPanel" } });
+    assert.equal(whoAmI().sessionId, "sPanel", "el sticky sid quedó en sPanel (como la app)");
+
+    // ...while task sWork works: prompt + stop events land in the GLOBAL inbox
+    sendEvent({ type: "prompt", sid: "sWork", cwd: A, prompt: "turno de la otra task", at: new Date(T0).toISOString() });
+    await processInbox(); // the OLD gate dropped this prompt (sid ≠ sticky)
+    fs.writeFileSync(path.join(A, "a.py"), "v1\nedit\n");
+    noteTapPath(path.join(A, "a.py"));
+    sendEvent({ type: "stop", sid: "sWork", cwd: A, reply: "trabajo hecho", at: new Date(T0 + 5_000).toISOString() });
+    await processInbox(); // ...and dropped this stop: the turn was LOST
+
+    // the store recorded sWork's turn anyway...
+    assert.equal((await listTurns()).count, 0, "la vista de sPanel sigue vacía (scoped)");
+    // the PANEL's explicit-scope read (turn://list?sid=…): even with the
+    // server's sticky sid at sPanel, the panel's view pins ITS OWN task.
+    const panelView = await listTurns({ sid: "sWork" });
+    assert.equal(panelView.count, 1, "el read con sid explícito ve SU task");
+    assert.equal(panelView.sessionFilter, "sWork");
+    process.env.ZCODE_SESSION_ID = "sWork";
+    const list = await listTurns();
     assert.equal(list.count, 1, "el turno de sWork EXISTE pese al sticky ajeno");
     assert.equal(list.turns[0].prompt, "turno de la otra task");
     assert.equal(list.turns[0].interrupted, false);
@@ -608,7 +616,7 @@ test("regresión 0.10.8 (fallo en vivo): sticky sid del _meta NUNCA dropea los e
     assert.equal(sug.workspace, A, "la sugerencia del repo tab vuelve a funcionar para sWork");
   } finally {
     process.env.ZCODE_SESSION_ID = "";
-    resetRequestMetaForTests(); // the sticky sid never self-clears in product code
+    resetRequestMetaForTests();
   }
 });
 

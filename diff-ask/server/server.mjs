@@ -26,6 +26,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { foldTurnEvent, reopenWindows, sliceByWindow, TURN_OPEN_MAX_MS, PROMPT_MAX, REPLY_MAX, TURN_LANES_CAP } from "./turn-fold.mjs";
+import { appTurnFiles } from "./app-store.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.join(HERE, "..");
@@ -601,6 +602,7 @@ export async function buildDiff({ includePatches = true, workspace = activeWorks
 const DA_STATE_DIR = process.env.ZCODE_DIFF_ASK_STATE || path.join(os.homedir(), ".zcode", "diff-ask");
 const TURN_INBOX = path.join(DA_STATE_DIR, "turn-events.jsonl");
 const TURNS2_DIR = path.join(DA_STATE_DIR, "turns2");
+const TURN_GUARD_MS = 2000; // guard band around a turn's prompt→stop window
 const MAX_TURN_COMMITS = 40;
 const MAX_TURN_OUTSIDE = 300;
 const MAX_TURN_DIRTY = 300; // per repo, after the noise filter
@@ -1028,6 +1030,10 @@ async function collectTurnChanges({ sid = "", cwd, startMs, stopMs, touched, git
   return { repos: out, outside: outside.slice(0, MAX_TURN_OUTSIDE) };
 }
 
+// Panel key of a file outside any git repo: home-relative "~/x" when it
+// lives under $HOME, its absolute path otherwise.
+const outsideKey = (abs, home) => (abs.startsWith(home + path.sep) ? `~/${path.relative(home, abs)}` : abs);
+
 // One touched path OUTSIDE any git repo → its turn-diff entry. The tap's
 // recorded paths are untrusted boundary data: they parse ONCE here (fp-kb
 // parse-don't-validate) into a shape the rest of the pipeline never re-checks.
@@ -1045,7 +1051,7 @@ export function outsideEntry(raw, home = os.homedir()) {
     : p.startsWith("~/")
       ? path.join(home, p.slice(2))
       : path.join(home, p);
-  const key = abs.startsWith(home + path.sep) ? `~/${path.relative(home, abs)}` : abs;
+  const key = outsideKey(abs, home);
   let gone = true;
   try {
     gone = !fs.statSync(abs).isFile();
@@ -1061,28 +1067,51 @@ export function outsideEntry(raw, home = os.homedir()) {
   };
 }
 
+// The app's file changes of one turn window, or null when the app has no
+// truth for that session (0.10.10). The window is the prompt→stop bracket
+// widened by the turn guard band (measured 23/11 on 18 real turns: the
+// first checkpoint lands ≥17 s after the prompt, the last ≥9 s before the
+// stop, and the next turn writes ≥17 s later).
+async function turnItems({ sid, startedAt, stoppedAt }) {
+  const fromMs = Date.parse(startedAt ?? "");
+  const toMs = Date.parse(stoppedAt ?? "");
+  if (!sid || !Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
+  return appTurnFiles({ sid, fromMs: fromMs - TURN_GUARD_MS, toMs: toMs + TURN_GUARD_MS });
+}
+
 async function finalizeWindow(t, { interrupted }) {
   if (!t) return null;
   const stopMs = t.stopMs ?? Date.now();
-  // WINDOW SLICE (L5): with several lanes open the tap sets are shared —
-  // each lane finalizes with only the writes inside ITS window (startMs
-  // minus the same 2s guard band the git scans use). The shared sets die
-  // only when the LAST lane closes, so concurrent windows never starve
-  // each other's tap.
-  const touched = sliceByWindow(tapTouched.entries(), t.startMs - 2000);
-  const gitRoots = sliceByWindow(tapGitRoots.entries(), t.startMs - 2000).map(([root]) => root);
+  // THE TURN'S FILES (0.10.10): when the app knows the session, its own
+  // checkpoints ARE the turn's file list — the one its end-of-turn summary
+  // shows — read again at every view, so nothing is captured or stored. The
+  // tap + git capture stays for sessions the app does not know (bot lines,
+  // the rig).
+  const appBacked =
+    (await turnItems({ sid: t.sid, startedAt: new Date(t.startMs).toISOString(), stoppedAt: new Date(stopMs).toISOString() })) !== null;
+  let repos = [];
+  let outside = [];
+  if (!appBacked) {
+    // WINDOW SLICE (L5): with several lanes open the tap sets are shared —
+    // each lane finalizes with only the writes inside ITS window (startMs
+    // minus the same 2s guard band the git scans use). The shared sets die
+    // only when the LAST lane closes, so concurrent windows never starve
+    // each other's tap.
+    const touched = sliceByWindow(tapTouched.entries(), t.startMs - TURN_GUARD_MS);
+    const gitRoots = sliceByWindow(tapGitRoots.entries(), t.startMs - TURN_GUARD_MS).map(([root]) => root);
+    ({ repos, outside } = await collectTurnChanges({
+      sid: t.sid,
+      cwd: t.cwd,
+      startMs: t.startMs,
+      stopMs,
+      touched,
+      gitRoots,
+    }));
+  }
   if (openTurns.size === 0) {
     tapTouched.clear();
     tapGitRoots.clear();
   }
-  const { repos, outside } = await collectTurnChanges({
-    sid: t.sid,
-    cwd: t.cwd,
-    startMs: t.startMs,
-    stopMs,
-    touched,
-    gitRoots,
-  });
   const rec = {
     // Deterministic per prompt window (0.10.2): keyed by startMs — a window
     // re-finalized by a restart race OVERWRITES the same file instead of
@@ -1095,6 +1124,7 @@ async function finalizeWindow(t, { interrupted }) {
     startedAt: new Date(t.startMs).toISOString(),
     stoppedAt: new Date(stopMs).toISOString(),
     ...(interrupted ? { interrupted: true } : {}),
+    ...(appBacked ? { source: "app" } : {}),
     repos,
     outside,
   };
@@ -1112,7 +1142,11 @@ async function finalizeWindow(t, { interrupted }) {
   } catch {
     return null;
   }
-  log(`turno ${rec.id}: ${repos.length} repo(s), ${repos.reduce((n, r) => n + r.commits.length, 0)} commit(s), ${outside.length} fuera de git`);
+  log(
+    appBacked
+      ? `turno ${rec.id}: archivos según los checkpoints de la app`
+      : `turno ${rec.id}: ${repos.length} repo(s), ${repos.reduce((n, r) => n + r.commits.length, 0)} commit(s), ${outside.length} fuera de git`,
+  );
   for (const uri of subs) sendNotification("notifications/resources/updated", { uri });
   return rec;
 }
@@ -1353,6 +1387,59 @@ async function turnEntries(repos, outside = []) {
   return entries;
 }
 
+// Items of an app-backed turn → repo groups in display order: repos by
+// first appearance, files outside any repo LAST under the "~" pseudo-repo.
+function appTurnGroups(items) {
+  const groups = new Map(); // label -> { label, path, items[] }
+  for (const item of items) {
+    const root = repoRootOf(item.path);
+    const label = root ? path.basename(root) : OUTSIDE_LABEL;
+    const group = groups.get(label) ?? { label, path: root ?? os.homedir(), items: [] };
+    group.items.push(item);
+    groups.set(label, group);
+  }
+  return [...groups.values()].sort(
+    (a, b) => Number(a.label === OUTSIDE_LABEL) - Number(b.label === OUTSIDE_LABEL),
+  );
+}
+
+// Panel entries for an app-backed turn (0.10.10): one per item, grouped by
+// repo and namespaced "<label>/<rel>" — the capture model's layout, so the
+// panel's repo → folder → file grouping works unchanged. Content is the
+// app's own first-before → final-after; the shared enrichFiles applies the
+// payload budget and carries the app's counts through its numstat seam.
+async function appTurnEntries(items) {
+  const ordered = appTurnGroups(items);
+  const entries = [];
+  const numstat = new Map();
+  const home = os.homedir();
+  for (const g of ordered)
+    for (const item of g.items) {
+      const key = g.label === OUTSIDE_LABEL ? outsideKey(item.path, home) : `${g.label}/${path.relative(g.path, item.path)}`;
+      numstat.set(key, { added: String(item.additions), deleted: String(item.deletions) });
+      entries.push({
+        status: item.before === null ? "A" : "M",
+        path: key,
+        repo: g.path,
+        repoLabel: g.label,
+        note: `${item.writeCount} escritura${item.writeCount === 1 ? "" : "s"} · ${item.toolNames.join(" + ")}`,
+        _src: { app: true, abs: item.path, item },
+        // Nothing to show (the app kept no final content and its patch
+        // cannot rebuild it): the honest plain note, not an empty diff box.
+        ...(item.after === undefined ? { binary: true } : {}),
+      });
+    }
+  await enrichFiles({
+    entries,
+    numstat,
+    getBefore: (f) => Promise.resolve(f._src.item.before),
+    getAfter: (f) => Promise.resolve(f._src.item.after ?? null),
+    buildPatches: null,
+    cwd: activeWorkspace,
+  });
+  return { entries, repos: ordered.map((g) => ({ label: g.label, path: g.path, files: g.items.length })) };
+}
+
 // ---- panel focus (the fork's end-of-turn file click) ---------------------
 // The fork calls get_turn_diff { turn, focus } when the user clicks a file in
 // the turn-end summary. The request parks here (TTL'd, one-shot) and resolves
@@ -1405,34 +1492,38 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
   // The live turn only serves THIS session (0.10.1); a foreign open turn is
   // someone else's "latest" — fall through to the saved per-session list.
   const lane = id === "latest" ? liveLane(sid) : null;
+  // A turn's files (0.10.10): { source: "app", items } — the app's own
+  // truth, the list its end-of-turn summary shows — or { source: "capture",
+  // repos, outside } for sessions the app does not know.
+  let source;
   if (id === "latest" && lane) {
     isLive = true;
     const stopMs = Date.now();
-    const touched = sliceByWindow(tapTouched.entries(), lane.startMs - 2000);
-    const gitRoots = sliceByWindow(tapGitRoots.entries(), lane.startMs - 2000).map(([root]) => root);
-    const { repos, outside } = await collectTurnChanges({
-      sid: lane.sid,
-      cwd: lane.cwd,
-      startMs: lane.startMs,
-      stopMs,
-      touched,
-      gitRoots,
-    });
-    rec = {
-      id: "latest",
-      workspace: lane.cwd,
-      prompt: lane.prompt,
-      reply: "",
-      startedAt: new Date(lane.startMs).toISOString(),
-      stoppedAt: new Date(stopMs).toISOString(),
-      repos,
-      outside,
-    };
+    const startedAt = new Date(lane.startMs).toISOString();
+    const stoppedAt = new Date(stopMs).toISOString();
+    // The open turn grows while the agent works: the app persists a
+    // checkpoint as each write lands, so the live view is what was written so far.
+    const items = await turnItems({ sid: lane.sid, startedAt, stoppedAt });
+    source = items
+      ? { source: "app", items }
+      : {
+          source: "capture",
+          ...(await collectTurnChanges({
+            sid: lane.sid,
+            cwd: lane.cwd,
+            startMs: lane.startMs,
+            stopMs,
+            // WINDOW SLICE (L5): only the writes inside THIS lane's window.
+            touched: sliceByWindow(tapTouched.entries(), lane.startMs - TURN_GUARD_MS),
+            gitRoots: sliceByWindow(tapGitRoots.entries(), lane.startMs - TURN_GUARD_MS).map(([root]) => root),
+          })),
+        };
+    rec = { id: "latest", workspace: lane.cwd, prompt: lane.prompt, reply: "", startedAt, stoppedAt };
   } else {
-    rec = sidTurns().find((t) => t.id === id) ?? null;
+    rec = sidTurns(scopeSid).find((t) => t.id === id) ?? null;
     if (!rec && id === "latest") {
       // sin turno abierto (de esta sesión): el último guardado de la sesión
-      rec = sidTurns()[0] ?? null;
+      rec = sidTurns(scopeSid)[0] ?? null;
     }
     // Read-time attribution (0.10.6): records stored BEFORE the territory
     // rules carry repos captured machine-wide — drop repos that are OTHER
@@ -1475,8 +1566,15 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
         fileCount: 0,
       };
     }
+    // Records stored before 0.10.10 carry the captured repos; the app's
+    // truth still wins whenever it has the session.
+    const items = await turnItems(rec);
+    source = items ? { source: "app", items } : { source: "capture", repos: rec.repos ?? [], outside: rec.outside ?? [] };
   }
-  const entries = await turnEntries(rec.repos ?? [], rec.outside ?? []);
+  const { entries, repos: appRepos } =
+    source.source === "app"
+      ? await appTurnEntries(source.items)
+      : { entries: await turnEntries(source.repos, source.outside), repos: null };
   const pruned = pruneList(entries, false);
   // Focus resolution (one-shot): the click's absolute path → the entry key the
   // panel can scroll to. Consumed here so later refreshes don't re-scroll.
@@ -1493,7 +1591,7 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
     }
   }
   const atLabel = String(rec.startedAt ?? "").slice(11, 16);
-  const outsideCount = (rec.outside ?? []).length;
+  const outsideCount = (source.outside ?? []).length;
   return {
     workspace: rec.workspace || workspace,
     head: "",
@@ -1512,20 +1610,24 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
       reply: rec.reply ?? "",
       isLive,
       interrupted: Boolean(rec.interrupted),
-      repos: [
-        ...(rec.repos ?? []).map((r) => ({
-          label: r.label,
-          path: r.path,
-          commits: (r.commits ?? []).length,
-          dirty: (r.dirty ?? []).length,
-          ...(r.dirtyHidden ? { dirtyHidden: r.dirtyHidden } : {}),
-        })),
-        // The pseudo-repo for files touched outside git (header "Fuera de git").
-        ...(outsideCount
-          ? [{ label: OUTSIDE_LABEL, path: os.homedir(), commits: 0, dirty: 0, outside: outsideCount }]
-          : []),
-      ],
-      outside: rec.outside ?? [],
+      // "app": the app's own file list (its end-of-turn summary); "capture": repos and loose files captured by the tap.
+      source: source.source,
+      repos:
+        appRepos ??
+        [
+          ...(source.repos ?? []).map((r) => ({
+            label: r.label,
+            path: r.path,
+            commits: (r.commits ?? []).length,
+            dirty: (r.dirty ?? []).length,
+            ...(r.dirtyHidden ? { dirtyHidden: r.dirtyHidden } : {}),
+          })),
+          // The pseudo-repo for files touched outside git (header "Fuera de git").
+          ...(outsideCount
+            ? [{ label: OUTSIDE_LABEL, path: os.homedir(), commits: 0, dirty: 0, outside: outsideCount }]
+            : []),
+        ],
+      outside: source.outside ?? [],
     },
     baseLabel: `turno ${atLabel}`,
     snapshotAt: rec.startedAt,
@@ -1545,7 +1647,11 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
 const TURN_PAGE = 20;
 const TURN_PREVIEW_MAX = 300;
 
-export function listTurns({ skip = 0, limit = TURN_PAGE, sid: scopeSid } = {}) {
+// Repos an app-backed turn wrote in ("~" for files outside any repo) — the
+// same groups its view will show.
+const appRepoCount = (items) => appTurnGroups(items).length;
+
+export async function listTurns({ skip = 0, limit = TURN_PAGE, sid: scopeSid } = {}) {
   // scopeSid: the panel's EXPLICIT task (turn://list?sid=…) — resources/read
   // carries no request context, and the cached sid is whoever called any
   // tool last; the panel's view must follow ITS OWN task, always (0.10.8).
@@ -1558,7 +1664,7 @@ export function listTurns({ skip = 0, limit = TURN_PAGE, sid: scopeSid } = {}) {
   const from = Math.max(0, Math.min(Number(skip) || 0, total));
   const lim = Math.max(1, Math.min(Number(limit) || TURN_PAGE, 100));
   const preview = (s) => String(s ?? "").split("\n")[0].slice(0, TURN_PREVIEW_MAX);
-  const at = (i) => {
+  const at = async (i) => {
     if (live && i === 0)
       return {
         id: "latest",
@@ -1573,6 +1679,9 @@ export function listTurns({ skip = 0, limit = TURN_PAGE, sid: scopeSid } = {}) {
         interrupted: false,
       };
     const t = recs[i - (live ? 1 : 0)];
+    // The row counts what the turn's view will show (0.10.10): the app's
+    // file list when it has the session, the captured repos otherwise.
+    const items = await turnItems(t);
     return {
       id: t.id,
       at: t.startedAt,
@@ -1580,14 +1689,14 @@ export function listTurns({ skip = 0, limit = TURN_PAGE, sid: scopeSid } = {}) {
       prompt: preview(t.prompt),
       reply: preview(t.reply),
       workspace: t.workspace,
-      repoCount: (t.repos ?? []).length,
-      fileCount: turnFileCount(t),
+      repoCount: items ? appRepoCount(items) : (t.repos ?? []).length,
+      fileCount: items ? items.length : turnFileCount(t),
       isLive: false,
       interrupted: Boolean(t.interrupted),
     };
   };
   const turns = [];
-  for (let i = from; i < total && turns.length <= lim; i++) turns.push(at(i));
+  for (let i = from; i < total && turns.length <= lim; i++) turns.push(await at(i));
   const hasMore = turns.length > lim;
   // sessionFilter: the panel renders "· esta task" when non-null (0.10.1).
   return { count: total, skip: from, limit: lim, hasMore, sessionFilter: sid || null, turns: turns.slice(0, lim) };
@@ -1631,14 +1740,46 @@ export async function clearTurns({ workspace = activeWorkspace } = {}) {
 }
 
 // Default workspace for the panel's "Trabajo por repositorio" tab (spec
-// 22/11): the git repo with the MOST changes of the last recorded turn —// commits + dirty files (dirtyHidden is noise by definition and doesn't
-// count). An all-outside turn (or no turns at all) suggests nothing: the tab
-// then shows "seleccionar repositorio..." and waits for a manual pick. The
-// newest SAVED turn is the deterministic source (a live turn's repos are only
-// computed at Stop).
+// 22/11): the git repo with the MOST changes of the last recorded turn. An
+// all-outside turn (or no turns at all) suggests nothing: the tab then
+// shows "seleccionar repositorio..." and waits for a manual pick.
+//
+// 0.10.10 — "changes" follow the turn's own truth. When the app knows the
+// session they are the files the turn WROTE (its end-of-turn summary), and
+// the newest turn that wrote any decides: a turn that only ran commands
+// writes none, and the tab should still land where the work is. The
+// captured commits + dirty files remain the measure for sessions the app
+// does not know.
+const SUGGEST_LOOKBACK = 10; // newest turns searched for one that wrote files
+
 export async function suggestWorkspace() {
-  const rec = sidTurns()[0] ?? null;
+  const recs = sidTurns();
+  const rec = recs[0] ?? null;
   if (!rec) return { ok: true, turnId: null, workspace: null, reason: "no_turns" };
+  let appKnown = false;
+  for (const candidate of recs.slice(0, SUGGEST_LOOKBACK)) {
+    const items = await turnItems(candidate);
+    if (!items) continue;
+    appKnown = true;
+    // Most files written; ties go to the most changed lines, then the path.
+    const best = appTurnGroups(items)
+      .filter((g) => g.label !== OUTSIDE_LABEL)
+      .map((g) => ({
+        label: g.label,
+        path: g.path,
+        files: g.items.length,
+        lines: g.items.reduce((n, i) => n + i.additions + i.deletions, 0),
+      }))
+      .sort((a, b) => b.files - a.files || b.lines - a.lines || String(a.path).localeCompare(String(b.path)))[0];
+    if (!best) continue;
+    // The repo may be gone (a deleted worktree): an honest null beats a
+    // suggestion the panel cannot apply.
+    const inside = await runGit(["rev-parse", "--is-inside-work-tree"], { cwd: best.path });
+    return inside.ok
+      ? { ok: true, turnId: candidate.id, workspace: best.path, label: best.label, files: best.files }
+      : { ok: true, turnId: candidate.id, workspace: null, reason: "repo_gone" };
+  }
+  if (appKnown) return { ok: true, turnId: rec.id, workspace: null, reason: "no_repos" };
   const best = (rec.repos ?? [])
     .filter((r) => r.path && ((r.commits?.length ?? 0) + (r.dirty?.length ?? 0)) > 0)
     .sort(
@@ -2093,7 +2234,7 @@ async function handleRequest(msg) {
           break;
         case "list_turns": {
           await processInbox(); // drain before reading — watcher misses must not blind reads
-          data = listTurns({
+          data = await listTurns({
             skip: Number(params.arguments?.skip ?? 0) || 0,
             limit: Math.min(Number(params.arguments?.limit ?? 20) || 20, 100),
           });
