@@ -2530,6 +2530,18 @@ export async function main() {
   // fell in the cold-offset gap: unseen by the watcher, skipped by the
   // first drain. This is the restart race's second half.
   ensureInboxWatcher();
+  // Warm the turn store (0.11.0): the FIRST scan of a server life parses every
+  // record (~2 s on the live 8.7k store); the panel usually opens seconds
+  // after startup, so parse in the background — its first list read then hits
+  // the warm cache instead of paying the full scan. setTimeout keeps the MCP
+  // handshake (initialize/tools/list) completely ahead of the warm-up.
+  setTimeout(() => {
+    try {
+      readTurnFiles();
+    } catch {
+      /* a warm-up failure is not a boot failure — the first read retries */
+    }
+  }, 250).unref?.();
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   rl.on("line", (line) => {
     line = line.trim();
