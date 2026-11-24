@@ -65,6 +65,11 @@ const CORE = createHighlighterCore({
       }
     },
   };
+  // Reactive announcement (0.11.1): files already on screen when the engine
+  // was still initializing get their colors then — no timer, no poll.
+  try {
+    globalThis.dispatchEvent(new CustomEvent("da-hl-ready"));
+  } catch { /* no window (node tests): the global is enough */ }
   return raw;
 });
 

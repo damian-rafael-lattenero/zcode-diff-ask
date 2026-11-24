@@ -175,8 +175,23 @@ short-circuit skips the rebuild when nothing changed) and file contents per
 turn+path+REVISION (the app's write count rides the header, so a live turn
 that gets another write fetches fresh content instead of a stale diff).
 Hover prefetches (one turn read, at most two file reads). Highlighting is
-skipped above 200 KB per side: content and diff stay complete, only the
-colors are not painted.
+skipped above 200 KB per side or 1,200 lines: content and diff stay complete,
+only the colors are not painted.
+
+**Big files & highlighting (0.11.1)**: expanding a 3.5k-line file used to
+block the main thread ~800 ms INSIDE `FileDiff.render` — pierre's own
+tokenizer ran on the whole diff (profile: `findNextMatchSync` + the TS
+grammar's regexes). Fixes: (1) the FileDiff is constructed with
+`tokenizeMaxLength = HL_MAX_LINES` — the lib's `isDiffMassive` threshold
+makes it render plain and never start the tokenizer; (2) the highlight
+engine is booted EAGERLY by the panel (vendor import) and announces itself
+with a `da-hl-ready` event; (3) `hlColorize` is OUR single coloring path —
+deferred to idle, memoized per content+theme, with a fast path that skips
+tokenization when no row still needs the theme, and no caching of a failed
+(token-less) pass. Expanding a big file is now ~160 ms wall-clock end to
+end (measured), the diff itself ~10 ms. While a file's content is being
+fetched, its header shows a spinner (`setEntryBusy`) and the body shows
+skeleton rows.
 
 Cada pasada de decoración (`markChangedWords`) es:
 1. **Pre-gate** (corre SIEMPRE): parear dels↔adds del mismo cambio, reset de

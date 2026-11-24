@@ -18,6 +18,10 @@ import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
 import { ResourceUpdatedNotificationSchema } from "@modelcontextprotocol/core";
 import { FileDiff, parsePatchFiles, isHighlighterLoaded, isHighlighterLoading, isHighlighterNull, getFiletypeFromFileName } from "@pierre/diffs";
 import { Editor } from "@pierre/diffs/edit";
+// Eager boot of the highlight engine (0.11.1): colors must not depend on the
+// lib's lazy backend load. With the massive-diff cap big files never trigger
+// it, and files opened before it landed used to stay plain forever.
+import "../vendor/shiki-subset.mjs";
 import {
   esc, extractLines, rangeLabel, quoteFor, diffTotals, buildAskMessage,
   compressRuns, linesLabel, quoteForRanges, revertLines, revertFrags,
@@ -705,8 +709,20 @@ const HL_LANGS = new Set([
 const HL_THEME = () => (theme === "dark" ? "pierre-dark" : "pierre-light");
 // Above this size the highlighter (JS regex engine, whole file per side)
 // costs more than it gives: the file renders plain — content and diff are
-// unchanged, only the colors are skipped.
+// unchanged, only the colors are skipped. Bytes AND lines: a 3.5k-line file
+// is ~200KB and its tokenization blocked the main thread for ~800 ms on the
+// click (measured 23/11, real shiki + TS grammar).
 const HL_MAX_CHARS = 200_000;
+const HL_MAX_LINES = 1200;
+
+// A file within the highlight budget? (bytes AND lines, both sides).
+function hlAllowed(entry) {
+  const f = entry.fileData;
+  if (!f) return false;
+  if ((f.after?.length ?? 0) > HL_MAX_CHARS || (f.before?.length ?? 0) > HL_MAX_CHARS) return false;
+  const lines = Math.max(entry.afterLines?.length ?? 0, entry.beforeLines?.length ?? 0);
+  return lines <= HL_MAX_LINES;
+}
 
 function hlColorize(entry, lang) {
   // En EDICIÓN el editor de pierre manda SOLO: sus filas viven re-renderizándose
@@ -716,21 +732,35 @@ function hlColorize(entry, lang) {
   // Damian 28/10). También era la raíz del viejo "edit duplicado".
   if (entry.edit) return;
   const api = globalThis.__DA_HL_READY;
-  if (!api?.has(lang)) return;
-  if ((entry.fileData?.after?.length ?? 0) > HL_MAX_CHARS || (entry.fileData?.before?.length ?? 0) > HL_MAX_CHARS)
-    return;
-  entry._hlRuns = (entry._hlRuns ?? 0) + 1; // telemetría del rig e2e (sección O)
+  if (!api?.has(lang) || !hlAllowed(entry)) return;
   const themeName = HL_THEME();
-  const afterTok =
-    typeof entry.fileData?.after === "string" ? api.lines(entry.fileData.after, lang, themeName) : null;
-  const beforeTok =
-    typeof entry.fileData?.before === "string" ? api.lines(entry.fileData.before, lang, themeName) : null;
-  if (!afterTok && !beforeTok) return;
-  const sr = shadowHostOf(entry)?.shadowRoot;
-  const content = sr?.querySelector("[data-content]");
+  const content = shadowHostOf(entry)?.shadowRoot?.querySelector("[data-content]");
   if (!content) return;
-  for (const r of content.children) {
-    if (!r.hasAttribute("data-line") || r.dataset.hl === themeName) continue;
+  // FAST PATH before any tokenization: no row still waiting for THIS theme →
+  // nothing to paint. Without this the whole file was re-tokenized on every
+  // anchors pass (rAF after each shadow mutation) — the big-file freeze.
+  const pending = [];
+  for (const r of content.children)
+    if (r.hasAttribute("data-line") && r.dataset.hl !== themeName) pending.push(r);
+  if (!pending.length) return;
+  // Tokenize ONCE per content+theme (memo on the entry): a later pass only
+  // paints the NEW rows from the memo — no second tokenization of the file.
+  const f = entry.fileData;
+  const key = `${themeName}|${f.after?.length ?? -1}|${f.before?.length ?? -1}`;
+  if (entry._hlCache?.key !== key) {
+    const _t0 = performance.now();
+    const afterTok = typeof f.after === "string" ? api.lines(f.after, lang, themeName) : null;
+    const beforeTok = typeof f.before === "string" ? api.lines(f.before, lang, themeName) : null;
+    // No theme registered yet (the lib sets it on its first tokenization):
+    // do NOT cache the failure — a later pass retries once the theme lands.
+    if (!afterTok && !beforeTok) return;
+    entry._hlCache = { key, afterTok, beforeTok, ms: Math.round(performance.now() - _t0) };
+    window.__DA_LAST_HL = { path: entry.path, ms: entry._hlCache.ms, lines: afterTok?.length ?? 0, at: Date.now() };
+  }
+  const { afterTok, beforeTok } = entry._hlCache;
+  if (!afterTok && !beforeTok) return;
+  entry._hlRuns = (entry._hlRuns ?? 0) + 1; // telemetría del rig e2e (sección O)
+  for (const r of pending) {
     const isDel = r.dataset.lineType === "change-deletion";
     const toks = (isDel ? beforeTok : afterTok)?.[parseInt(r.dataset.line, 10) - 1];
     if (!toks) continue;
@@ -746,6 +776,32 @@ function hlColorize(entry, lang) {
     r.dataset.hl = themeName;
   }
 }
+
+// First paint of the colors is DEFERRED (idle): the diff must be on screen
+// before the tokenizer runs — expanding a big file never blocks the click.
+// requestIdleCallback is not in every webview: setTimeout(0) is the same
+// "after paint" intent without a fixed delay.
+function scheduleHighlight(entry, lang) {
+  if (entry._hlScheduled || entry._hlCache) return;
+  entry._hlScheduled = true;
+  const run = () => {
+    entry._hlScheduled = false;
+    if (entry.fd && !entry.edit) hlColorize(entry, lang);
+  };
+  if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 300 });
+  else setTimeout(run, 0);
+}
+
+// The engine announces itself when it finishes loading (vendor/shiki-subset):
+// files already on screen — or opened while it was loading — get their colors
+// THEN. Reactive, no polling: expanding a file never waits on the engine.
+window.addEventListener("da-hl-ready", () => {
+  for (const entry of rendered.values()) {
+    if (!entry.fd || !entry.fileData || entry.edit) continue;
+    const l = getFiletypeFromFileName(entry.fileData.oldPath ?? entry.fileData.path);
+    if (l && HL_LANGS.has(l)) scheduleHighlight(entry, l);
+  }
+});
 
 // ------------------------------------------------------------ búsqueda ⌘F// ------------------------------------------------------------ búsqueda ⌘F
 // El webview no tiene find nativo (y el shadow DOM lo rompería igual):
@@ -2863,22 +2919,30 @@ function scheduleAnchors() {
   anchorsScheduled = true;
   requestAnimationFrame(() => {
     anchorsScheduled = false;
+    const _a0 = performance.now();
+    const _stage = [];
     renderAnchors();
+    const _a1 = performance.now();
     // filas nuevas (expansión) o motor recién listo → re-pintar sintaxis.
     // Archivo en EDICIÓN ✏️: NADA nuestro lo toca — el MutationObserver dispara
     // con cada tecla del editor y nuestras capas (tokens, tachados, franjas)
     // escribirían encima de filas vivas con contenido viejo.
     for (const entry of rendered.values()) {
       if (!entry.fd || !entry.fileData || entry.edit) continue; // lazy: skip not-hydrated
+      const _e0 = performance.now();
       const l = getFiletypeFromFileName(entry.fileData.oldPath ?? entry.fileData.path);
       if (l && HL_LANGS.has(l)) hlColorize(entry, l);
+      const _e1 = performance.now();
       if (fragSel.has(entry.path)) renderFragUI(entry); // overlays tras repaint
       try { markChangedWords(entry); } catch { /* 词级标记失败不影响主渲染 */ }
+      const _e2 = performance.now();
+      _stage.push({ path: entry.path, hl: Math.round(_e1 - _e0), mark: Math.round(_e2 - _e1) });
     }
     // Al expandir un separador aparecen filas NUEVAS: re-marcar la búsqueda
     // activa sin mover el scroll (el match podía estar en el contexto
     // colapsado y hasta ahora era invisible para ⌘F).
     if (find.q && !document.getElementById("findbar")?.hidden) runFind(find.q, false);
+    window.__DA_ANCHORS = { anchors: Math.round(_a1 - _a0), total: Math.round(performance.now() - _a0), entries: _stage, at: Date.now() };
   });
 }
 
@@ -3174,6 +3238,17 @@ let fileLoadCount = 0;
 // never change, so their key is stable.
 const contentKey = (entry) => `${entry.turnId ?? ""}\0${entry.path}\0${entry.rev ?? ""}`;
 
+// Per-file "something is happening" (0.11.1): the header's spinner + a
+// progress cursor. Visible while the content is being fetched and while the
+// diff is being mounted; never a modal, never a blocking overlay.
+function setEntryBusy(entry, busy) {
+  if (!entry) return;
+  entry.busy = Boolean(busy);
+  entry.section?.classList.toggle("loading", entry.busy);
+  const s = entry.section?.querySelector(".fh-spin");
+  if (s) s.hidden = !entry.busy;
+}
+
 function rememberFileContent(key, content) {
   fileContents.delete(key);
   fileContents.set(key, content);
@@ -3209,7 +3284,8 @@ function paintListSkeleton(root) {
   root.appendChild(list);
 }
 
-function paintBodySkeleton(entry) {  if (!entry.body) return;
+function paintBodySkeleton(entry) {
+  if (!entry.body) return;
   entry.body.textContent = "";
   const box = document.createElement("div");
   box.className = "sk-body";
@@ -3265,6 +3341,7 @@ function loadFileContent(entry) {
   }
   if (fileLoads.has(key)) return fileLoads.get(key);
   entry.contentState = "loading";
+  setEntryBusy(entry, true);
   paintBodySkeleton(entry);
   fileLoadCount++;
   const load = withTimeout(app.readServerResource({ uri: turnFileUri(entry.turnId, entry.path) }), "archivo", 15_000)
@@ -3290,6 +3367,7 @@ function loadFileContent(entry) {
     .finally(() => {
       fileLoads.delete(key);
       fileLoadCount = Math.max(0, fileLoadCount - 1);
+      setEntryBusy(entry, false);
     });
   fileLoads.set(key, load);
   return load;
@@ -3328,6 +3406,7 @@ function renderFileInner(f) {
   head.innerHTML = `<span class="chev">▾</span><span class="chip s-${status === "?" ? "A" : status}"></span>
     <span class="path"></span>
     <span class="counts"></span>
+    <span class="fh-spin" hidden title="Cargando el contenido del archivo…"></span>
     <button class="ghost fplus" title="Preguntar sobre este archivo">＋</button>`;
   head.querySelector(".path").textContent = f.oldPath ? `${f.oldPath} → ${f.path}` : f.path;
   const counts = head.querySelector(".counts");
@@ -3461,6 +3540,12 @@ function hydrateFileDiff(entry) {
     // expandable separator (click = see more code, read-only).
     hunkSeparators: "line-info",
     collapsedContextThreshold: 10,
+    // SINGLE highlight path (0.11.1): pierre's "massive diff" threshold is a
+    // LINE count (isDiffMassive) — above it the lib renders plain and never
+    // runs the tokenizer, which is exactly what keeps a 3.5k-line file's
+    // click instant (measured 23/11: ~800 ms inside render before this).
+    // Colors below the cap come from our deferred, memoized hlColorize.
+    tokenizeMaxLength: HL_MAX_LINES,
     // Reactive: pierre reports separator expansion (previously: wait 250ms
     // and hope the rows moved). rAF coalesces multiple events.
     onHunkExpand: () => scheduleAnchors(),
@@ -3482,6 +3567,7 @@ function hydrateFileDiff(entry) {
   if (typeof f.before === "string" || typeof f.after === "string") {
     // Full content: local expandable diff (the gutter's line numbers are the
     // real file's; quotes come straight from here).
+    const _r0 = performance.now();
     fd.render({
       fileContainer: container,
       oldFile:
@@ -3493,9 +3579,13 @@ function hydrateFileDiff(entry) {
           ? { name: f.path, contents: f.after, cacheKey: `da-new:${f.path}:${f.after.length}`, lang: hlLang }
           : null,
     });
+    const _r1 = performance.now();
     fd.setThemeType(theme);
     attachStructureObserver(entry);
-    if (hlLang) hlColorize(entry, hlLang);
+    if (hlLang) scheduleHighlight(entry, hlLang);
+    const _r2 = performance.now();
+    entry._hydrateMs = { render: Math.round(_r1 - _r0), hl: 0, total: Math.round(_r2 - _r0) };
+    window.__DA_LAST_HYDRATE = { path: f.path, ...entry._hydrateMs, at: Date.now() };
     return;
   }
 
@@ -3693,6 +3783,7 @@ function renderRepoError(root, message) {
 }
 
 function renderAll() {
+  renderTick++;
   // Reconcile BEFORE clearing: entries whose file content is byte-identical
   // survive (their mounted FileDiff is the expensive part). Error/empty
   // payloads keep nothing (files = []) and clear fully, as before.
@@ -4524,6 +4615,10 @@ function refreshTarget() {
 
 const isStale = (gen) => gen !== refreshGen;
 let refreshCalls = 0; // e2e telemetry: did the refresh loop even run?
+// Quiescence counter for tests (0.11.1): bumped by every render — the e2e
+// waits on "tick unchanged across two frames" instead of sleeping a fixed
+// time. Cheap, monotonic, never resets.
+let renderTick = 0;
 
 async function refresh(explicit = false) {
   refreshCalls++;
@@ -4728,6 +4823,7 @@ if (window.__DA_TEST__) {
     get wsChosen() { return wsChosen; },
     set wsChosen(v) { wsChosen = Boolean(v); },
     get refreshCalls() { return refreshCalls; },
+    get renderTick() { return renderTick; },
     get refreshBusy() { return Boolean(refreshInFlight); },
     get busy() { return busyCount; },
     get fileContents() { return fileContents; },

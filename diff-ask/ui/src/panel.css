@@ -1186,6 +1186,20 @@ html[data-busy="1"] #loadbar { opacity: 1; }
 .sk-row .sk-line.w60 { flex: 1; }
 .sk-body { padding: 10px 12px; }
 
+/* Per-file spinner (0.11.1): lives in the header, right before the ＋ —
+   the file being loaded says so ON its name, no overlay. */
+.file-head .fh-spin {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: da-rot 0.7s linear infinite;
+}
+.file.loading .file-head,
+.file.loading .file-head .path { cursor: progress; }
+
 .commit-row.loading,
 .modebar button.loading,
 .more-btn.loading { cursor: progress; opacity: 0.65; }

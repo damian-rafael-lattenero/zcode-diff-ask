@@ -56,6 +56,8 @@ Documentación de profundidad:
 | **Lazy turn payload** (0.11.0): a turn arrives as headers + counts (`light`), each file's before/after rides its own read on expand/hover — 1.5 MB → ~10 KB per turn switch; per-file contents cached by turn+path+revision | `diff://turn?light=1` + `diff://file` (server), `loadFileContent` (panel) |
 | **Loading feedback** (0.11.0): in-flight top bar, skeletons (pending view, lists, file body), spinner on the clicked row/tab, hover prefetch, stale-while-revalidate on switch-back, highlight skipped >200 KB/side | `paintPendingView` + `#loadbar` (panel) |
 | **Incremental turn store** (0.11.0): parsed records cached per file (mtime+size) — a new turn re-reads one file, not 8.7k (~2 s → ~50 ms) | `readTurnFiles` (server) |
+| **Big-file open fast** (0.11.1): the lib's tokenizer is capped (`tokenizeMaxLength` = 1,200 lines) so a 3.5k-line file renders plain in ~160 ms instead of blocking ~800 ms; colors are our deferred, memoized path (engine booted eagerly, `da-hl-ready` event); the file header shows a spinner while content loads | `hydrateFileDiff` + `hlColorize` + `vendor/shiki-subset` |
+| **Zero sleep-based waits** (0.11.1): the panel/server have no blind sleeps; the e2e waits by condition (`waitForExpr` on the page's frame clock), event (`fs.watch`) or quiescence — only gesture cadence and hard deadlines use timers | `tests/e2e` |
 | Refresh con short-circuit: payload idéntico → no se reconstruye el DOM | `payloadSig` (panel) |
 | Chips ↑ahead/↓behind vs upstream en el header de trabajo (la vista "Sin pushear" se eliminó en 0.10.0; la info queda) | server (payload working) + panel |
 | Preguntas ancladas ＋ (línea, rango de cajitas, archivo) | panel + skill |
