@@ -1101,3 +1101,104 @@ button.fedit.on {
 .file.editing .head-marker,
 .file.editing .fplus,
 .file.editing .frev { display: none !important; }
+
+/* ================= 0.11.0 — feedback de carga =================
+   Todo lo que espera al server lo DICE: barra superior mientras hay un read
+   en vuelo, spinner en el objetivo clickeado, y skeletons con la forma de lo
+   que está por llegar (vista pendiente, lista, cuerpo de archivo). */
+
+#loadbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 60;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease 0.15s; /* fast reads never flash */
+}
+html[data-busy="1"] #loadbar { opacity: 1; }
+#loadbar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: da-loadbar 1s linear infinite;
+}
+@keyframes da-loadbar {
+  from { background-position: -40% 0; }
+  to { background-position: 140% 0; }
+}
+
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: da-rot 0.7s linear infinite;
+  vertical-align: -2px;
+}
+@keyframes da-rot { to { transform: rotate(360deg); } }
+.header .meta .spinner { margin-right: 6px; }
+.header .meta .pend-label { font-weight: 600; }
+
+.sk-line {
+  height: 10px;
+  border-radius: 4px;
+  margin: 6px 0;
+  background: linear-gradient(90deg, var(--border) 25%, var(--bg) 37%, var(--border) 63%);
+  background-size: 400% 100%;
+  animation: da-shimmer 1.2s ease infinite;
+}
+@keyframes da-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0 0; }
+}
+.sk-line.w15 { width: 15%; }
+.sk-line.w25 { width: 25%; }
+.sk-line.w40 { width: 40%; }
+.sk-line.w60 { width: 60%; }
+.sk-line.w70 { width: 70%; }
+.sk-line.w85 { width: 85%; }
+
+.sk-file {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+.sk-list { padding: 4px 10px; }
+.sk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.sk-row:last-child { border-bottom: none; }
+.sk-row .sk-line { flex: none; margin: 0; }
+.sk-row .sk-line.w60 { flex: 1; }
+.sk-body { padding: 10px 12px; }
+
+.commit-row.loading,
+.modebar button.loading,
+.more-btn.loading { cursor: progress; opacity: 0.65; }
+.commit-row.loading::after,
+.modebar button.loading::after {
+  content: "";
+  flex: none;
+  align-self: center;
+  width: 12px;
+  height: 12px;
+  margin-left: 8px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: da-rot 0.7s linear infinite;
+}

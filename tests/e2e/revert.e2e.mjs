@@ -1779,18 +1779,34 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
 
     const pickX = await pickByPrompt(xMark);
     check(!!pickX && pickX.files === 2, `X: el turno abre con EXACTAMENTE sus dos archivos (${JSON.stringify(pickX)})`);
+    const rel = (f) => `${path.basename(REPO)}/tests/diffs/x-e2e-app/${f}`;
     const viewX = await evalJs(`(() => ({
       source: __DA.diffData?.turn?.source ?? null,
-      files: (__DA.diffData?.files ?? []).map((f) => ({ path: f.path, status: f.status, before: f.before, after: f.after, added: f.added, deleted: f.deleted })),
+      light: __DA.diffData?.light ?? null,
+      files: (__DA.diffData?.files ?? []).map((f) => ({ path: f.path, status: f.status, deferred: f.deferred, before: f.before, after: f.after, added: f.added, deleted: f.deleted })),
       heads: [...document.querySelectorAll(".turn-repo-head")].map((h) => ${rowText("(h)")}),
     }))()`);
-    const rel = (f) => `${path.basename(REPO)}/tests/diffs/x-e2e-app/${f}`;
     check(viewX.source === "app", `X: el turno viene de la app (${viewX.source})`);
     check(JSON.stringify(viewX.files.map((f) => f.path)) === JSON.stringify([rel("one.ts"), rel("two.ts")]),
       `X: solo los dos archivos que la app checkpointeó (${JSON.stringify(viewX.files.map((f) => f.path))})`);
-    check(viewX.files[1]?.before === "const two = 2;\nconst three = 3;\n" && viewX.files[1]?.after === "const two = 2;\nconst THREE = 3;\n",
-      `X: el Edit muestra el antes y el DESPUÉS reconstruidos (${JSON.stringify([viewX.files[1]?.before, viewX.files[1]?.after])})`);
+    // 0.11.0: the turn arrives LIGHT — headers/counts now, content per file
+    // when the user expands it (a big turn must not move megabytes to show
+    // its headers).
+    check(viewX.light === true, `X: el turno llega liviano — encabezados, contenido por archivo (light=${viewX.light})`);
+    check(viewX.files.every((f) => f.deferred === true && f.before === undefined && f.after === undefined),
+      `X: el payload liviano no lleva before/after (${JSON.stringify(viewX.files.map((f) => [f.deferred, f.before, f.after]))})`);
     check(viewX.files.map((f) => `${f.added}/${f.deleted}`).join(",") === "1/0,1/1", `X: los +N −M son los de la app (${JSON.stringify(viewX.files.map((f) => [f.added, f.deleted]))})`);
+    // Expanding fetches THAT file's content (the Edit's before rebuilt through
+    // the app's patch applier) and caches it.
+    await expandFile(rel("two.ts"));
+    const bodyX = await until(async () => evalJs(`(() => {
+      const e = __DA.rendered.get(${JSON.stringify(rel("two.ts"))});
+      const f = e?.fileData;
+      return f && typeof f.before === "string" ? { before: f.before, after: f.after ?? "" } : null;
+    })()`), 8000);
+    check(bodyX?.before === "const two = 2;\nconst three = 3;\n" && bodyX?.after === "const two = 2;\nconst THREE = 3;\n",
+      `X: el Edit muestra el antes y el DESPUÉS reconstruidos al expandir (${JSON.stringify([bodyX?.before, bodyX?.after])})`);
+    check((await evalJs(`__DA.fileContents.size`)) >= 1, "X: el contenido quedó cacheado por turno+archivo");
     check(/2 archivos/.test(viewX.heads.join(" | ")) && !/commit|sucio|ruido/.test(viewX.heads.join(" | ")),
       `X: el encabezado del repo cuenta archivos, no commits ni sucios (${JSON.stringify(viewX.heads)})`);
     await shot("22-app-turn.png");
@@ -1827,6 +1843,11 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   }
 
   // ============ salud general del panel ============
+  check(await evalJs(`!!document.getElementById("loadbar")`), "UI: la barra de progreso (0.11.0) existe en el shell");
+  check(await evalJs(`(() => {
+    const d = document.createElement("div"); d.className = "sk-line w40"; document.body.appendChild(d);
+    const anim = getComputedStyle(d).animationName; d.remove(); return anim !== "none";
+  })()`), "UI: el shimmer de los skeletons está cableado (animación CSS)");
   check(pageErrors.length === 0, `sin excepciones en la página (${pageErrors.length})`, pageErrors.slice(0, 3).join(" | "));
   check((await evalJs("__E2E.errors()")).length === 0, "sin carteles de error en el panel", JSON.stringify(await evalJs("__E2E.errors()")));
 } catch (e) {

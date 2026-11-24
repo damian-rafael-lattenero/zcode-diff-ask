@@ -46,6 +46,10 @@ let commitSel = null; // hash en vista de diff de commit (null = lista)
 let turnSel = "latest"; // id de turno en vista (null = lista; "latest" = vivo/último)
 let turnsState = { list: [], skip: 0, hasMore: false, total: 0, sessionFilter: null };
 let commitsState = { query: "", skip: 0, list: [], hasMore: false };
+// In-flight flags for the two LIST views (0.11.0): while the first page is on
+// its way the list renders skeleton rows instead of a blank/"Sin …" state.
+let turnsLoading = false;
+let commitsLoading = false;
 let subscribedUri = null;
 // Repo label (the server's OUTSIDE_LABEL — keep in sync) for files touched
 // outside any git repo: the turns view renders this group as "Fuera de git".
@@ -59,9 +63,15 @@ const collapsedGroups = new Set();
 // panel's turn reads. Stamping it on the turn URIs pins OUR task's view.
 let sessionSid = "";
 
+const sidQ = (q) => (sessionSid ? `&sid=${encodeURIComponent(sessionSid)}` : "");
+// Turn view, LIGHT (0.11.0): headers + counts only (KBs); each file's
+// content rides `diff://file/…` when the user actually reaches it.
+const turnViewUri = (id) => `diff://turn/${encodeURIComponent(id)}?light=1${sidQ()}`;
+const turnFileUri = (turnId, path) =>
+  `diff://file/${encodeURIComponent(turnId ?? "latest")}?path=${encodeURIComponent(path)}${sidQ()}`;
+
 function diffUriFor() {
-  if (mode === "turns" && turnSel)
-    return `diff://turn/${encodeURIComponent(turnSel)}${sessionSid ? `?sid=${encodeURIComponent(sessionSid)}` : ""}`;
+  if (mode === "turns" && turnSel) return turnViewUri(turnSel);
   if (mode === "commits" && commitSel) return `diff://commit/${encodeURIComponent(commitSel)}`;
   return DIFF_URI;
 }
@@ -262,6 +272,8 @@ async function applyWorkspace(p, { silent = false } = {}) {
     turnSel = mode === "turns" ? "latest" : null;
     await endAllEdits();
     renderPile();
+    // Feedback: switching repo always reads the new tree (git status/diff).
+    paintPendingView(`Cargando ${wsLabel()}…`);
     await refresh(true);
     if (!silent) chip(`📁 ${wsLabel()}`);
     return true;
@@ -691,6 +703,10 @@ const HL_LANGS = new Set([
 // pinta en el rAF de anclajes (expansión de hunks incluida) y al cambiar
 // el tema. La cita/selección siguen leyendo textContent (intacto).
 const HL_THEME = () => (theme === "dark" ? "pierre-dark" : "pierre-light");
+// Above this size the highlighter (JS regex engine, whole file per side)
+// costs more than it gives: the file renders plain — content and diff are
+// unchanged, only the colors are skipped.
+const HL_MAX_CHARS = 200_000;
 
 function hlColorize(entry, lang) {
   // En EDICIÓN el editor de pierre manda SOLO: sus filas viven re-renderizándose
@@ -701,6 +717,8 @@ function hlColorize(entry, lang) {
   if (entry.edit) return;
   const api = globalThis.__DA_HL_READY;
   if (!api?.has(lang)) return;
+  if ((entry.fileData?.after?.length ?? 0) > HL_MAX_CHARS || (entry.fileData?.before?.length ?? 0) > HL_MAX_CHARS)
+    return;
   entry._hlRuns = (entry._hlRuns ?? 0) + 1; // telemetría del rig e2e (sección O)
   const themeName = HL_THEME();
   const afterTok =
@@ -1000,6 +1018,11 @@ function queueQuestion(path, range, quoteLines, question, span, spans, labelOver
 // queda SIEMPRE visible abajo. Se crea una sola vez y sobrevive renderAll.
 function ensureShell() {
   if (document.getElementById("askbar")) return;
+  // Top progress bar (0.11.0): visible only while a read/tool call is in
+  // flight (html[data-busy]); CSS owns the 150 ms delay + animation.
+  const loadbar = document.createElement("div");
+  loadbar.id = "loadbar";
+  loadbar.setAttribute("aria-hidden", "true");
   const pile = document.createElement("div");
   pile.id = "pile";
   const askbar = document.createElement("div");
@@ -1012,7 +1035,7 @@ function ensureShell() {
       <button class="primary" id="askbar-send" disabled>Enviar todo (⌘↵)</button>
       <span class="ver" title="Versión del panel — para saber qué build corrés"></span>
     </div>`;
-  document.body.append(pile, askbar);
+  document.body.append(loadbar, pile, askbar);
   const input = askbar.querySelector("#askbar-input");
   const send = askbar.querySelector("#askbar-send");
   input.addEventListener("keydown", (e) => {
@@ -3134,6 +3157,156 @@ function applyGroupCollapse(root) {
   }
 }
 
+// ------------------------------------------------- lazy file content (0.11.0)
+// A turn view arrives LIGHT: headers, statuses and counts, no before/after.
+// Each file's content is fetched when the user reaches it (expand, focus,
+// hover-prefetch) and cached per turn+path — going back to a turn or
+// re-expanding a file never asks the server twice.
+const fileContents = new Map(); // `${turnId}\0${path}` -> content payload
+const FILE_CONTENT_MAX = 120;
+const fileLoads = new Map(); // key -> in-flight promise (expand + hover share ONE read)
+const FILE_LOAD_CONCURRENCY = 2;
+let fileLoadCount = 0;
+
+// The cache key carries the file's CONTENT REVISION (the app's write count +
+// counts ride the light header): a live turn that gets another write changes
+// its note/counts → new key → fresh content, never a stale diff. Saved turns
+// never change, so their key is stable.
+const contentKey = (entry) => `${entry.turnId ?? ""}\0${entry.path}\0${entry.rev ?? ""}`;
+
+function rememberFileContent(key, content) {
+  fileContents.delete(key);
+  fileContents.set(key, content);
+  while (fileContents.size > FILE_CONTENT_MAX) fileContents.delete(fileContents.keys().next().value);
+}
+
+// Skeleton rows: the panel's answer to "something is loading" — same shapes
+// for the pending view, the turn list and a file body.
+function skLine(widthClass = "") {
+  const d = document.createElement("div");
+  d.className = `sk-line ${widthClass}`.trim();
+  return d;
+}
+function skFileSection() {
+  const sec = document.createElement("div");
+  sec.className = "sk-file";
+  sec.appendChild(skLine("w40"));
+  for (let i = 0; i < 3; i++) sec.appendChild(skLine(i === 1 ? "w85" : "w70"));
+  return sec;
+}
+// List placeholder while the first page is on its way (turns/commits).
+function paintListSkeleton(root) {
+  const list = document.createElement("div");
+  list.className = "commit-list sk-list";
+  for (let i = 0; i < 8; i++) {
+    const row = document.createElement("div");
+    row.className = "sk-row";
+    row.appendChild(skLine("w25"));
+    row.appendChild(skLine("w60"));
+    row.appendChild(skLine("w15"));
+    list.appendChild(row);
+  }
+  root.appendChild(list);
+}
+
+function paintBodySkeleton(entry) {  if (!entry.body) return;
+  entry.body.textContent = "";
+  const box = document.createElement("div");
+  box.className = "sk-body";
+  for (let i = 0; i < 6; i++) box.appendChild(skLine(i % 3 === 0 ? "w40" : i % 3 === 1 ? "w85" : "w70"));
+  entry.body.appendChild(box);
+}
+
+function paintBodyError(entry, err) {
+  if (!entry.body) return;
+  entry.body.textContent = "";
+  const box = document.createElement("div");
+  box.className = "plain-note";
+  box.textContent = `No pude cargar el contenido de este archivo (${err?.message ?? err}).`;
+  const retry = document.createElement("button");
+  retry.className = "ghost";
+  retry.textContent = "Reintentar";
+  retry.onclick = () => {
+    entry.contentState = "idle";
+    entry.body.textContent = "";
+    loadFileContent(entry);
+  };
+  box.appendChild(document.createElement("br"));
+  box.appendChild(retry);
+  entry.body.appendChild(box);
+}
+
+function mergeFileContent(entry, c) {
+  const f = entry.fileData;
+  f.before = typeof c.before === "string" ? c.before : undefined;
+  f.after = typeof c.after === "string" ? c.after : undefined;
+  if (c.patch) f.patch = c.patch;
+  if (c.binary) f.binary = true;
+  if (c.gone) f.gone = true;
+  entry.beforeLines = typeof f.before === "string" ? f.before.split("\n") : null;
+  entry.afterLines = typeof f.after === "string" ? f.after.split("\n") : null;
+  entry.pendingContent = false;
+}
+
+// The one path that fetches a file's content: a cache hit merges instantly, a
+// miss paints the skeleton (first expand) and shares ONE read between the
+// expand and any hover prefetch of the same file.
+function loadFileContent(entry) {
+  if (!entry?.pendingContent) return null;
+  const key = contentKey(entry);
+  const cached = fileContents.get(key);
+  if (cached) {
+    rememberFileContent(key, cached); // LRU touch
+    mergeFileContent(entry, cached);
+    entry.contentState = "ready";
+    if (entry.body) entry.body.textContent = "";
+    if (!entry.section.classList.contains("collapsed")) hydrateFileDiff(entry);
+    return null;
+  }
+  if (fileLoads.has(key)) return fileLoads.get(key);
+  entry.contentState = "loading";
+  paintBodySkeleton(entry);
+  fileLoadCount++;
+  const load = withTimeout(app.readServerResource({ uri: turnFileUri(entry.turnId, entry.path) }), "archivo", 15_000)
+    .then((res) => {
+      const c = JSON.parse(res?.contents?.[0]?.text ?? "{}");
+      if (c?.error) throw new Error(c.message ?? c.error);
+      rememberFileContent(key, c);
+      // The section may have been replaced (re-render/turn switch): apply only
+      // to the entry that still owns this path.
+      if (rendered.get(entry.path) === entry) {
+        mergeFileContent(entry, c);
+        entry.contentState = "ready";
+        entry.body.textContent = "";
+        if (!entry.section.classList.contains("collapsed")) hydrateFileDiff(entry);
+      }
+    })
+    .catch((e) => {
+      if (rendered.get(entry.path) === entry) {
+        entry.contentState = "error";
+        paintBodyError(entry, e);
+      }
+    })
+    .finally(() => {
+      fileLoads.delete(key);
+      fileLoadCount = Math.max(0, fileLoadCount - 1);
+    });
+  fileLoads.set(key, load);
+  return load;
+}
+
+// Hover prefetch: by the time the click lands the content is usually here.
+// Bounded (2 in flight) — sweeping the mouse across a big turn must not
+// stampede the bridge.
+function prefetchFileContent(entry) {
+  if (!entry?.pendingContent) return;
+  if (entry.contentState === "loading" || entry.contentState === "ready") return;
+  if (fileContents.has(contentKey(entry))) return loadFileContent(entry);
+  if (fileLoadCount >= FILE_LOAD_CONCURRENCY) return;
+  loadFileContent(entry);
+}
+
+
 function renderFile(f) {
   try {
     renderFileInner(f);
@@ -3164,6 +3337,11 @@ function renderFileInner(f) {
     section, body: null, fd: null, path: f.path, patch: f.patch ?? "", fileData: f,
     beforeLines: typeof f.before === "string" ? f.before.split("\n") : null,
     afterLines: typeof f.after === "string" ? f.after.split("\n") : null,
+    // LIGHT payload (0.11.0): this file's content is behind diff://file/…
+    turnId: diffData?.turn?.id ?? null,
+    pendingContent: Boolean(f.deferred),
+    contentState: f.deferred ? "idle" : "ready",
+    rev: `${f.note ?? ""}|${f.added ?? ""}|${f.deleted ?? ""}`,
   };
   head.addEventListener("click", (e) => {
     if (e.target.closest("button")) return;
@@ -3176,6 +3354,9 @@ function renderFileInner(f) {
     }
     scheduleAnchors(); // rAF: reposicionar cuando el layout ya cambió
   });
+  // Hover = prefetch (0.11.0): expanding a file right after pointing at it
+  // finds the content already cached.
+  head.addEventListener("pointerenter", () => prefetchFileContent(entry));
   section.appendChild(head);
 
   const body = document.createElement("div");
@@ -3262,6 +3443,12 @@ function renderFileInner(f) {
 // edit). Synchronous on purpose: deterministic for the e2e rig.
 function hydrateFileDiff(entry) {
   if (entry.fd || entry.noDiff || !entry.body) return;
+  // Light payload: the content is not here yet — the fetch paints the
+  // skeleton and re-enters here once it lands (0.11.0).
+  if (entry.pendingContent) {
+    loadFileContent(entry);
+    return;
+  }
   const f = entry.fileData;
   const fd = new FileDiff({
     themeType: theme,
@@ -3513,14 +3700,27 @@ function renderAll() {
   const filesNow = (!diffData || diffData.error) ? [] : (diffData.files ?? []);
   for (const f of filesNow) {
     const prev = rendered.get(f.path);
-    reuseCheck.set(
-      f.path,
-      prev?.fileData &&
-        prev.fileData.status === f.status &&
-        (prev.fileData.oldPath ?? null) === (f.oldPath ?? null) &&
+    // A LIGHT file's content is not in the payload: the mounted entry may
+    // already hold richer (hydrated) content, so the content comparison is
+    // skipped — the metadata below still decides.
+    const sameContent =
+      f.deferred ||
+      (prev?.fileData &&
         prev.fileData.before === f.before &&
         prev.fileData.after === f.after &&
-        prev.fileData.patch === f.patch,
+        prev.fileData.patch === f.patch);
+    reuseCheck.set(
+      f.path,
+      Boolean(
+        prev?.fileData &&
+          prev.fileData.status === f.status &&
+          (prev.fileData.oldPath ?? null) === (f.oldPath ?? null) &&
+          (prev.fileData.added ?? null) === (f.added ?? null) &&
+          (prev.fileData.deleted ?? null) === (f.deleted ?? null) &&
+          (prev.fileData.note ?? "") === (f.note ?? "") &&
+          (prev.fileData.repoLabel ?? "") === (f.repoLabel ?? "") &&
+          sameContent,
+      ),
     );
   }
   const keep = new Set(
@@ -3615,6 +3815,7 @@ function renderAll() {
       endAllEdits().finally(() => {
         commitSel = null;
         turnSel = null;
+        paintPendingView(mode === "commits" ? "Cargando commits…" : "Cargando turnos…");
         refresh(true);
       });
     };
@@ -3670,7 +3871,9 @@ function renderAll() {
   if (diffData.truncated) {
     const tr = document.createElement("div");
     tr.className = "state warn";
-    tr.textContent = `Diff muy grande: se muestran los primeros ${diffData.files.length} de ${diffData.fileCount} archivos y algunos parches se omitieron.`;
+    tr.textContent = diffData.light
+      ? `Diff muy grande: se muestran los primeros ${diffData.files.length} de ${diffData.fileCount} archivos (el contenido se carga al abrirlos).`
+      : `Diff muy grande: se muestran los primeros ${diffData.files.length} de ${diffData.fileCount} archivos y algunos parches se omitieron.`;
     root.appendChild(tr);
   }
   for (const f of diffData.files) {
@@ -3692,6 +3895,20 @@ function renderAll() {
   const emitFileSection = (f) => {
     const kept = rendered.get(f.path);
     if (kept) {
+      // Light metadata refresh on a kept (possibly hydrated) entry: counts,
+      // status and note come from the fresh payload; the content the entry
+      // already holds is NEVER downgraded to the light "not here yet" state.
+      if (f.deferred) {
+        kept.fileData.status = f.status;
+        kept.fileData.added = f.added;
+        kept.fileData.deleted = f.deleted;
+        kept.fileData.note = f.note;
+        kept.fileData.repoLabel = f.repoLabel;
+        kept.fileData.binary = f.binary;
+        kept.fileData.gone = f.gone;
+        if (typeof kept.fileData.before === "string" || typeof kept.fileData.after === "string")
+          kept.pendingContent = false;
+      }
       rendered.delete(f.path);
       rendered.set(f.path, kept); // emission order = map order
       root.appendChild(kept.section);
@@ -3776,9 +3993,15 @@ function renderAll() {
 
 async function loadCommits(reset = false) {
   if (reset) commitsState = { query: commitsState.query, skip: 0, list: [], hasMore: false };
+  commitsLoading = true;
   const gen = refreshGen;
   const uri = `log://commits?skip=${commitsState.skip}&limit=10&q=${encodeURIComponent(commitsState.query)}`;
-  const res = await withTimeout(app.readServerResource({ uri }), "commits");
+  let res;
+  try {
+    res = await withTimeout(app.readServerResource({ uri }), "commits");
+  } finally {
+    commitsLoading = false;
+  }
   if (gen !== refreshGen) return; // superseded: don't render a stale list
   const data = JSON.parse(res?.contents?.[0]?.text ?? "{}");
   if (data.workspace) currentWorkspace = data.workspace;
@@ -3830,6 +4053,7 @@ function renderCommits() {
   root.appendChild(toolbar);
 
   if (!commitsState.list.length) {
+    if (commitsLoading) return paintListSkeleton(root, "commits");
     const st = document.createElement("div");
     st.className = "state";
     st.textContent = commitsState.query
@@ -3850,7 +4074,11 @@ function renderCommits() {
     row.title = `${c.hash}\n${c.subject}`;
     row.onclick = () => {
       commitSel = c.hash;
-      endAllEdits().finally(() => refresh(true));
+      row.classList.add("loading");
+      endAllEdits().finally(() => {
+        paintPendingView("Cargando commit…");
+        refresh(true).finally(() => row.classList.remove("loading"));
+      });
     };
     list.appendChild(row);
   }
@@ -3860,7 +4088,14 @@ function renderCommits() {
     more.className = "more-btn";
     more.textContent = "…";
     more.title = "Cargar 10 commits más";
-    more.onclick = () => loadCommits();
+    more.onclick = () => {
+      more.classList.add("loading");
+      more.textContent = "cargando…";
+      loadCommits().finally(() => {
+        more.classList.remove("loading");
+        more.textContent = "…";
+      });
+    };
     root.appendChild(more);
   }
 }
@@ -3877,9 +4112,15 @@ function renderCommits() {
 // next 10 (the "…" button).
 async function loadTurns(reset = false) {
   if (reset) turnsState = { list: [], skip: 0, hasMore: false, total: 0, sessionFilter: null };
+  turnsLoading = true;
   const gen = refreshGen;
   const uri = `turn://list?skip=${turnsState.skip}&limit=10${sessionSid ? `&sid=${encodeURIComponent(sessionSid)}` : ""}`;
-  const res = await withTimeout(app.readServerResource({ uri }), "turns");
+  let res;
+  try {
+    res = await withTimeout(app.readServerResource({ uri }), "turns");
+  } finally {
+    turnsLoading = false;
+  }
   if (gen !== refreshGen) return; // superseded: don't render a stale list
   const data = JSON.parse(res?.contents?.[0]?.text ?? "{}");
   if (data.workspace) currentWorkspace = data.workspace;
@@ -3977,6 +4218,7 @@ function renderTurns() {
   root.appendChild(toolbar);
 
   if (!turnsState.list.length) {
+    if (turnsLoading) return paintListSkeleton(root, "turns");
     const st = document.createElement("div");
     st.className = "state";
     st.textContent = "Todavía no hay turnos. Cada mensaje en la sesión abre un turno y el fin de la respuesta lo cierra: cada uno lista los archivos que escribió, igual que el resumen de fin de turno de ZCode.";
@@ -4028,10 +4270,9 @@ function renderTurns() {
         e.stopPropagation();
         deleteTurnById(t.id);
       };
-    row.onclick = () => {
-      turnSel = t.id;
-      refresh();
-    };
+    row.onclick = () => navigateToTurn(t.id, row);
+    // Hover prefetch: the light payload is already here when the click lands.
+    row.addEventListener("pointerenter", () => prefetchView(turnViewUri(t.id)));
     list.appendChild(row);
   }
   root.appendChild(list);
@@ -4040,7 +4281,14 @@ function renderTurns() {
     more.className = "more-btn";
     more.textContent = "…";
     more.title = "Cargar 10 turnos más";
-    more.onclick = () => loadTurns();
+    more.onclick = () => {
+      more.classList.add("loading");
+      more.textContent = "cargando…";
+      loadTurns().finally(() => {
+        more.classList.remove("loading");
+        more.textContent = "…";
+      });
+    };
     root.appendChild(more);
   }
 }
@@ -4071,6 +4319,17 @@ async function resubscribe(uri) {
   }
 }
 
+// Open one turn: the click paints the shell + skeletons within a frame (the
+// row spins), then the LIGHT read lands and the headers take over (0.11.0).
+function navigateToTurn(id, row = null) {
+  turnSel = id;
+  row?.classList.add("loading");
+  paintPendingView(id === "latest" ? "Cargando el turno en vivo…" : "Cargando turno…");
+  const run = refresh(true);
+  if (row) run?.finally?.(() => row.classList.remove("loading"));
+  return run;
+}
+
 // Mode switch (top tabs). Leaving Commits/Turns clears the selection and the
 // search; entering Turnos opens the LAST turn directly (live if one is open).
 // Same-tab click = explicit re-entry: a stuck view must always have a way
@@ -4090,6 +4349,10 @@ async function setMode(m) {
   document.querySelectorAll(".modebar button[data-mode]").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === m);
   });
+  // Immediate feedback: entering Turnos always hits the server (last turn);
+  // the repo tab does unless it still has to choose a repo (instant prompt).
+  if (m === "turns") paintPendingView("Cargando el turno en vivo…");
+  else if (wsChosen) paintPendingView(`Cargando ${wsLabel()}…`);
   await refresh(true);
 }
 
@@ -4104,6 +4367,7 @@ async function openCommits() {
   document.querySelectorAll(".modebar button[data-mode]").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === "working");
   });
+  if (wsChosen) paintPendingView("Cargando commits…");
   await refresh(true);
 }
 
@@ -4115,6 +4379,7 @@ async function backToWorking() {
   document.querySelectorAll(".modebar button[data-mode]").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === "working");
   });
+  if (wsChosen) paintPendingView(`Cargando ${wsLabel()}…`);
   await refresh(true);
 }
 
@@ -4136,17 +4401,98 @@ const dropRenderedSig = () => {
   lastRendered = { uri: null, sig: null };
 };
 
+// Stale-while-revalidate (0.11.0): the last READ payloads, per URI. A light
+// turn payload is KBs, so going BACK to a turn paints its headers instantly
+// from here while the fresh read reconciles (the signature short-circuit
+// skips the rebuild when nothing changed).
+const viewCache = new Map(); // uri -> raw
+const VIEW_CACHE_MAX = 6;
+function rememberView(uri, raw) {
+  if (!uri || !raw) return;
+  viewCache.delete(uri);
+  viewCache.set(uri, raw);
+  while (viewCache.size > VIEW_CACHE_MAX) viewCache.delete(viewCache.keys().next().value);
+}
+
+// Prefetch the turn under the mouse (one read in flight, once per URI).
+const prefetchState = { busy: false, done: new Set() };
+async function prefetchView(uri) {
+  if (!uri || viewCache.has(uri) || prefetchState.busy || prefetchState.done.has(uri)) return;
+  prefetchState.busy = true;
+  try {
+    const res = await withTimeout(app.readServerResource({ uri }), "prefetch", 10_000, { quiet: true });
+    const raw = res?.contents?.[0]?.text ?? "";
+    if (raw) {
+      rememberView(uri, raw);
+      prefetchState.done.add(uri);
+    }
+  } catch {
+    /* prefetch is best-effort — the click still reads */
+  } finally {
+    prefetchState.busy = false;
+  }
+}
+
+// Immediate feedback on navigation (0.11.0): paint the shell + skeleton rows
+// BEFORE awaiting the read, so every click has an answer within a frame.
+// Rendered entries die here — navigation was already committed (mode/selection
+// set by the caller).
+function paintPendingView(label) {
+  const root = document.getElementById("root");
+  if (!root) return;
+  hideSelPop("navegar");
+  dropRenderedSig();
+  clearRendered();
+  diffData = null; // the pending view has no payload yet (tests/rig agree)
+  root.textContent = "";
+  const toolbar = document.createElement("div");
+  toolbar.className = "toolbar";
+  renderModebar(toolbar);
+  const head = document.createElement("div");
+  head.className = "header";
+  head.innerHTML = `<div class="meta"><span class="spinner"></span><span class="pend-label"></span></div>`;
+  head.querySelector(".pend-label").textContent = label;
+  toolbar.appendChild(head);
+  root.appendChild(toolbar);
+  for (let i = 0; i < 8; i++) root.appendChild(skFileSection());
+  root.scrollTop = 0;
+}
+
+// Does the current target actually hit the server? (The repo tab with no repo
+// chosen renders its picker prompt instantly — no skeleton needed.)
+function targetReads() {
+  if (mode === "working" || mode === "commits") return wsChosen;
+  return true;
+}
+
 // Every server read gets a hard client-side timeout: a hung read must never
 // wedge the panel — on timeout the catch below renders an error state WITH
 // the mode bar, so the next click recovers.
 const READ_TIMEOUT_MS = 25_000;
-function withTimeout(p, what, ms = READ_TIMEOUT_MS) {
+
+// In-flight feedback (0.11.0): every bridge read/tool call bumps this
+// counter, and the top bar shows while it is non-zero (CSS delays it ~150 ms
+// so fast reads never flash). A slow server now LOOKS slow instead of dead.
+let busyCount = 0;
+function pushBusy() {
+  busyCount++;
+  document.documentElement.dataset.busy = "1";
+}
+function popBusy() {
+  busyCount = Math.max(0, busyCount - 1);
+  if (!busyCount) delete document.documentElement.dataset.busy;
+}
+
+function withTimeout(p, what, ms = READ_TIMEOUT_MS, { quiet = false } = {}) {
+  if (!quiet) pushBusy();
   return new Promise((resolve, reject) => {
     const t = setTimeout(
       () => reject(new Error(`${what}: sin respuesta en ${Math.round(ms / 1000)}s`)),
       ms,
     );
     p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  }).finally(() => {
+    if (!quiet) popBusy();
   });
 }
 
@@ -4215,6 +4561,21 @@ async function refresh(explicit = false) {
       await loadTurns(true);
     } else {
       let uri = diffUriFor();
+      // Cached headers first (only when this URI is NOT what the DOM already
+      // shows): switching back to a turn paints instantly, then the read
+      // below revalidates through the signature short-circuit.
+      const cachedRaw = viewCache.get(uri);
+      if (cachedRaw && lastRendered.uri !== uri) {
+        try {
+          diffData = JSON.parse(cachedRaw);
+          if (diffData?.workspace) currentWorkspace = diffData.workspace;
+          document.documentElement.dataset.repo = diffData?.error ? "no" : "yes";
+          renderAll();
+          lastRendered = { uri, sig: payloadSig(cachedRaw) };
+        } catch {
+          /* a broken cache entry is never fatal — the read below owns it */
+        }
+      }
       // pendingTurnFocus (the fork's end-of-turn file click): the payload of
       // ANY view can ask us to switch to a turn — follow the hint with ONE
       // extra read, then render that view.
@@ -4224,6 +4585,7 @@ async function refresh(explicit = false) {
         if (isStale(gen)) return; // a newer refresh owns the UI now
         const raw = res?.contents?.[0]?.text ?? "{}";
         lastRaw = raw;
+        rememberView(uri, raw);
         if (uri === lastRendered.uri && payloadSig(raw) === lastRendered.sig) {
           // Same payload as what's already on screen: keep the DOM (and its
           // expanded FileDiffs) — reactive storms must not rebuild the view.
@@ -4367,6 +4729,10 @@ if (window.__DA_TEST__) {
     set wsChosen(v) { wsChosen = Boolean(v); },
     get refreshCalls() { return refreshCalls; },
     get refreshBusy() { return Boolean(refreshInFlight); },
+    get busy() { return busyCount; },
+    get fileContents() { return fileContents; },
+    loadFileContent: (path) => loadFileContent(rendered.get(path)),
+    prefetchFile: (path) => prefetchFileContent(rendered.get(path)),
     get lastRenderedUri() { return lastRendered.uri; },
     get mode() { return mode; },
     get turnSel() { return turnSel; },
