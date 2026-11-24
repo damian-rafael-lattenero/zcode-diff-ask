@@ -248,14 +248,17 @@ function readWorkFile(p, cwd) {
 // The heart shared by every "vs a base" mode: file list in (name-status +
 // untracked), out each one with before/after (if it fits the budget) or a
 // fallback -U10 patch, plus added/deleted/binary.
-export async function enrichFiles({ entries, numstat, getBefore, getAfter, buildPatches, cwd }) {
+export async function enrichFiles({ entries, numstat, getBefore, getAfter, buildPatches, cwd, withContent = true }) {
   let truncated = false;
   let budget = MAX_PATCH_BYTES;
   // First, full content (before/after) for the first MAX_CONTENT_FILES
   // non-binary files, with a bounded pool: the panel diffs locally with 10
   // context lines and expandable separators. Patch is the fallback. The cap
   // keeps a mega commit from costing one spawn pair per file.
-  const targets = entries.filter((f) => !f.binary).slice(0, MAX_CONTENT_FILES);
+  // withContent:false (0.11.0, the panel's light turn payload): headers only —
+  // the content is fetched per file when the user reaches it, so a turn switch
+  // never pays for files nobody looks at.
+  const targets = withContent ? entries.filter((f) => !f.binary).slice(0, MAX_CONTENT_FILES) : [];
   await mapPool(targets, ENRICH_CONCURRENCY, async (f) => {
     const before = f.status === "A" || f.status === "?" ? null : await getBefore(f);
     const after = f.status === "D" ? null : await getAfter(f);
@@ -270,7 +273,7 @@ export async function enrichFiles({ entries, numstat, getBefore, getAfter, build
       }
     }
   });
-  const needPatch = entries.some((f) => f.before === undefined && !f.binary && f.status !== "R");
+  const needPatch = withContent && entries.some((f) => f.before === undefined && !f.binary && f.status !== "R");
   let patchMap = new Map();
   if (needPatch && buildPatches) patchMap = await buildPatches();
   for (const f of entries) {
@@ -1178,6 +1181,11 @@ function ensureInboxWatcher() {
 // (mtime + file count + last name — cheap to check, correct for appends,
 // deletes and the atomic rm of clearTurns).
 let turnStoreCache = null; // { key, recs }
+// PER-FILE parse cache (0.11.0): the store holds thousands of records, and a
+// new turn changes the directory key — re-parsing ALL of them cost ~2 s on
+// the live store, on every turn written. Re-read only the files whose
+// mtime/size changed; everything else is reused as the same parsed object.
+let turnFileCache = new Map(); // name -> { mtimeMs, size, rec|null }
 
 function turnStoreKey() {
   let st;
@@ -1204,12 +1212,30 @@ function readTurnFiles() {
   } catch {
     names = [];
   }
+  const alive = new Set(names);
+  for (const n of turnFileCache.keys()) if (!alive.has(n)) turnFileCache.delete(n);
   const out = [];
   for (const n of names) {
+    const abs = path.join(TURNS2_DIR, n);
+    let st;
     try {
-      const rec = JSON.parse(fs.readFileSync(path.join(TURNS2_DIR, n), "utf8"));
-      if (rec && rec.id) out.push(rec);
+      st = fs.statSync(abs);
+    } catch {
+      turnFileCache.delete(n);
+      continue;
+    }
+    const hit = turnFileCache.get(n);
+    if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
+      if (hit.rec) out.push(hit.rec);
+      continue;
+    }
+    let rec = null;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(abs, "utf8"));
+      if (parsed && parsed.id) rec = parsed;
     } catch { /* turno corrupto: se ignora */ }
+    turnFileCache.set(n, { mtimeMs: st.mtimeMs, size: st.size, rec });
+    if (rec) out.push(rec);
   }
   // Dedupe by (sid, startedAt) (0.10.2): restart/deploy races finalized the
   // SAME prompt window more than once and legacy ids (stopMs-keyed) never
@@ -1284,7 +1310,34 @@ function turnFileCount(rec) {
 // (the panel keys sections by path, and two repos can hold the same rel path),
 // then the files touched OUTSIDE any git repo (all-green group). Content rides
 // the shared bounded pool (mapPool + budget via enrichFiles).
-async function turnEntries(repos, outside = []) {
+// Per-file content readers of the CAPTURE model (sessions the app does not
+// know): before/after from git or the work tree. Shared by the full build
+// (enrichFiles) and the on-demand single-file read (buildTurnFile), so the
+// two can never disagree about one file's content.
+function turnReaders() {
+  return {
+    getBefore: (f) =>
+      f._src.outside
+        ? Promise.resolve(null)
+        : f._src.dirty
+          ? f.status === "A" || f.status === "?"
+            ? Promise.resolve(null)
+            : gitShow("HEAD", f._src.oldRel ?? f._src.rel, f.repo)
+          : gitShow(`${f._src.commit}^`, f._src.oldRel ?? f._src.rel, f.repo).then((c) => c ?? ""),
+    getAfter: (f) =>
+      f._src.outside
+        ? f.gone
+          ? Promise.resolve(null)
+          : Promise.resolve(readAbsFile(f._src.abs))
+        : f._src.dirty
+          ? f.status === "D"
+            ? Promise.resolve(null)
+            : Promise.resolve(readWorkFile(f._src.rel, f.repo))
+          : gitShow(f._src.commit, f._src.rel, f.repo).then((c) => c ?? ""),
+  };
+}
+
+async function turnEntries(repos, outside = [], { withContent = true } = {}) {
   const entries = [];
   const numstat = new Map();
   const seen = new Set();
@@ -1358,32 +1411,19 @@ async function turnEntries(repos, outside = []) {
   await enrichFiles({
     entries,
     numstat,
-    getBefore: (f) =>
-      f._src.outside
-        ? Promise.resolve(null)
-        : f._src.dirty
-          ? f.status === "A" || f.status === "?"
-            ? Promise.resolve(null)
-            : gitShow("HEAD", f._src.oldRel ?? f._src.rel, f.repo)
-          : gitShow(`${f._src.commit}^`, f._src.oldRel ?? f._src.rel, f.repo).then((c) => c ?? ""),
-    getAfter: (f) =>
-      f._src.outside
-        ? f.gone
-          ? Promise.resolve(null)
-          : Promise.resolve(readAbsFile(f._src.abs))
-        : f._src.dirty
-          ? f.status === "D"
-            ? Promise.resolve(null)
-            : Promise.resolve(readWorkFile(f._src.rel, f.repo))
-          : gitShow(f._src.commit, f._src.rel, f.repo).then((c) => c ?? ""),
+    ...turnReaders(),
     buildPatches: null,
     cwd: activeWorkspace,
+    withContent,
   });
   // Outside files whose content didn't fit the budget (or is binary): no text
   // can ride — flag binary so the panel shows its honest plain-note instead of
-  // an empty diff box.
-  for (const f of entries) {
-    if (f._src?.outside && !f.gone && f.after === undefined) f.binary = true;
+  // an empty diff box. In LIGHT mode nothing was read: the file is deferred,
+  // and the per-file read reports binary/too-big then.
+  if (withContent) {
+    for (const f of entries) {
+      if (f._src?.outside && !f.gone && f.after === undefined) f.binary = true;
+    }
   }
   return entries;
 }
@@ -1409,7 +1449,7 @@ function appTurnGroups(items) {
 // panel's repo → folder → file grouping works unchanged. Content is the
 // app's own first-before → final-after; the shared enrichFiles applies the
 // payload budget and carries the app's counts through its numstat seam.
-async function appTurnEntries(items) {
+async function appTurnEntries(items, { withContent = true } = {}) {
   const ordered = appTurnGroups(items);
   const entries = [];
   const numstat = new Map();
@@ -1437,6 +1477,7 @@ async function appTurnEntries(items) {
     getAfter: (f) => Promise.resolve(f._src.item.after ?? null),
     buildPatches: null,
     cwd: activeWorkspace,
+    withContent,
   });
   return { entries, repos: ordered.map((g) => ({ label: g.label, path: g.path, files: g.items.length })) };
 }
@@ -1485,7 +1526,14 @@ function sameFile(a, b) {
 
 // Diff de un turno: "latest" = turno EN VIVO (ventana abierta hasta ahora);
 // un id = turno guardado. Multi-repo: cada archivo viaja con repoLabel.
-export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFocus = true, sid: scopeSid } = {}) {
+// withContent:false is the panel's light read (0.11.0): file headers and
+// counts only — the heavy before/after rides a per-file read when the user
+// reaches it (`buildTurnFile`), so switching turns never moves megabytes.
+export async function buildTurnDiff(id, opts = {}) {
+  return (await buildTurnBundle(id, opts)).payload;
+}
+
+async function buildTurnBundle(id, { workspace = activeWorkspace, resolveFocus = true, sid: scopeSid, withContent = true } = {}) {
   let rec;
   let isLive = false;
   // scopeSid: the panel's EXPLICIT task (diff://turn/<id>?sid=…) — see listTurns.
@@ -1558,13 +1606,19 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
     }
     if (!rec) {
       if (id !== "latest")
-        return { error: "unknown_turn", message: `No encontré el turno "${id}".`, workspace, files: [], fileCount: 0 };
+        return {
+          entries: [],
+          payload: { error: "unknown_turn", message: `No encontré el turno "${id}".`, workspace, files: [], fileCount: 0 },
+        };
       return {
-        error: "no_turns",
-        message: "Todavía no hay turnos registrados. Cada mensaje en la sesión abre un turno y lo cierra al terminar la respuesta.",
-        workspace,
-        files: [],
-        fileCount: 0,
+        entries: [],
+        payload: {
+          error: "no_turns",
+          message: "Todavía no hay turnos registrados. Cada mensaje en la sesión abre un turno y lo cierra al terminar la respuesta.",
+          workspace,
+          files: [],
+          fileCount: 0,
+        },
       };
     }
     // Records stored before 0.10.10 carry the captured repos; the app's
@@ -1574,9 +1628,12 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
   }
   const { entries, repos: appRepos } =
     source.source === "app"
-      ? await appTurnEntries(source.items)
-      : { entries: await turnEntries(source.repos, source.outside), repos: null };
+      ? await appTurnEntries(source.items, { withContent })
+      : { entries: await turnEntries(source.repos, source.outside, { withContent }), repos: null };
   const pruned = pruneList(entries, false);
+  // The light read hands the panel the headers and keeps the entries HERE:
+  // the per-file read (`buildTurnFile`) picks the content out of this cache.
+  if (!withContent) rememberTurnEntries(turnCacheKey(id, scopeSid, workspace), entries);
   // Focus resolution (one-shot): the click's absolute path → the entry key the
   // panel can scroll to. Consumed here so later refreshes don't re-scroll.
   let focusPath = null;
@@ -1593,7 +1650,7 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
   }
   const atLabel = String(rec.startedAt ?? "").slice(11, 16);
   const outsideCount = (source.outside ?? []).length;
-  return {
+  const payload = {
     workspace: rec.workspace || workspace,
     head: "",
     mode: "turn",
@@ -1635,9 +1692,79 @@ export async function buildTurnDiff(id, { workspace = activeWorkspace, resolveFo
     dirty: entries.length > 0,
     truncated: pruned.truncated,
     fileCount: entries.length,
-    files: pruned.files,
+    // LIGHT payload: headers only + a `deferred` flag per file whose content
+    // the panel must request (`diff://file/…?path=`). `_src` is internal
+    // (it carried the app item — before/after TWICE in the old payload) and
+    // never rides the wire.
+    ...(withContent ? {} : { light: true }),
+    files: pruned.files.map(({ _src, ...f }) =>
+      withContent ? f : { ...f, ...(f.binary || f.gone ? {} : { deferred: true }) },
+    ),
     generatedAt: new Date().toISOString(),
   };
+  return { payload, entries };
+}
+
+// ---- light turns: the per-file read (0.11.0) ----------------------------
+// The light payload's cache: the parsed turn entries (with their internal
+// `_src`) of the last few turns. A per-file read is then a find + one file's
+// content, never a whole-turn rebuild.
+const TURN_ENTRY_MAX = 6;
+const TURN_ENTRY_TTL_MS = 30_000;
+const turnEntryCache = new Map(); // key -> { at, entries }
+
+function turnCacheKey(id, scopeSid, workspace) {
+  return `${workspace ?? ""}\0${id}\0${scopeSid || currentSid()}`;
+}
+
+function rememberTurnEntries(key, entries) {
+  turnEntryCache.delete(key);
+  turnEntryCache.set(key, { at: Date.now(), entries });
+  while (turnEntryCache.size > TURN_ENTRY_MAX) turnEntryCache.delete(turnEntryCache.keys().next().value);
+}
+
+/**
+ * One file's content of a turn, on demand (the light payload's other half).
+ * App-backed turns answer from the app's own before/after; capture turns run
+ * the same readers the full build used. Degrades to an honest `error` — the
+ * panel shows a note, never a broken diff.
+ * @returns {Promise<{path:string, before:string|null, after:string|null, binary?:boolean, gone?:boolean, error?:string, message?:string}>}
+ */
+export async function buildTurnFile(id, filePath, { workspace = activeWorkspace, sid: scopeSid } = {}) {
+  const key = turnCacheKey(id, scopeSid, workspace);
+  let bundle = turnEntryCache.get(key);
+  if (!bundle || Date.now() - bundle.at > TURN_ENTRY_TTL_MS) {
+    await buildTurnBundle(id, { workspace, sid: scopeSid, withContent: false, resolveFocus: false });
+    bundle = turnEntryCache.get(key);
+  }
+  const entry = bundle?.entries.find((e) => e.path === filePath);
+  if (!entry) return { error: "unknown_file", path: filePath, content: true, message: `El turno no tiene el archivo "${filePath}".` };
+  if (entry._content) return entry._content;
+  let content;
+  if (entry._src?.app) {
+    const item = entry._src.item;
+    content = {
+      path: entry.path,
+      before: item.before ?? null,
+      after: item.after ?? null,
+      ...(item.after === undefined ? { binary: true } : {}),
+    };
+  } else if (entry.gone) {
+    content = { path: entry.path, before: null, after: null, gone: true };
+  } else {
+    const readers = turnReaders();
+    const before = entry.status === "A" || entry.status === "?" ? null : await readers.getBefore(entry);
+    const after = entry.status === "D" ? null : await readers.getAfter(entry);
+    content = {
+      path: entry.path,
+      before,
+      after,
+      ...(before === null && after === null ? { binary: true } : {}),
+    };
+  }
+  content.content = true; // marks a per-file payload (never a view)
+  entry._content = content;
+  return content;
 }
 
 // ---- turn list pagination ------------------------------------------------
@@ -2164,11 +2291,25 @@ function uriDiffData(uri) {
     if (u.host === "turn") {
       const id = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
       const sid = u.searchParams.get("sid") ?? "";
+      // ?light=1 (0.11.0): headers only — the panel fetches each file's
+      // content from diff://file/… when the user reaches it.
+      const light = u.searchParams.get("light") === "1";
       ensureInboxWatcher();
       // Reads drain the inbox first (0.10.8): the fs.watch notifier can
       // miss appends on macOS, and a blind read served a stale/empty turn
       // list — the exact "both tabs show nothing" live failure.
-      return processInbox().then(() => buildTurnDiff(id || "latest", sid ? { sid } : {}));
+      return processInbox().then(() =>
+        buildTurnDiff(id || "latest", { ...(sid ? { sid } : {}), ...(light ? { withContent: false } : {}) }),
+      );
+    }
+    if (u.host === "file") {
+      const id = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
+      const sid = u.searchParams.get("sid") ?? "";
+      const filePath = u.searchParams.get("path") ?? "";
+      ensureInboxWatcher();
+      return processInbox().then(() =>
+        buildTurnFile(id || "latest", filePath, sid ? { sid } : {}),
+      );
     }
     if (u.host === "commit") {
       const ref = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
@@ -2351,8 +2492,9 @@ async function handleRequest(msg) {
       // Panel-focus hint: a parked click (requestTurnFocus) tells any view
       // that is NOT the focused turn to switch to it; the focused turn's own
       // payload carries focusPath (resolved + consumed by buildTurnDiff).
+      // Per-file content payloads are not views — they never carry the hint.
       const nav = peekPendingTurnFocus();
-      if (nav && data && typeof data === "object" && !data.error && data.mode !== "turn")
+      if (nav && data && typeof data === "object" && !data.error && !data.content && data.mode !== "turn")
         data.pendingTurnFocus = nav;
       return {
         contents: [
