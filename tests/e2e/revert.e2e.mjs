@@ -1767,6 +1767,21 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     `U: sub-encabezados de carpeta por grupo (${JSON.stringify(foldersU)})`);
   await shot("20-turnos-dos-repos.png");
 
+  // U2 (0.14.1) — same-tab re-entry means THE LAST TURN. With a turn opened
+  // from the list (turnSel = its id), clicking the Turnos tab used to only
+  // refresh that view: the tab stayed pinned to the old turn and the latest
+  // one seemed to never load. Re-entry must reset the selection to "latest".
+  const reentryBefore = await evalJs(`({ sel: __DA.turnSel, mode: __DA.mode })`);
+  check(reentryBefore.mode === "turns" && reentryBefore.sel !== "latest",
+    `U2: partimos de un turno abierto desde la lista (${JSON.stringify(reentryBefore)})`);
+  await evalJs(`document.querySelector('.modebar button[data-mode="turns"]')?.click()`);
+  check(await until(async () => (await evalJs(`__DA.turnSel`)) === "latest", 8000),
+    "U2: click en Turnos con un turno viejo abierto vuelve al ÚLTIMO turno");
+  check(await until(async () => (await evalJs(`__DA.diffData?.mode ?? null`)) === "turn", 8000),
+    "U2: la vista relee ese turno (no queda en el viejo)");
+  check(await evalJs(`document.querySelectorAll(".turn-repo-head").length > 0`),
+    "U2: el turno latest se renderizó con sus grupos de repo");
+
   // ============ V. 0.10.0: dos tabs + repo tab (sugerencia/prompt/Commits) ====
   // The mode bar has exactly TWO tabs now (Turnos + Trabajo por repositorio);
   // "Sin pushear" is gone. The repo tab without a chosen repo asks the server

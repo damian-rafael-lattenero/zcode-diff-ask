@@ -4511,6 +4511,14 @@ function navigateToTurn(id, row = null) {
 // nothing).
 async function setMode(m) {
   if (m === mode) {
+    // Re-entry on Turnos ALWAYS means the last turn again (0.14.1): the tab
+    // used to only refresh whatever was on screen, so after opening an older
+    // turn from the list — or coming back to the list — clicking "Turnos"
+    // kept showing that old turn and the latest one seemed to never load.
+    if (m === "turns" && turnSel !== "latest") {
+      turnSel = "latest";
+      paintPendingView("Cargando el turno en vivo…");
+    }
     refresh(true);
     return;
   }
