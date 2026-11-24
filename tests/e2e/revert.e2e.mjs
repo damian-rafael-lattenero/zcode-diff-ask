@@ -42,7 +42,11 @@ fs.mkdirSync(SHOTS, { recursive: true });
 
 const NOTES = "tests/diffs/notes.md";
 const SERVER_TS = "tests/diffs/server.ts";
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// INPUT TIMING ONLY — never synchronization. A human double-click interval or
+// a slow drag's step cadence IS part of the gesture under test; every wait for
+// panel/server state in this rig is a condition (waitForExpr/until) or an
+// event (fs.watch), never a fixed sleep.
+const pace = (ms) => new Promise((r) => setTimeout(r, ms));
 let step = 0;
 const fails = [];
 
@@ -115,7 +119,7 @@ const harness = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
   if (url.pathname === "/panel") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    res.end(PANEL.replace("<head>", `<head><script>window.__DA_TEST__={files:[],workspace:${JSON.stringify(REPO)}};window.__DA_E2E__=true;window.__DA_HL_READY={has:()=>true,lines:(t)=>String(t).split("\\n").map((l)=>[{content:l}])};</script>`));
+    res.end(PANEL.replace("<head>", `<head><script>window.__DA_TEST__={files:[],workspace:${JSON.stringify(REPO)}};window.__DA_E2E__=true;</script>`));
   } else if (url.pathname === "/events") {
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.write("data: hello\n\n");
@@ -158,15 +162,30 @@ const chrome = spawn(CHROME, [
   `--user-data-dir=${profile}`, "--remote-debugging-port=0",
   "--window-size=1440,1900", "about:blank",
 ], { stdio: ["ignore", "ignore", "ignore"] });
-const waitPort = async () => {
-  for (let i = 0; i < 100; i++) {
-    try {
-      const f = fs.readFileSync(path.join(profile, "DevToolsActivePort"), "utf8");
-      return { port: Number(f.split("\n")[0]), path: f.split("\n")[1] };
-    } catch { await sleep(100); }
-  }
-  throw new Error("Chrome no abrió el puerto de debug");
-};
+const waitPort = () =>
+  new Promise((resolve, reject) => {
+    const file = path.join(profile, "DevToolsActivePort");
+    const read = () => {
+      try {
+        const f = fs.readFileSync(file, "utf8");
+        return { port: Number(f.split("\n")[0]), path: f.split("\n")[1] };
+      } catch {
+        return null;
+      }
+    };
+    const ready = read();
+    if (ready) return resolve(ready);
+    // Chrome WRITES the file when the port is up: wait for that write (event),
+    // never a poll. The deadline is the only timer — a Chrome that dies before
+    // writing must fail loudly instead of hanging forever.
+    const watcher = fs.watch(profile, (_evt, name) => {
+      if (name !== "DevToolsActivePort") return;
+      const got = read();
+      if (got) { cleanup(); resolve(got); }
+    });
+    const timer = setTimeout(() => { cleanup(); reject(new Error("Chrome no abrió el puerto de debug")); }, 15_000);
+    const cleanup = () => { try { watcher.close(); } catch {} clearTimeout(timer); };
+  });
 const { port: cdpPort, path: cdpPath } = await waitPort();
 const version = await (await fetch(`http://127.0.0.1:${cdpPort}/json/version`)).json();
 const ws = new WebSocket(version.webSocketDebuggerUrl);
@@ -214,6 +233,38 @@ const evalJs = async (expr) => {
   if (r.exceptionDetails) throw new Error("page: " + (r.exceptionDetails.exception?.description ?? r.exceptionDetails.text));
   return r.result?.value;
 };
+// Page-side wait (0.11.1): resolves the moment the expression is truthy —
+// driven by the page's OWN frame clock (requestAnimationFrame), with a hard
+// deadline. One CDP call, zero polling from Node, zero fixed sleeps.
+const waitForExpr = (expr, ms = 8000) =>
+  evalJs(`new Promise((resolve) => {
+    const end = performance.now() + ${ms};
+    const tick = () => {
+      let v = null;
+      try { v = (${expr}); } catch {}
+      if (v) return resolve(v);
+      if (performance.now() > end) return resolve(null);
+      requestAnimationFrame(tick);
+    };
+    tick();
+  })`);
+// Quiescence, frame-driven: the panel is quiet once the render tick, the
+// file count and the scroll position stop changing across two frames.
+const quiesce = (ms = 10000) =>
+  evalJs(`new Promise((resolve) => {
+    const end = performance.now() + ${ms};
+    let last = null, same = 0;
+    const tick = () => {
+      const root = document.getElementById("root");
+      const sig = [__DA.renderTick, __DA.rendered.size, root?.scrollTop ?? 0].join("|");
+      same = sig === last ? same + 1 : 0;
+      last = sig;
+      if (same >= 2) return resolve(sig);
+      if (performance.now() > end) return resolve(null);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`);
 const shot = async (name) => {
   const r = await cdp("Page.captureScreenshot", { format: "png" });
   fs.writeFileSync(path.join(SHOTS, name), Buffer.from(r.data, "base64"));
@@ -221,7 +272,7 @@ const shot = async (name) => {
 
 // helpers de página: localizar filas/chars en el shadow del diff
 await cdp("Page.navigate", { url: `http://127.0.0.1:${PORT}/panel` });
-await sleep(700);
+await waitForExpr("typeof __DA === 'object' && !!document.getElementById('askbar')", 15000);
 await evalJs(`(() => {
   window.__E2E = {
     head(rel) {
@@ -380,7 +431,7 @@ await evalJs(`(() => {
 // tolerante al boot: con el stub del highlighter el bundle puede tardar un
 // poco más que el sleep fijo — esperar a que __DA exista antes del refresh
 await evalJs(`window.__daErr = []; if (!window.__daHooked) { window.__daHooked = 1; window.addEventListener("error", (e) => window.__daErr.push(String(e.message).slice(0, 200) + " @" + String(e.filename).slice(-40) + ":" + e.lineno)); }`).catch(() => {});
-for (let i = 0; i < 100 && (await evalJs(`typeof __DA`).catch(() => "x")) !== "object"; i++) await sleep(100);
+await waitForExpr("typeof __DA === 'object'", 15000);
 if ((await evalJs(`typeof __DA`).catch(() => "x")) !== "object") {
   console.error("BOOT FAIL — errores de página:", await evalJs(`JSON.stringify(window.__daErr)`).catch((e) => "eval: " + e.message));
   console.error("BOOT FAIL — body:", await evalJs(`JSON.stringify((document.body?.innerText ?? "").slice(0, 120))`).catch(() => "?"));
@@ -399,14 +450,8 @@ if (true) {
     fails.push(`boot: la primera pestaña debe ser Turnos y existir el chip de trabajo (${JSON.stringify(bootTab)})`);
   await evalJs(`document.querySelector('.modebar button[data-mode="working"]')?.click()`);
   await evalJs(`__DA.refresh(true)`);
-  await (async () => {
-    const t0 = Date.now();
-    while (Date.now() - t0 < 8000) {
-      if (await evalJs(`__DA.rendered.size >= 9`)) return;
-      await sleep(150);
-    }
-    throw new Error("el panel no renderizó los 9 archivos del fixture");
-  })();
+  const bootOk = await waitForExpr("__DA.rendered.size >= 9", 10000);
+  if (!bootOk) throw new Error("el panel no renderizó los 9 archivos del fixture");
   log(`panel: ${await evalJs("__DA.rendered.size")} archivos en el diff (working, del repo elegido)`);
 }
 
@@ -420,23 +465,23 @@ const mouse = {
 };
 async function click(x, y) { await mouse.press(x, y); await mouse.release(x, y); }
 async function dblclick(x, y) {
-  await mouse.press(x, y); await mouse.release(x, y); await sleep(80);
+  await mouse.press(x, y); await mouse.release(x, y); await pace(80);
   await mouse.press(x, y, 2); await mouse.release(x, y, 2);
 }
 async function tripleclick(x, y) {
-  await mouse.press(x, y); await mouse.release(x, y); await sleep(80);
-  await mouse.press(x, y, 2); await mouse.release(x, y, 2); await sleep(80);
+  await mouse.press(x, y); await mouse.release(x, y); await pace(80);
+  await mouse.press(x, y, 2); await mouse.release(x, y, 2); await pace(80);
   await mouse.press(x, y, 3); await mouse.release(x, y, 3);
 }
 async function drag(x0, y0, x1, y1, steps = 14) {
   await mouse.press(x0, y0);
-  for (let i = 1; i <= steps; i++) { await mouse.move(x0 + ((x1 - x0) * i) / steps, y0 + ((y1 - y0) * i) / steps); await sleep(14); }
+  for (let i = 1; i <= steps; i++) { await mouse.move(x0 + ((x1 - x0) * i) / steps, y0 + ((y1 - y0) * i) / steps); await pace(14); }
   await mouse.release(x1, y1);
 }
 const until = async (fn, ms = 5000, stepMs = 90) => {
   const t0 = Date.now();
   let v;
-  while (Date.now() - t0 < ms) { v = await fn(); if (v) return v; await sleep(stepMs); }
+  while (Date.now() - t0 < ms) { v = await fn(); if (v) return v; await pace(stepMs); }
   return v;
 };
 const waitPaint = async (rel, n) => {
@@ -449,39 +494,76 @@ const waitPaint = async (rel, n) => {
   }
   return ok;
 };
+// Settle: no bridge work in flight (panel busy counter off) AND the render
+// stopped changing across two frames. Used for NEGATIVE checks ("this must
+// NOT write") — the deadline is the only timer, and it returns the moment the
+// panel is quiet.
+const settle = async (ms = 5000) => {
+  await waitForExpr("!__DA.refreshBusy && !__DA.busy", ms);
+  await quiesce(ms);
+};
 const readDisk = (rel) => fs.readFileSync(path.join(REPO, rel), "utf8");
+// Disk waits are EVENT waits (fs.watch on the file's folder), never polls:
+// the panel's write lands → the watcher fires → the predicate decides. The
+// timeout is a hard deadline so a broken write fails loudly.
 const waitDisk = async (rel, pred, label) => {
-  const ok = await until(async () => pred(readDisk(rel)), 6000);
+  const abs = path.join(REPO, rel);
+  const dir = path.dirname(abs);
+  const started = Date.now();
+  const ok = await new Promise((resolve) => {
+    if (pred(readDisk(rel))) return resolve(true);
+    let watcher = null;
+    let timer = null;
+    const finish = (v) => {
+      try { watcher?.close(); } catch {}
+      clearTimeout(timer);
+      resolve(v);
+    };
+    try {
+      watcher = fs.watch(dir, () => {
+        try { if (pred(readDisk(rel))) finish(true); } catch {}
+      });
+    } catch { /* folder gone: the deadline still decides */ }
+    timer = setTimeout(() => finish(pred(readDisk(rel))), 6000);
+  });
   if (!ok) {
     console.error(`    chips: ${JSON.stringify(await evalJs(`[...document.querySelectorAll(".sent-chip")].map((c) => c.textContent)`).catch(() => "?"))}`);
     console.error(`    ring:  ${(await evalJs("window.__evts").catch(() => "?")).slice(-16).join(" ")}`);
     console.error(`    diag:  ${(await evalJs(`(document.querySelector('.diag-chip')?.__log ?? []).join(' ⏐ ')`).catch(() => "?")).slice(-400)}`);
+    console.error(`    disk:  ${rel} not matching after ${Date.now() - started}ms`);
     await shot("debug-disk.png");
   }
   return ok;
 };
-// El refresh reactivo post-write llega ASÍNCRONO (server debounce 600ms +
-// SSE): si un gesto arranca antes de que el re-render termine, las coords
-// medidas quedan viejas y el mouse pinta OTRA fila. Esperamos a que el
-// panel no vuelva a cambiar (generatedAt + archivos + scroll quietos).
+// El refresh reactivo post-write llega ASÍNCRONO (server debounce + SSE):
+// si un gesto arranca antes de que el re-render termine, las coords medidas
+// quedan viejas y el mouse pinta OTRA fila. Quiescence is FRAME-driven
+// (0.11.1): the page resolves once renderTick/files/scroll stop changing
+// across two frames — no fixed sleep, and it returns as soon as it settles.
 const panelStable = async () => {
-  let a, b, guard = 0;
-  do {
-    a = await evalJs(`JSON.stringify({g: __DA.diffData?.generatedAt, n: __DA.rendered.size, y: document.getElementById("root").scrollTop})`);
-    await sleep(450);
-    b = await evalJs(`JSON.stringify({g: __DA.diffData?.generatedAt, n: __DA.rendered.size, y: document.getElementById("root").scrollTop})`);
-  } while (a !== b && ++guard < 20);
-  return JSON.parse(b);
+  await quiesce();
+  return JSON.parse(
+    await evalJs(`JSON.stringify({ g: __DA.diffData?.generatedAt, n: __DA.rendered.size, y: document.getElementById("root").scrollTop })`),
+  );
 };
 const expandFile = async (rel) => {
-  // hasta 3 intentos: el click puede caer en un botón del header o medirse
-  // contra un layout que todavía se acomoda (visto tras un revert + refresh)
+  // Hasta 3 intentos: el click puede caer en un botón del header o medirse
+  // contra un layout que todavía se acomoda. "Expandido" = the section is
+  // open AND hydrated (fd mounted, or an honest plain note) — the wait is on
+  // that condition, never a timer.
+  const hydrated = `(() => {
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(rel)});
+    return e && !e.section.classList.contains("collapsed") && (!!e.fd || !!e.noDiff);
+  })()`;
   for (let i = 0; i < 3; i++) {
     const h = await evalJs(`__E2E.head(${JSON.stringify(rel)})`);
     if (!h) throw new Error("sin header para " + rel);
-    if (!h.collapsed) return h;
+    if (!h.collapsed) {
+      await waitForExpr(hydrated, 15000);
+      return h;
+    }
     await click(h.x, h.y);
-    await sleep(350);
+    if (await waitForExpr(hydrated, 15000)) return await evalJs(`__E2E.head(${JSON.stringify(rel)})`);
   }
   const h2 = await evalJs(`__E2E.head(${JSON.stringify(rel)})`);
   if (h2.collapsed) throw new Error("no pude expandir " + rel);
@@ -510,7 +592,7 @@ const clickRevert = async () => {
 
 try {
 await mouse.move(500, 900);
-await sleep(120);
+await quiesce();
 console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih: innerHeight, dpr: devicePixelRatio, pm: window.__pm, scrollY: document.getElementById("root").scrollTop})`)));
   // ============ A. doble-click en la palabra cambiada "singular" ============
   await expandFile(NOTES);
@@ -743,7 +825,11 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   const kGesture = async (tag, fn) => {
     await evalJs("window.__evts.length = 0");
     await fn();
-    await sleep(800); // respaldo pointerup = 180ms + margen
+    // The paint lands through the pointerup fallback / selectionchange
+    // pipeline: wait for the FRAG COUNT to grow, then for the panel to settle
+    // (two quiet frames) so a mid-gesture native selection never counts.
+    await waitForExpr(`__E2E.frags(${JSON.stringify(TYPES_GO)}).length > ${kCount}`, 5000);
+    await quiesce();
     const now = (await evalJs(`__E2E.frags(${JSON.stringify(TYPES_GO)})`)).length;
     if (now <= kCount) {
       console.error(`    [${tag}] evts: ${(await evalJs("window.__evts")).join(" ")}`);
@@ -807,10 +893,12 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   loc = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "Marker words:")`);
   check(loc && !loc.error, "L1 localizo la línea Marker", loc?.error ?? "");
   await dblclick((loc.chars[2].left + loc.chars[2].right) / 2, loc.y); // "Marker"
-  await sleep(500);
+  await waitForExpr(`__E2E.frags(${JSON.stringify(PARSER_PY)}).length >= 1`, 4000);
+  await quiesce();
   const locAlpha = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "alpha (tokens)")`);
   await dblclick((locAlpha.chars[2].left + locAlpha.chars[2].right) / 2, locAlpha.y); // "alpha"
-  await sleep(500);
+  await waitForExpr(`__E2E.frags(${JSON.stringify(PARSER_PY)}).length >= 2`, 4000);
+  await quiesce();
   let pf = await pFrags();
   check(pf.length === 2 && pf.some((f) => f.text === "Marker") && pf.some((f) => f.text === "alpha"),
     `L1: dos palabras de la MISMA fila coexisten (${JSON.stringify(pf.map((f) => f.text))})`);
@@ -821,7 +909,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   const b2 = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, 'return " ".join', null, true)`);
   check(a2 && !a2.error && b2 && !b2.error, "L2 localizo render y join", a2?.error ?? b2?.error ?? "");
   await drag((a2.chars[6].left + a2.chars[6].right) / 2, a2.y, b2.chars[b2.chars.length - 1].right + 1.5, b2.y);
-  await sleep(700);
+  await waitForExpr(`__E2E.frags(${JSON.stringify(PARSER_PY)}).length >= 3`, 4000);
   pf = await pFrags();
   check(pf.length === 3 && pf.some((f) => f.first !== f.last),
     `L2: drag multilínea pinta UN frag de dos filas y NO despinta lo anterior (${JSON.stringify(pf.map((f) => f.text.slice(0, 8)))})`);
@@ -834,10 +922,10 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   await mouse.press((a4.chars[0].left + a4.chars[0].right) / 2, a4.y);
   for (let i = 1; i <= 8; i++) {
     await mouse.move((a4.chars[0].left + a4.chars[0].right) / 2 + ((b4.right - a4.chars[0].left) * i) / 8, a4.y + ((b4.y - a4.y) * i) / 8);
-    await sleep(210);
+    await pace(210); // INPUT TIMING: the slow (>1.5 s) drag IS what this case tests
   }
   await mouse.release(b4.right + 1.5, b4.y);
-  await sleep(700);
+  await waitForExpr(`__E2E.frags(${JSON.stringify(PARSER_PY)}).length >= 3`, 4000);
   pf = await pFrags();
   check(pf.length === 3 && pf.some((f) => f.first !== f.last),
     `L4: drag LENTO multilínea (1.7s) pinta igual (${JSON.stringify(pf.map((f) => ({ t: f.text.slice(0, 6), r: f.first + "-" + f.last })))})`);
@@ -846,7 +934,8 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   const gem = await evalJs(`__E2E.locate(${JSON.stringify(SERVER_TS)}, 'new Response("missing"')`);
   check(gem && !gem.error, "L3 localizo un Response en server.ts", gem?.error ?? "");
   await dblclick((gem.chars[7].left + gem.chars[7].right) / 2, gem.y); // "Response"
-  await sleep(500);
+  await waitForExpr(`__E2E.frags(${JSON.stringify(SERVER_TS)}).length >= 1`, 4000);
+  await quiesce();
   const sf = await evalJs(`__E2E.frags(${JSON.stringify(SERVER_TS)})`);
   check(sf.length === 1 && sf[0].text === "Response",
     `L3: la palabra gemela pinta UNA sola ocurrencia (${JSON.stringify(sf.map((f) => f.text))})`);
@@ -900,29 +989,33 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   // MARCAS EXACTAS de la pregunta (bug Damian 28/10: dos palabras de filas
   // lejanas subrayaban TODAS las intermedias): pinto "Marker" (fila 2) y
   // "render" (fila lejana), pregunto por los fragmentos, y se marcan SOLO
-  // esas dos filas — ninguna intermedia
+  // esas dos filas — ninguna intermedia. The block starts from a CLEAN
+  // selection state: earlier sections painted frags in this very file, and
+  // this check is about what THIS block paints (never timing-dependent).
   {
+    await evalJs(`__DA.fragSel.clear(); __DA.fragModes.clear(); __DA.boxSel.clear();`);
+    await evalJs(`__DA.refresh(true)`);
+    await panelStable();
     const mk1 = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "Marker words:")`);
     await dblclick((mk1.chars[2].left + mk1.chars[2].right) / 2, mk1.y); // "Marker"
-    await sleep(500);
+    await waitForExpr(`__E2E.frags(${JSON.stringify(PARSER_PY)}).length >= 1`, 4000);
+    // Settle BEFORE the second gesture: a mid-gesture native selection must
+    // never be mistaken for a painted frag (it used to duplicate the line).
+    await quiesce();
     const mk2 = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "def render")`);
     await dblclick((mk2.chars[5].left + mk2.chars[5].right) / 2, mk2.y); // "render"
     await waitPaint(PARSER_PY, 2);
-    const askBtn = await until(async () => {
-      const b = await evalJs(`document.querySelector(".sel-pop button")`);
-      if (!b) return null;
-      const r = await evalJs(`(() => { const r = document.querySelector(".sel-pop button").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
-      return r;
-    }, 3000);
+    await quiesce();
+    const askBtn = await waitForExpr(`(() => { const b = document.querySelector(".sel-pop button"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`, 4000);
     check(!!askBtn, "aparece el popup ＋ tras pintar");
     await click(askBtn.x, askBtn.y); // ＋ → composer de fragmentos
-    await sleep(300);
+    await waitForExpr(`!!document.querySelector(".composer")`, 4000);
     await cdp("Input.insertText", { text: "por que cambiaste esto?" });
-    await sleep(200);
+    await waitForExpr(`document.querySelector(".composer textarea")?.value === "por que cambiaste esto?"`, 3000);
     const send = await evalJs(`(() => { const b = document.querySelector(".composer .ask"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
     check(!!send, "abre el composer de la pregunta por fragmentos");
     await click(send.x, send.y); // Preguntar
-    await sleep(400);
+    await waitForExpr(`__DA.pendingAsks.length === 1`, 4000);
     const marks = await evalJs(`(() => {
       const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(PARSER_PY)});
       const sr = e.body.querySelector("diffs-container").shadowRoot;
@@ -933,9 +1026,10 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
         n: marked.length,
         texts: marked.map((r) => (r.textContent ?? "").slice(0, 22)),
         label: __DA.pendingAsks[0]?.label ?? null,
+        frags: (__DA.fragSel.get(${JSON.stringify(PARSER_PY)}) ?? []).map((f) => ({ side: f.side, line: f.line, a: f.offA, b: f.offB, t: f.text })),
       };
     })()`);
-    check(marks.n === 2, `se marcan SOLO las dos filas preguntadas (${marks.n}): ${JSON.stringify(marks.texts)}`);
+    check(marks.n === 2, `se marcan SOLO las dos filas preguntadas (${marks.n}): ${JSON.stringify(marks.texts)} frags=${JSON.stringify(marks.frags)}`);
     check(marks.texts.some((t) => t.includes("Marker words")) && marks.texts.some((t) => t.includes("def render")),
       "las marcadas son la de 'Marker' y la de 'def render' — ninguna intermedia");
     check(/^líneas \d+, \d+$/.test(marks.label ?? ""), `el ancla nombra las líneas exactas (${JSON.stringify(marks.label)})`);
@@ -958,7 +1052,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   await evalJs("document.activeElement?.blur?.()");
   await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
   await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-  await sleep(900);
+  await settle();
   check(readDisk(PARSER_PY).includes("alpha (tokens)") && (await evalJs(`__E2E.hasRowText(${JSON.stringify(PARSER_PY)}, "(tokens")`)),
     "media palabra de la ROJA no restaura: la pareja queda igual (noDiff)");
   const redLoc2 = await evalJs(`__E2E.locate(${JSON.stringify(PARSER_PY)}, "(words", "change-deletion")`);
@@ -1023,9 +1117,15 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     `texto EXACTO tras refresh + re-colorizar: roja=${JSON.stringify((rowsN.red ?? "").slice(0, 22))} verde=${JSON.stringify((rowsN.green ?? "").slice(0, 22))}`);
 
   // Nushell (0.9.19): .nu colorizado por el subset REAL — pierre mapea
-  // .nu → "nushell", la gramática nu va bundleada y hlColorize la aplica
+  // .nu → "nushell", la gramática nu va bundleada y hlColorize la aplica.
+  // Colors are DEFERRED (0.11.1): wait for the condition, not a timer.
   const NU = "tests/diffs/runner.nu";
   await expandFile(NU);
+  await waitForExpr(`(() => {
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(NU)});
+    const sr = e?.body?.querySelector("diffs-container")?.shadowRoot;
+    return !!sr && [...sr.querySelectorAll("[data-line][data-hl]")].length > 0;
+  })()`, 15000);
   const nuState = await evalJs(`(() => {
     const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(NU)});
     const rows = [...e.body.querySelector("diffs-container").shadowRoot.querySelectorAll("[data-line]")].filter((r) => !r.querySelector("[data-line]"));
@@ -1053,6 +1153,13 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   // filas VIVAS del editor. En edición NO se toca nada nuestro.
   const SHELL_SH = "tests/diffs/shell.sh";
   await expandFile(SHELL_SH);
+  // Let the DEFERRED first highlight land before the edit session starts, so
+  // "hlColorize never ran during editing" measures editing alone.
+  await waitForExpr(`(() => {
+    const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(SHELL_SH)});
+    const sr = e?.body?.querySelector("diffs-container")?.shadowRoot;
+    return !!sr && [...sr.querySelectorAll("[data-line][data-hl]")].length > 0;
+  })()`, 15000);
   const editBtnAt = async () => await evalJs(`(() => {
     const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(SHELL_SH)});
     const b = e?.section.querySelector("button.fedit");
@@ -1065,14 +1172,14 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(!!eb, "encuentro el botón ✏️ de shell.sh");
   await click(eb.x, eb.y);
   check(await until(async () => await evalJs(`(() => { const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(SHELL_SH)}); return !!e?.edit; })()`), 4000), "✏️ activa el modo edición");
-  await sleep(500);
+  await quiesce();
   let edLoc = await evalJs(`__E2E.locate(${JSON.stringify(SHELL_SH)}, "listing all")`);
   check(edLoc && !edLoc.error, "localizo la fila a editar con el editor activo", edLoc?.error ?? "");
   await click(edLoc.left - 2, edLoc.y); // caret en el borde izquierdo del needle
-  await sleep(200);
+  await quiesce();
   const hlBefore = await evalJs(`(() => { const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(SHELL_SH)}); return e?._hlRuns ?? 0; })()`);
   await cdp("Input.insertText", { text: "BRAVO" });
-  await sleep(1200); // autosave (900ms) + el rAF del observer structural
+  await waitDisk(SHELL_SH, (c) => c.includes("BRAVO"), "autosave escribe en disco");
   const edState = await evalJs(`(() => {
     const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(SHELL_SH)});
     const host = e.body.querySelector("diffs-container");
@@ -1098,7 +1205,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   // BORRADO también: backspace sobre lo tipado — misma proteccion
   await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
   await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace" });
-  await sleep(1800); // nuevo autosave
+  // (the disk watch below is the wait — no fixed delay)
   const saved = await waitDisk(SHELL_SH, (c) => c.includes("BRAV"), "autosave del editor escribe en disco");
   check(saved && readDisk(SHELL_SH).includes("BRAV"),
     "git/disco: lo tipado llegó (BRAV presente tras el backspace)");
@@ -1158,12 +1265,12 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   // de dónde viva el checkout (master o un worktree .worktrees/*, 0.9.21/0.9.23)
   const filterNeedle = await evalJs(`(__DA.diffData?.workspace ?? "").toLowerCase()`);
   await cdp("Input.insertText", { text: filterNeedle });
-  await sleep(250);
+  await waitForExpr(`document.querySelectorAll(".ws-picker .ws-row").length === 1`, 4000);
   const pkF = await evalJs(`[...document.querySelectorAll(".ws-picker .ws-row")].map((r) => r.textContent.slice(0, 26))`);
   check(pkF.length === 1 && pkF[0].includes("zcode-diff-ask"), `el filtro en vivo deja solo el match (${JSON.stringify(pkF)})`);
   // ⬆ sube un nivel y re-lista
   await evalJs(`(() => { const i = document.querySelector(".ws-picker input"); if (i) { i.value = ""; i.dispatchEvent(new Event("input")); } })()`);
-  await sleep(150);
+  await waitForExpr(`document.querySelectorAll(".ws-picker .ws-row").length > 1`, 4000);
   const upBtnP = await evalJs(`(() => { const b = document.querySelector(".ws-picker .up"); const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, disabled: b.disabled }; })()`);
   check(upBtnP && !upBtnP.disabled, "⬆ habilitado (hay un nivel arriba)");
   await click(upBtnP.x, upBtnP.y);
@@ -1192,12 +1299,12 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   if (!qLoc || qLoc.error) throw new Error("Q: parser.py no está localizable — no puedo probar el borrador");
   await dblclick((qLoc.chars[5].left + qLoc.chars[5].right) / 2, qLoc.y); // pintar "render"
   await waitPaint(PARSER_PY, 1);
-  const qAsk = await until(async () => (await evalJs(`(() => { const b = document.querySelector(".sel-pop button"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`)), 3000);
+  const qAsk = await waitForExpr(`(() => { const b = document.querySelector(".sel-pop button"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`, 4000);
   check(!!qAsk, "popup ＋ disponible para abrir el composer");
   await click(qAsk.x, qAsk.y); // ＋ → composer de fragmentos
-  await sleep(300);
+  await waitForExpr(`!!document.querySelector(".composer")`, 4000);
   await cdp("Input.insertText", { text: "pregunta escrita mientras cambia la carpeta" });
-  await sleep(150);
+  await waitForExpr(`document.querySelector(".composer textarea")?.value === "pregunta escrita mientras cambia la carpeta"`, 3000);
   // un cambio en disco dispara el refresh reactivo (fs.watch → SSE → renderAll)
   fs.appendFileSync(path.join(REPO, "tests/diffs/notes.md"), "\n<!-- borrador: cambio reactivo -->\n");
   await panelStable();
@@ -1260,22 +1367,21 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   const switchWorkspace = async (rawWant) => {
     const want = fs.realpathSync(rawWant);
     for (let attempt = 0; attempt < 3; attempt++) {
-      const opened = await until(async () => {
+      const opened = await (async () => {
         if (!(await evalJs(`!!document.querySelector(".ws-editor input")`))) {
           if (!(await evalJs(`!!document.querySelector(".ws-picker")`))) {
             await clickAt("button.ws").catch(() => {});
-            await until(async () => !!(await evalJs(`document.querySelector(".ws-picker")`)), 2500);
-            await sleep(150);
+            await waitForExpr(`!!document.querySelector(".ws-picker")`, 4000);
           }
           await clickAt(".ws-picker .manual").catch(() => {});
-          await until(async () => !!(await evalJs(`document.querySelector(".ws-editor input")`)), 2500);
+          await waitForExpr(`!!document.querySelector(".ws-editor input")`, 4000);
         }
         return !!(await evalJs(`document.querySelector(".ws-editor input")`));
-      }, 12000);
+      })();
       if (!opened) throw new Error("R: el editor de ruta nunca abrió");
       await evalJs(`(() => { const i = document.querySelector(".ws-editor input"); i.focus(); i.select(); })()`);
       await cdp("Input.insertText", { text: want });
-      await sleep(150);
+      await waitForExpr(`document.querySelector(".ws-editor input")?.value === ${JSON.stringify(want)}`, 3000);
       await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
       await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter" });
       // 12s per attempt: a switch under load (Chrome busy rendering the mega
@@ -1415,14 +1521,14 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
       throw new Error("T: no apareció el popup ＋");
     }
     await click(pop.x, pop.y);
-    await sleep(250);
+    await waitForExpr(`!!document.querySelector(".composer")`, 4000);
     const before = await askCount();
     await cdp("Input.insertText", { text: note });
-    await sleep(120);
+    await waitForExpr(`document.querySelector(".composer textarea")?.value === ${JSON.stringify(note)}`, 3000);
     const okBtn = await evalJs(`(() => { const b = document.querySelector(".composer .ask"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
     if (!okBtn) throw new Error("T: no hay botón Preguntar");
     await click(okBtn.x, okBtn.y);
-    return await until(async () => ((await askCount()) === before + 1 ? true : false), 3000);
+    return await waitForExpr(`__DA.pendingAsks.length === ${before + 1}`, 4000);
   };
 
   check(await askAbout("def render(tokens):", "T1: ¿esto qué hace?"), "T: la pregunta entra a la pila");
@@ -1436,15 +1542,19 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   check(await until(async () => (await markCount()) === 0, 3000), "T: y LIMPIA la marca pintada (antes quedaba para siempre)");
 
   check(await askAbout("def render(tokens):", "T2: se va a editar la línea"), "T: segunda pregunta en la pila");
-  // the agent edits THAT line on disk → refresh → auto-drop (rename the def so
-  // the cited text is genuinely gone, as a real edit would do)
+  // the agent edits THAT line on disk → the panel's OWN reactive refresh must
+  // drop the ask (this is the behavior under test). Wait for the drop, with a
+  // manual refresh as the documented fallback for a missed fs.watch event.
   const parserDisk = readDisk(PARSER_PY);
   fs.writeFileSync(path.join(REPO, PARSER_PY), parserDisk.replace("def render(tokens):", "def painted(tokens):"));
-  await sleep(300);
-  await evalJs("__DA.refresh(true)");
-  await panelStable();
-  check(await until(async () => (await askCount()) === 0, 6000), "T: la pregunta se BORRA SOLA cuando la línea citada fue editada");
-  check(await until(async () => (await markCount()) === 0, 3000), "T: y su marca se va con ella");
+  let dropped = await waitForExpr(`__DA.pendingAsks.length === 0`, 8000);
+  if (!dropped) {
+    await evalJs("__DA.refresh(true)");
+    dropped = await waitForExpr(`__DA.pendingAsks.length === 0`, 8000);
+  }
+  check(dropped, "T: la pregunta se BORRA SOLA cuando la línea citada fue editada");
+  check(await waitForExpr(`[...document.querySelectorAll("diffs-container")].reduce((n, h) => n + (h.shadowRoot?.querySelectorAll("[data-qa]").length ?? 0), 0) === 0`, 4000),
+    "T: y su marca se va con ella");
 
   execFileSync("git", ["-C", REPO, "checkout", "--", PARSER_PY]);
   execFileSync("node", [path.join(HERE, "apply-fixture-mods.mjs")], { stdio: "ignore" });
@@ -1474,30 +1584,46 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   execFileSync("git", ["init", "-q", "-b", "main", SECOND]);
   execFileSync("git", ["-C", SECOND, "config", "user.email", "t@t"]);
   execFileSync("git", ["-C", SECOND, "config", "user.name", "T"]);
-  fs.writeFileSync(path.join(SECOND, "x.txt"), "base\n");
-  execFileSync("git", ["-C", SECOND, "add", "-A"]);
-  execFileSync("git", ["-C", SECOND, "commit", "-qm", "base"]);
   const U_DIRTY = "tests/diffs/u-turn-dirty.txt";
   const sendTurnEvent = (ev) => fs.appendFileSync(TURN_INBOX, `${JSON.stringify(ev)}\n`);
-  sendTurnEvent({ type: "prompt", sid: "e2e-u", cwd: REPO, prompt: "U: hola turno de dos repos", at: new Date().toISOString() });
-  await sleep(500);
+  // Explicit, DETERMINISTIC window: the turn's stamps and the commits'
+  // author dates are all pinned inside [uAt, uAt+8000] — no wall-clock
+  // spacing, no race between "commit at now" and a stop clamped to now.
+  const uAt = Date.now() - 10_000;
+  const uEnv = (ms) => ({
+    ...process.env,
+    GIT_AUTHOR_DATE: new Date(ms).toISOString(),
+    GIT_COMMITTER_DATE: new Date(ms).toISOString(),
+  });
+  fs.writeFileSync(path.join(SECOND, "x.txt"), "base\n");
+  execFileSync("git", ["-C", SECOND, "add", "-A"]);
+  execFileSync("git", ["-C", SECOND, "commit", "-qm", "base"], { env: uEnv(uAt + 1000) });
+  sendTurnEvent({ type: "prompt", sid: "e2e-u", cwd: REPO, prompt: "U: hola turno de dos repos", at: new Date(uAt).toISOString() });
   fs.writeFileSync(path.join(REPO, U_DIRTY), "linea sucia del turno\n"); // dirty in the fixture repo
   fs.writeFileSync(path.join(SECOND, "x.txt"), "base\navance del turno\n");
   execFileSync("git", ["-C", SECOND, "add", "-A"]);
-  execFileSync("git", ["-C", SECOND, "commit", "-qm", "feat: avance del turno"]);
-  await sleep(500);
-  sendTurnEvent({ type: "stop", sid: "e2e-u", cwd: REPO, reply: "U: listo, toqué dos repos", at: new Date().toISOString() });
-  check(await until(async () => (await evalJs(`!!document.querySelector(".modebar button[data-mode='turns']")`)), 3000), "U: la pestaña Turnos existe");
+  execFileSync("git", ["-C", SECOND, "commit", "-qm", "feat: avance del turno"], { env: uEnv(uAt + 2000) });
+  // The capture model needs the WRITE TAP to have seen the second repo before
+  // the window closes. Wait for that STATE (read-only tool), never a timer:
+  // the stop event is sent only once the tap knows the root.
+  const secondReal = fs.realpathSync(SECOND);
+  const tapped = await until(async () => {
+    const r = await evalJs(`fetch("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool: "tap_state", args: {} }) }).then((r) => r.json())`);
+    return (r?.gitRoots ?? []).includes(secondReal);
+  }, 8000);
+  check(tapped, "U: el tap ya conoce el segundo repo antes de cerrar la ventana");
+  sendTurnEvent({ type: "stop", sid: "e2e-u", cwd: REPO, reply: "U: listo, toqué dos repos", at: new Date(uAt + 8000).toISOString() });
+  check(await waitForExpr(`!!document.querySelector(".modebar button[data-mode='turns']")`, 4000), "U: la pestaña Turnos existe");
   await evalJs(`document.querySelector('.modebar button[data-mode="turns"]')?.click()`);
-  await until(async () => !!(await evalJs(`document.querySelector(".header .back")`)), 5000);
+  await waitForExpr(`!!document.querySelector(".header .back")`, 6000);
   await evalJs(`document.querySelector(".header .back")?.click()`); // ← Turnos: la lista
-  const rowU = await until(async () => (await evalJs(`(() => {
+  const rowU = await waitForExpr(`(() => {
     const rows = [...document.querySelectorAll(".turn-row")];
     const row = rows.find((r) => (r.textContent ?? "").includes("dos repos"));
     if (!row) return null;
     const r = row.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2, text: row.textContent.slice(0, 120) };
-  })()`)), 8000);
+  })()`, 10000);
   check(!!rowU, "U: el turno aparece en la lista de Turnos con su prompt");
   if (!rowU) throw new Error("U: sin fila de turno — no puedo abrir el diff");
   check(/\d+ repos/.test(rowU?.text ?? ""), `U: la fila resume los repos del turno (${JSON.stringify((rowU?.text ?? "").slice(0, 80))})`);
@@ -1649,30 +1775,29 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   const mark = (tag) => `V5-${tag}-${Date.now().toString(36)}`;
   const contentTurn = async (tag, file, line) => {
     const sid = `e2e-v5-${tag}`;
-    const at = new Date().toISOString();
-    sendTurnEvent({ type: "prompt", sid, cwd: REPO, prompt: mark(tag), at });
-    await sleep(400);
+    const now = Date.now();
+    // Explicit window: prompt in the past, stop in the future, the write in
+    // between — no wall-clock spacing needed (the fold keys on the stamps).
+    sendTurnEvent({ type: "prompt", sid, cwd: REPO, prompt: mark(tag), at: new Date(now - 2000).toISOString() });
     fs.writeFileSync(path.join(REPO, file), line);
-    await sleep(400);
-    sendTurnEvent({ type: "stop", sid, cwd: REPO, reply: `ok ${tag}`, at: new Date(Date.now() + 1000).toISOString() });
-    await sleep(600);
+    sendTurnEvent({ type: "stop", sid, cwd: REPO, reply: `ok ${tag}`, at: new Date(now + 1000).toISOString() });
   };
   await contentTurn("a", "tests/diffs/notes.md", `v5 A ${Date.now()}\n`);
   await contentTurn("b", "tests/diffs/notes.md", `v5 B ${Date.now()}\n`);
   const pickByPrompt = async (needle) => {
-    const p = await evalJs(`(() => {
+    const p = await waitForExpr(`(() => {
       const row = [...document.querySelectorAll(".turn-row")].find((r) => (r.textContent ?? "").includes(${JSON.stringify(needle)}));
       if (!row) return null;
       const r = row.getBoundingClientRect();
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-    })()`);
+    })()`, 8000);
     if (!p) throw new Error("V5: sin fila para " + needle);
     await click(p.x, p.y);
-    return until(async () => (await evalJs(`(() => {
+    return waitForExpr(`(() => {
       const id = __DA.diffData?.turn?.id ?? null;
-      const files = document.querySelectorAll("#root .file").length;
-      return id && files >= 0 ? { id, files } : null;
-    })()`)), 8000);
+      const n = __DA.rendered.size;
+      return id && n > 0 ? { id, files: n } : null;
+    })()`, 10000);
   };
   const pickA = await pickByPrompt("V5-a");
   check(!!pickA && pickA.files > 0, `V: turno A (con contenido) abre con secciones (${JSON.stringify(pickA)})`);

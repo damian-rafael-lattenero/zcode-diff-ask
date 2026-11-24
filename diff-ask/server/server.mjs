@@ -782,6 +782,13 @@ export function tapSnapshot() {
   return { touched: [...tapTouched.entries()], gitRoots: [...tapGitRoots.keys()] };
 }
 
+// Read-only diagnostics of the tap (paths + roots, never content). The e2e
+// uses it to WAIT for the tap to see a write before closing a turn window —
+// a deterministic alternative to "sleep and hope the FSEvents landed".
+export function tapState() {
+  return { ok: true, touched: tapTouched.size, gitRoots: [...tapGitRoots.keys()] };
+}
+
 // ----------------------------------------------------------- inbox de turnos
 let inboxOffset = 0;
 let inboxInit = false;
@@ -2264,6 +2271,13 @@ const TOOLS = [
     annotations: { readOnlyHint: true },
   },
   {
+    name: "tap_state",
+    description:
+      "Read-only tap diagnostics: whether the file-write tap has seen paths and which git roots it knows (the e2e/turn capture tests use it to wait deterministically).",
+    inputSchema: { type: "object", properties: {} },
+    annotations: { readOnlyHint: true },
+  },
+  {
     name: "list_git_projects",
     description:
       "List local git repositories under a folder (recursive, bounded depth, skips node_modules/Library/hidden — except .worktrees agent-worktree containers) for the panel's 📁 repo picker. Default folder: parent of the active workspace.",
@@ -2454,6 +2468,13 @@ async function handleRequest(msg) {
           return {
             structuredContent: data,
             content: [{ type: "text", text: `Sesión: ${data.sessionId ?? "(global)"} · workspace: ${data.workspace}` }],
+          };
+        }
+        case "tap_state": {
+          data = tapState();
+          return {
+            structuredContent: data,
+            content: [{ type: "text", text: `tap: ${data.touched} path(s) · ${data.gitRoots.length} root(s)` }],
           };
         }
         default:

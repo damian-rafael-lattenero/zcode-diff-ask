@@ -40,7 +40,7 @@ fs.mkdirSync(SHOTS, { recursive: true });
 
 const NOTES = "tests/diffs/notes.md";
 const SERVER_TS = "tests/diffs/server.ts";
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const pace = (ms) => new Promise((r) => setTimeout(r, ms)); // INPUT TIMING ONLY (gesture cadence)
 let step = 0;
 const fails = [];
 
@@ -139,15 +139,28 @@ const chrome = spawn(CHROME, [
   `--user-data-dir=${profile}`, "--remote-debugging-port=0",
   "--window-size=1440,1900", "about:blank",
 ], { stdio: ["ignore", "ignore", "ignore"] });
-const waitPort = async () => {
-  for (let i = 0; i < 100; i++) {
-    try {
-      const f = fs.readFileSync(path.join(profile, "DevToolsActivePort"), "utf8");
-      return { port: Number(f.split("\n")[0]), path: f.split("\n")[1] };
-    } catch { await sleep(100); }
-  }
-  throw new Error("Chrome no abrió el puerto de debug");
-};
+const waitPort = () =>
+  new Promise((resolve, reject) => {
+    const file = path.join(profile, "DevToolsActivePort");
+    const read = () => {
+      try {
+        const f = fs.readFileSync(file, "utf8");
+        return { port: Number(f.split("\n")[0]), path: f.split("\n")[1] };
+      } catch {
+        return null;
+      }
+    };
+    const ready = read();
+    if (ready) return resolve(ready);
+    // Event wait (Chrome writes the file when the port is up) + hard deadline.
+    const watcher = fs.watch(profile, (_evt, name) => {
+      if (name !== "DevToolsActivePort") return;
+      const got = read();
+      if (got) { cleanup(); resolve(got); }
+    });
+    const timer = setTimeout(() => { cleanup(); reject(new Error("Chrome no abrió el puerto de debug")); }, 15_000);
+    const cleanup = () => { try { watcher.close(); } catch {} clearTimeout(timer); };
+  });
 const { port: cdpPort, path: cdpPath } = await waitPort();
 const version = await (await fetch(`http://127.0.0.1:${cdpPort}/json/version`)).json();
 const ws = new WebSocket(version.webSocketDebuggerUrl);
@@ -195,6 +208,34 @@ const evalJs = async (expr) => {
   if (r.exceptionDetails) throw new Error("page: " + (r.exceptionDetails.exception?.description ?? r.exceptionDetails.text));
   return r.result?.value;
 };
+// Page-side condition wait (frame clock + hard deadline) — no polling timers.
+const waitForExpr = (expr, ms = 8000) =>
+  evalJs(`new Promise((resolve) => {
+    const end = performance.now() + ${ms};
+    const tick = () => {
+      let v = null;
+      try { v = (${expr}); } catch {}
+      if (v) return resolve(v);
+      if (performance.now() > end) return resolve(null);
+      requestAnimationFrame(tick);
+    };
+    tick();
+  })`);
+const quiesce = (ms = 10000) =>
+  evalJs(`new Promise((resolve) => {
+    const end = performance.now() + ${ms};
+    let last = null, same = 0;
+    const tick = () => {
+      const root = document.getElementById("root");
+      const sig = [__DA.renderTick, __DA.rendered.size, root?.scrollTop ?? 0].join("|");
+      same = sig === last ? same + 1 : 0;
+      last = sig;
+      if (same >= 2) return resolve(sig);
+      if (performance.now() > end) return resolve(null);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`);
 const shot = async (name) => {
   const r = await cdp("Page.captureScreenshot", { format: "png" });
   fs.writeFileSync(path.join(SHOTS, name), Buffer.from(r.data, "base64"));
@@ -202,7 +243,7 @@ const shot = async (name) => {
 
 // helpers de página: localizar filas/chars en el shadow del diff
 await cdp("Page.navigate", { url: `http://127.0.0.1:${PORT}/panel` });
-await sleep(700);
+await waitForExpr("typeof __DA === 'object' && !!document.getElementById('askbar')", 15000);
 await evalJs(`(() => {
   window.__E2E = {
     head(rel) {
@@ -307,14 +348,8 @@ await evalJs(`(() => {
     document.addEventListener(t, __log(t), true);
 })()`);
 await evalJs(`__DA.refresh(true)`);
-await (async () => {
-  const t0 = Date.now();
-  while (Date.now() - t0 < 8000) {
-    if (await evalJs(`__DA.rendered.size >= 9`)) return;
-    await sleep(150);
-  }
+if (!(await waitForExpr("__DA.rendered.size >= 9", 10000)))
   throw new Error("el panel no renderizó los 9 archivos del fixture");
-})();
 log(`panel: ${await evalJs("__DA.rendered.size")} archivos en el diff (Trabajo vs HEAD)`);
 
 // ------------------------------------------------ mouse real
@@ -327,23 +362,23 @@ const mouse = {
 };
 async function click(x, y) { await mouse.press(x, y); await mouse.release(x, y); }
 async function dblclick(x, y) {
-  await mouse.press(x, y); await mouse.release(x, y); await sleep(80);
+  await mouse.press(x, y); await mouse.release(x, y); await pace(80);
   await mouse.press(x, y, 2); await mouse.release(x, y, 2);
 }
 async function tripleclick(x, y) {
-  await mouse.press(x, y); await mouse.release(x, y); await sleep(80);
-  await mouse.press(x, y, 2); await mouse.release(x, y, 2); await sleep(80);
+  await mouse.press(x, y); await mouse.release(x, y); await pace(80);
+  await mouse.press(x, y, 2); await mouse.release(x, y, 2); await pace(80);
   await mouse.press(x, y, 3); await mouse.release(x, y, 3);
 }
 async function drag(x0, y0, x1, y1, steps = 14) {
   await mouse.press(x0, y0);
-  for (let i = 1; i <= steps; i++) { await mouse.move(x0 + ((x1 - x0) * i) / steps, y0 + ((y1 - y0) * i) / steps); await sleep(14); }
+  for (let i = 1; i <= steps; i++) { await mouse.move(x0 + ((x1 - x0) * i) / steps, y0 + ((y1 - y0) * i) / steps); await pace(14); }
   await mouse.release(x1, y1);
 }
 const until = async (fn, ms = 5000, stepMs = 90) => {
   const t0 = Date.now();
   let v;
-  while (Date.now() - t0 < ms) { v = await fn(); if (v) return v; await sleep(stepMs); }
+  while (Date.now() - t0 < ms) { v = await fn(); if (v) return v; await pace(stepMs); }
   return v;
 };
 const waitPaint = async (rel, n) => {
@@ -372,18 +407,18 @@ const waitDisk = async (rel, pred, label) => {
 // medidas quedan viejas y el mouse pinta OTRA fila. Esperamos a que el
 // panel no vuelva a cambiar (generatedAt + archivos + scroll quietos).
 const panelStable = async () => {
-  let a, b, guard = 0;
-  do {
-    a = await evalJs(`JSON.stringify({g: __DA.diffData?.generatedAt, n: __DA.rendered.size, y: document.getElementById("root").scrollTop})`);
-    await sleep(450);
-    b = await evalJs(`JSON.stringify({g: __DA.diffData?.generatedAt, n: __DA.rendered.size, y: document.getElementById("root").scrollTop})`);
-  } while (a !== b && ++guard < 20);
-  return JSON.parse(b);
+  await quiesce();
+  return JSON.parse(
+    await evalJs(`JSON.stringify({ g: __DA.diffData?.generatedAt, n: __DA.rendered.size, y: document.getElementById("root").scrollTop })`),
+  );
 };
 const expandFile = async (rel) => {
   const h = await evalJs(`__E2E.head(${JSON.stringify(rel)})`);
   if (!h) throw new Error("sin header para " + rel);
-  if (h.collapsed) { await click(h.x, h.y); await sleep(350); }
+  if (h.collapsed) {
+    await click(h.x, h.y);
+    await waitForExpr(`(() => { const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(rel)}); return e && !e.section.classList.contains("collapsed") && (!!e.fd || !!e.noDiff); })()`, 15000);
+  }
   const h2 = await evalJs(`__E2E.head(${JSON.stringify(rel)})`);
   if (h2.collapsed) throw new Error("no pude expandir " + rel);
 };
@@ -414,15 +449,21 @@ try {
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   })()`);
   console.log("D1 editBtn:", JSON.stringify(editBtn));
-  if (editBtn) { await click(editBtn.x, editBtn.y); await sleep(1500); }
+  if (editBtn) {
+    await click(editBtn.x, editBtn.y);
+    await waitForExpr(`(() => { const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify("tests/diffs/server.ts")}); return !!e?.edit; })()`, 6000);
+  }
   console.log("D2 en EDIT:", JSON.stringify(await countRows(SERVER_TS)));
   await shot("diag-1-edit.png");
   await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
   await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-  await sleep(800);
+  await waitForExpr(`(() => { const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify("tests/diffs/server.ts")}); return !e?.edit; })()`, 6000);
+  await quiesce();
   console.log("D3 tras Esc:", JSON.stringify(await countRows(SERVER_TS)));
   for (let i = 0; i < 3; i++) {
-    await evalJs("__DA.refresh(true)"); await sleep(900);
+    await evalJs("__DA.refresh(true)");
+    await waitForExpr("!__DA.refreshBusy", 8000);
+    await quiesce();
     const secs = await evalJs(`[...__DA.rendered.values()].filter((e) => e.path === ${JSON.stringify("tests/diffs/server.ts")}).length`);
     console.log("D4 refresh " + (i + 1) + " -> secciones de server.ts:", secs, "rendered total:", await evalJs("__DA.rendered.size"));
   }

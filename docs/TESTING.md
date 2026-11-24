@@ -90,15 +90,26 @@ siempre parte del fixture estándar (se resetea solo al arrancar).
 
 ## Política de flakes (léelo antes de renegar)
 
-- **El e2e es sensible a la carga del sistema**: input por CDP + sleeps
-  fijos + refresh reactivo. Con load alto (>3) pueden fallar 2–6 checks en
-  secciones DISTINTAS entre corridas — **reintentar** antes de investigar. Si
-  falla LO MISMO dos veces seguidas, ahí sí hay bug (así encontramos todos).
+- **Cero `sleep` como sincronización (0.11.1)**: el rig espera por CONDICIÓN
+  (una promesa en la página que resuelve en el frame en que el estado llega,
+  `waitForExpr`), por EVENTO (`fs.watch` para escrituras en disco y para el
+  puerto de Chrome) o por QUIESCENCIA (`quiesce`: dos frames sin cambios de
+  tick/archivos/scroll). Los únicos timers son deadlines duros (un server o
+  un Chrome caído deben fallar fuerte, no colgarse) y `pace(...)` dentro de
+  los gestos: el intervalo de un doble-click o el ritmo de un drag lento ES
+  parte del gesto que se emula. Regla: si un test necesita “esperar a que
+  pase algo”, la condición existe y se espera; nunca se duerme a ciegas.
+- **El e2e es sensible a la carga del sistema**: input por CDP + refresh
+  reactivo. Con load alto (>3) pueden fallar 2–6 checks en secciones
+  DISTINTAS entre corridas — **reintentar** antes de investigar. Si falla LO
+  MISMO dos veces seguidas, ahí sí hay bug (así encontramos todos).
 - El test del watcher (`fs.watch` de macOS) es el único flake conocido de
   unit — mismo tratamiento.
 - **Nunca empeorar una aserción para que pase**: los checks de texto usan
   EXACTO (`textContent ===`), no subcadenas — un bug de duplicación de texto
-  pasó inadvertido semanas porque las aserciones eran por `includes`.
+  pasó inadvertido semanas porque las aserciones eran por `includes`. Y cada
+  bloque que mide gestos limpia el estado que dejaron los anteriores
+  (`fragSel.clear()` + refresh) en vez de confiar en el timing.
 - Gestos del rig: arrancar drags DENTRO de caracteres, no en bordes/tierra
   de nadie entre palabras (bajo load no seleccionan); el punto de un click
   debe medirse DESPUÉS de que el scroll se asiente.
