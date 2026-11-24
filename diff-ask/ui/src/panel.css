@@ -118,11 +118,31 @@ button.ghost { background: transparent; }
 .file.collapsed .chev { transform: rotate(-90deg); }
 .file.collapsed .file-body { display: none; }
 .file.collapsed .file-head { border-bottom: none; }
+/* Name primary, directory secondary to its right (0.13.0): the eye finds the
+   file first, the full path stays one hover away in the tooltip. */
 .file-head .path {
   flex: 1;
-  font-weight: 600;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
   font-family: ui-monospace, Menlo, monospace;
   font-size: 12px;
+}
+.file-head .fname {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-head .fdir {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -151,6 +171,14 @@ button.ghost { background: transparent; }
   width: 16px;
   height: 16px;
   display: block;
+}
+/* Contrast on dark themes (0.13.0): glyph-only marks inherit the text color
+   (black on light, white on dark); dark-painted marks get a brightness lift
+   so a navy/black logo never disappears over the dark card. */
+.lang-chip.has-icon.is-mono { color: var(--text); }
+html[data-theme="dark"] .lang-chip.has-icon.is-dark svg,
+html[data-theme="dark"] .lang-sum .ls.has-icon.is-dark svg {
+  filter: brightness(1.6) saturate(1.05);
 }
 /* Language badge (0.12.0): monogram + brand color. The text color is mixed
    with --text so even light brands (JS yellow) stay readable on both themes;

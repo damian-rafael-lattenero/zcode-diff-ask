@@ -58,6 +58,18 @@ test("styleForLang: official vendored marks for the owner's languages", () => {
   assert.equal(pb.mono, "PB");
 });
 
+test("styleForLang: dark-theme traits (mono glyphs inherit, dark paint lifts)", () => {
+  // devicon markdown paints NOTHING (its black paths would vanish on dark):
+  // the generator injects fill=currentColor and flags it mono.
+  const md = styleForLang("markdown", "md");
+  assert.equal(md.monoIcon, true);
+  assert.match(md.svg ?? "", /<svg[^>]*fill="currentColor"/);
+  // A dark-painted mark (YAML's dark red) is flagged for the brightness lift.
+  assert.equal(styleForLang("yaml", "yml").dark, true);
+  // A colorful mark is NOT touched.
+  assert.equal(styleForLang("typescript", "ts").dark, undefined);
+});
+
 test("styleForLang: unknown languages still get a readable badge (extension, else FILE)", () => {
   const bf = styleForLang("brainfuck", "bf");
   assert.deepEqual([bf.mono, bf.label], ["BF", ".bf"]);

@@ -207,6 +207,18 @@ duplicated gradient ids would leak between icons. The view header adds a
 recount (`langCounts`) using the same marks with file counts, full breakdown
 in the title. Sources and licenses: `src/icons/NOTICE.md`.
 
+**Name-first headers + contrast (0.13.0)**: the header reads
+`[chevron][status chip][language mark] NAME  directory…  +N −M` — the file
+name is bold and primary, the directory is muted at its right (both truncate
+independently; the tooltip keeps the full path, and a rename shows
+`old → new` as the name). On dark themes the generator's traits keep every
+mark visible: a mark that paints NOTHING (`mono`, e.g. devicon markdown) gets
+`fill="currentColor"` injected so it inherits the text color, and a mark whose
+BRIGHTEST paint is still dark (`dark`, e.g. YAML's dark red, Gradle's #02303a)
+gets `filter: brightness(1.6) saturate(1.05)`. The traits are computed once by
+`npm run icons` (paint colors only — never metadata like `color="#000"`),
+not at runtime.
+
 Cada pasada de decoración (`markChangedWords`) es:
 1. **Pre-gate** (corre SIEMPRE): parear dels↔adds del mismo cambio, reset de
    estado de builds viejos.

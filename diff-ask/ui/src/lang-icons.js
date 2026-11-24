@@ -11,7 +11,7 @@
 // is generated into lang-svgs.generated.js by `npm run icons`; the panel
 // inlines it, so the bundle stays a single self-contained HTML.
 
-import { LANG_SVGS } from "./lang-svgs.generated.js";
+import { LANG_SVGS, LANG_ICON_META } from "./lang-svgs.generated.js";
 
 /** Language id → vendored icon key. Languages without a mark fall back to
  *  the monogram; the id→key split keeps aliases (zsh/shellscript → bash). */
@@ -210,7 +210,7 @@ const NAME_LANGS = {
  * mark.
  * @param {string} langId
  * @param {string} ext
- * @returns {{ mono: string, color: string, label: string, lang: string, svg?: string }}
+ * @returns {{ mono: string, color: string, label: string, lang: string, svg?: string, dark?: boolean, monoIcon?: boolean }}
  */
 export function styleForLang(langId, ext = "") {
   const id = String(langId ?? "").toLowerCase();
@@ -220,12 +220,15 @@ export function styleForLang(langId, ext = "") {
   const label = LABELS[id] ?? (e ? `.${e}` : "File");
   const iconKey = ICON_BY_LANG[id];
   const svg = iconKey ? LANG_SVGS[iconKey] : undefined;
+  const iconMeta = iconKey ? LANG_ICON_META[iconKey] : undefined;
   return {
     mono: style?.mono ?? fallbackMono,
     color: style?.color ?? NEUTRAL,
     label,
     lang: id || (e ? `ext:${e}` : "file"),
     ...(svg ? { svg } : {}),
+    ...(iconMeta?.dark ? { dark: true } : {}),
+    ...(iconMeta?.mono ? { monoIcon: true } : {}),
   };
 }
 

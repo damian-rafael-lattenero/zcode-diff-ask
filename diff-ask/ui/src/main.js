@@ -3420,7 +3420,7 @@ function renderFileInner(f) {  const section = document.createElement("section")
   const badge = styleForLang(langId, ext);
   head.innerHTML = `<span class="chev">▾</span><span class="chip s-${status === "?" ? "A" : status}"></span>
     <span class="lang-chip"></span>
-    <span class="path"></span>
+    <span class="path"><span class="fname"></span><span class="fdir"></span></span>
     <span class="counts"></span>
     <span class="fh-spin" hidden title="Cargando el contenido del archivo…"></span>
     <button class="ghost fplus" title="Preguntar sobre este archivo">＋</button>`;
@@ -3428,13 +3428,25 @@ function renderFileInner(f) {  const section = document.createElement("section")
   if (badge.svg) {
     // Official vendored mark (static, trusted strings — see lang-icons.js).
     langChip.classList.add("has-icon");
+    if (badge.dark) langChip.classList.add("is-dark"); // lifted on dark themes
+    if (badge.monoIcon) langChip.classList.add("is-mono"); // inherits currentColor
     langChip.innerHTML = badge.svg;
   } else {
     langChip.textContent = badge.mono;
     langChip.style.setProperty("--lang", badge.color);
   }
   langChip.title = `${badge.label}${ext ? ` (.${ext})` : ""}`;
-  head.querySelector(".path").textContent = f.oldPath ? `${f.oldPath} → ${f.path}` : f.path;
+  // NAME primary, full directory to its right (0.13.0). The whole path stays
+  // in the tooltip; a rename shows "old → new" as the name.
+  const baseOf = (p) => String(p ?? "").split("/").pop() ?? "";
+  const dirOf = (p) => {
+    const s = String(p ?? "");
+    return s.slice(0, Math.max(0, s.length - baseOf(s).length)).replace(/\/+$/, "");
+  };
+  const pathEl = head.querySelector(".path");
+  pathEl.title = f.oldPath ? `${f.oldPath} → ${f.path}` : f.path;
+  pathEl.querySelector(".fname").textContent = f.oldPath ? `${baseOf(f.oldPath)} → ${baseOf(f.path)}` : baseOf(f.path);
+  pathEl.querySelector(".fdir").textContent = dirOf(f.path);
   const counts = head.querySelector(".counts");
   if (f.added !== undefined || f.deleted !== undefined)
     counts.textContent = `+${f.added ?? 0} −${f.deleted ?? 0}`;
@@ -3938,6 +3950,8 @@ function renderAll() {
       s.className = "ls";
       if (c.svg) {
         s.classList.add("has-icon");
+        if (c.dark) s.classList.add("is-dark");
+        if (c.monoIcon) s.classList.add("is-mono");
         s.innerHTML = c.svg;
       } else {
         s.style.setProperty("--lang", c.color);

@@ -454,15 +454,22 @@ if (true) {
   if (!bootOk) throw new Error("el panel no renderizó los 9 archivos del fixture");
   log(`panel: ${await evalJs("__DA.rendered.size")} archivos en el diff (working, del repo elegido)`);
 
-  // ---------- language badges (0.12.x): every header says WHAT KIND it is ---
+  // ---------- language badges (0.12.x–0.13): kind + name-first layout --------
   const langUi = await evalJs(`(() => {
     const chips = {};
     for (const [p, e] of __DA.rendered) {
       const c = e.section.querySelector(".lang-chip");
-      chips[p.split("/").pop()] = c ? { hasSvg: !!c.querySelector("svg"), title: c.title, text: (c.textContent ?? "").trim() } : null;
+      const pathEl = e.section.querySelector(".file-head .path");
+      chips[p.split("/").pop()] = c ? {
+        hasSvg: !!c.querySelector("svg"), title: c.title, text: (c.textContent ?? "").trim(),
+        cls: c.className,
+        fname: pathEl?.querySelector(".fname")?.textContent ?? null,
+        fdir: pathEl?.querySelector(".fdir")?.textContent ?? null,
+        pathTitle: pathEl?.title ?? null,
+      } : null;
     }
     const sum = document.querySelector(".header .lang-sum");
-    return { chips, sum: sum ? { text: sum.textContent, title: sum.title, svgs: sum.querySelectorAll("svg").length } : null };
+    return { chips, sum: sum ? { text: sum.textContent, title: sum.title, svgs: sum.querySelectorAll("svg").length, mono: sum.querySelectorAll(".is-mono").length, dark: sum.querySelectorAll(".is-dark").length } : null };
   })()`);
   // Fixture files all have an official mark; the monogram is only the fallback.
   const expectedIcons = [
@@ -478,10 +485,47 @@ if (true) {
     `ningún archivo queda anónimo: icono oficial o monograma (${JSON.stringify(Object.fromEntries(Object.entries(langUi.chips).map(([k, v]) => [k, v?.hasSvg ? "svg" : v?.text])))})`);
   check(/TypeScript/.test(langUi.chips["server.ts"]?.title ?? "") && /\.ts/.test(langUi.chips["server.ts"]?.title ?? ""),
     `el badge nombra lenguaje y extensión en el tooltip (${JSON.stringify(langUi.chips["server.ts"]?.title)})`);
+  // Contrast traits: markdown is a glyph with NO paint → inherits (mono);
+  // yaml paints dark → lifted on dark themes.
+  check(/\bis-mono\b/.test(langUi.chips["notes.md"]?.cls ?? ""),
+    `el icono sin color (markdown) hereda el color del texto (${JSON.stringify(langUi.chips["notes.md"]?.cls)})`);
+  check(/\bis-dark\b/.test(langUi.chips["data.yaml"]?.cls ?? ""),
+    `el icono oscuro (yaml) lleva el flag de contraste (${JSON.stringify(langUi.chips["data.yaml"]?.cls)})`);
+  check(!/\bis-dark\b/.test(langUi.chips["server.ts"]?.cls ?? ""),
+    `un icono colorido (TS) NO lleva filtro (${JSON.stringify(langUi.chips["server.ts"]?.cls)})`);
+  // Layout: NAME primary, full directory to its right; whole path in the title.
+  check(langUi.chips["server.ts"]?.fname === "server.ts",
+    `el nombre del archivo es el protagonista (${JSON.stringify(langUi.chips["server.ts"]?.fname)})`);
+  check(/tests\/diffs$/.test(langUi.chips["server.ts"]?.fdir ?? ""),
+    `la ruta (sin el nombre) va a la derecha (${JSON.stringify(langUi.chips["server.ts"]?.fdir)})`);
+  check((langUi.chips["server.ts"]?.pathTitle ?? "").endsWith("tests/diffs/server.ts"),
+    `el tooltip conserva la ruta completa (${JSON.stringify(langUi.chips["server.ts"]?.pathTitle)})`);
+  // Real contrast on DARK: force the theme attribute (CSS is the source of
+  // truth) and read what the browser computes for both trait kinds.
+  const darkUi = await evalJs(`(() => {
+    const prev = document.documentElement.dataset.theme;
+    document.documentElement.dataset.theme = "dark";
+    const by = (suffix) => [...__DA.rendered.values()].find((e) => e.path.endsWith(suffix));
+    const yamlSvg = by("data.yaml")?.section.querySelector(".lang-chip svg");
+    const mdChip = by("notes.md")?.section.querySelector(".lang-chip");
+    const out = {
+      darkFilter: yamlSvg ? getComputedStyle(yamlSvg).filter : null,
+      monoColor: mdChip ? getComputedStyle(mdChip).color : null,
+    };
+    document.documentElement.dataset.theme = prev ?? "light";
+    return out;
+  })()`);
+  const monoRgb = (darkUi.monoColor ?? "").match(/\d+/g)?.map(Number) ?? [0, 0, 0];
+  check(/brightness/.test(darkUi.darkFilter ?? ""),
+    `en dark, un icono oscuro se levanta con brightness (${JSON.stringify(darkUi.darkFilter)})`);
+  check(Math.min(...monoRgb.slice(0, 3)) > 170,
+    `en dark, el icono sin color hereda el texto claro (${JSON.stringify(darkUi.monoColor)})`);
   check(!!langUi.sum && /: \d/.test(langUi.sum.title ?? ""),
     `el header trae el recuento por tipo con su desglose (${JSON.stringify(langUi.sum)})`);
   check((langUi.sum?.svgs ?? 0) > 0,
     `el recuento usa los mismos iconos (${langUi.sum?.svgs} svg)`);
+  check((langUi.sum?.mono ?? 0) > 0,
+    `el recuento respeta los traits (mono=${langUi.sum?.mono}; dark se verifica por chip)`);
   check((langUi.sum?.title ?? "").split("\n").some((l) => /^TypeScript: \d+$/.test(l)),
     `el recuento desglosa TypeScript con su cantidad (${JSON.stringify(langUi.sum?.title)})`);
 }
@@ -1345,7 +1389,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     return {
       alive: !!card,
       text: ta?.value ?? null,
-      anchored: card?.closest("section.file")?.querySelector(".path")?.textContent?.slice(0, 30) ?? null,
+      anchored: card?.closest("section.file")?.querySelector(".fname")?.textContent?.slice(0, 30) ?? null,
       focused: document.activeElement === ta,
       caretAtEnd: ta ? ta.selectionStart === ta.value.length : null,
     };
@@ -1715,7 +1759,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     const idx = kids.findIndex((k) => k.classList?.contains("turn-repo-head"));
     const label = kids[idx]?.querySelector(".trh-label")?.textContent ?? null;
     const firstFile = kids.slice(idx + 1).find((k) => k.classList?.contains("file"));
-    return { firstIsHead: idx >= 0, label, firstFilePrefix: firstFile?.querySelector(".path")?.textContent?.slice(0, 40) ?? null };
+    return { firstIsHead: idx >= 0, label, firstFilePrefix: firstFile?.querySelector(".fdir")?.textContent?.slice(0, 40) ?? null };
   })()`);
   check(orderU.firstIsHead && (orderU.firstFilePrefix ?? "").startsWith(orderU.label), `U: el encabezado precede a SUS archivos (${JSON.stringify(orderU)})`);
   const foldersU = await evalJs(`[...document.querySelectorAll(".turn-folder-head")].map((h) => h.querySelector(".tfh-label")?.textContent)`);
