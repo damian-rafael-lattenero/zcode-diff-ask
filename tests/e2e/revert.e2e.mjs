@@ -453,6 +453,34 @@ if (true) {
   const bootOk = await waitForExpr("__DA.rendered.size >= 9", 10000);
   if (!bootOk) throw new Error("el panel no renderizó los 9 archivos del fixture");
   log(`panel: ${await evalJs("__DA.rendered.size")} archivos en el diff (working, del repo elegido)`);
+
+  // ---------- language badges (0.12.0): every header says WHAT KIND it is ----
+  const langUi = await evalJs(`(() => {
+    const chips = {};
+    for (const [p, e] of __DA.rendered) {
+      const c = e.section.querySelector(".lang-chip");
+      chips[p.split("/").pop()] = c ? { mono: c.textContent, title: c.title, color: getComputedStyle(c).color } : null;
+    }
+    const sum = document.querySelector(".header .lang-sum");
+    return { chips, sum: sum ? { text: sum.textContent, title: sum.title } : null };
+  })()`);
+  const expectedMono = {
+    "notes.md": "MD", "server.ts": "TS", "parser.py": "PY", "runner.nu": "NU",
+    "config.json": "{ }", "types.go": "GO", "styles.css": "CSS", "data.yaml": "YML", "shell.sh": "SH",
+  };
+  for (const [file, mono] of Object.entries(expectedMono)) {
+    if (!(file in langUi.chips)) continue; // fixture file not in this diff view
+    check(langUi.chips[file]?.mono === mono,
+      `tipo de archivo: ${file} muestra su símbolo ${mono} (${JSON.stringify(langUi.chips[file])})`);
+  }
+  check(Object.values(langUi.chips).every((c) => c && c.mono),
+    `TODOS los archivos tienen su badge (${JSON.stringify(Object.fromEntries(Object.entries(langUi.chips).map(([k, v]) => [k, v?.mono])))})`);
+  check(/TypeScript/.test(langUi.chips["server.ts"]?.title ?? "") && /\.ts/.test(langUi.chips["server.ts"]?.title ?? ""),
+    `el badge nombra lenguaje y extensión en el tooltip (${JSON.stringify(langUi.chips["server.ts"]?.title)})`);
+  check(!!langUi.sum && /: \d/.test(langUi.sum.title ?? ""),
+    `el header trae el recuento por tipo con su desglose (${JSON.stringify(langUi.sum)})`);
+  check((langUi.sum?.title ?? "").split("\n").some((l) => /^TypeScript: \d+$/.test(l)),
+    `el recuento desglosa TypeScript con su cantidad (${JSON.stringify(langUi.sum?.title)})`);
 }
 
 // ------------------------------------------------ mouse real
@@ -1598,19 +1626,21 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   fs.writeFileSync(path.join(SECOND, "x.txt"), "base\n");
   execFileSync("git", ["-C", SECOND, "add", "-A"]);
   execFileSync("git", ["-C", SECOND, "commit", "-qm", "base"], { env: uEnv(uAt + 1000) });
+  const tapStateNow = async () => await evalJs(`fetch("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool: "tap_state", args: {} }) }).then((r) => r.json())`);
   sendTurnEvent({ type: "prompt", sid: "e2e-u", cwd: REPO, prompt: "U: hola turno de dos repos", at: new Date(uAt).toISOString() });
+  // The tap only records while a turn window is OPEN: wait for the prompt to
+  // be folded BEFORE writing, else the writes are dropped (the old sleeps hid
+  // this by giving the inbox drain time). State waits, no timers.
+  const turnOpen = await until(async () => ((await tapStateNow())?.openTurns ?? 0) >= 1, 8000);
+  check(turnOpen, "U: el turno está abierto antes de escribir (el tap solo graba con ventana abierta)");
   fs.writeFileSync(path.join(REPO, U_DIRTY), "linea sucia del turno\n"); // dirty in the fixture repo
   fs.writeFileSync(path.join(SECOND, "x.txt"), "base\navance del turno\n");
   execFileSync("git", ["-C", SECOND, "add", "-A"]);
   execFileSync("git", ["-C", SECOND, "commit", "-qm", "feat: avance del turno"], { env: uEnv(uAt + 2000) });
   // The capture model needs the WRITE TAP to have seen the second repo before
-  // the window closes. Wait for that STATE (read-only tool), never a timer:
-  // the stop event is sent only once the tap knows the root.
+  // the window closes.
   const secondReal = fs.realpathSync(SECOND);
-  const tapped = await until(async () => {
-    const r = await evalJs(`fetch("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool: "tap_state", args: {} }) }).then((r) => r.json())`);
-    return (r?.gitRoots ?? []).includes(secondReal);
-  }, 8000);
+  const tapped = await until(async () => ((await tapStateNow())?.gitRoots ?? []).includes(secondReal), 8000);
   check(tapped, "U: el tap ya conoce el segundo repo antes de cerrar la ventana");
   sendTurnEvent({ type: "stop", sid: "e2e-u", cwd: REPO, reply: "U: listo, toqué dos repos", at: new Date(uAt + 8000).toISOString() });
   check(await waitForExpr(`!!document.querySelector(".modebar button[data-mode='turns']")`, 4000), "U: la pestaña Turnos existe");

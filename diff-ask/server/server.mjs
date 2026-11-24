@@ -786,7 +786,7 @@ export function tapSnapshot() {
 // uses it to WAIT for the tap to see a write before closing a turn window —
 // a deterministic alternative to "sleep and hope the FSEvents landed".
 export function tapState() {
-  return { ok: true, touched: tapTouched.size, gitRoots: [...tapGitRoots.keys()] };
+  return { ok: true, touched: tapTouched.size, gitRoots: [...tapGitRoots.keys()], openTurns: openTurns.size };
 }
 
 // ----------------------------------------------------------- inbox de turnos
