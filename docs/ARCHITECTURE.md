@@ -178,8 +178,7 @@ Hover prefetches (one turn read, at most two file reads). Highlighting is
 skipped above 200 KB per side or 1,200 lines: content and diff stay complete,
 only the colors are not painted.
 
-**Big files & highlighting (0.11.1)**: expanding a 3.5k-line file used to
-block the main thread ~800 ms INSIDE `FileDiff.render` — pierre's own
+**Big files & highlighting (0.11.1)**: expanding a 3.5k-line file used toblock the main thread ~800 ms INSIDE `FileDiff.render` — pierre's own
 tokenizer ran on the whole diff (profile: `findNextMatchSync` + the TS
 grammar's regexes). Fixes: (1) the FileDiff is constructed with
 `tokenizeMaxLength = HL_MAX_LINES` — the lib's `isDiffMassive` threshold
@@ -192,6 +191,18 @@ tokenization when no row still needs the theme, and no caching of a failed
 end (measured), the diff itself ~10 ms. While a file's content is being
 fetched, its header shows a spinner (`setEntryBusy`) and the body shows
 skeleton rows.
+
+**Language badges (0.12.0, `lang-icons.js`)**: a file header carries TWO
+chips — the status chip (green/yellow/red: what changed) and the language
+chip (brand color + monogram: what kind of file). The language id comes from
+the lib's own extension catalogue (`getFiletypeFromFileName`, hundreds of
+extensions) with a few name overrides (`.env`, `package.json`, `.gitignore`);
+`styleForLang` is pure: known ids answer their mark and color, an unknown id
+keeps its own extension (`.bf` → `BF`), no extension gets `FILE` — no header
+is ever anonymous. The view header adds a recount (`langCounts`): the same
+badges with file counts, full breakdown in the title. Monograms instead of
+logo paths: readable at 10px, theme-safe via `color-mix`, no external assets
+and no icon licensing.
 
 Cada pasada de decoración (`markChangedWords`) es:
 1. **Pre-gate** (corre SIEMPRE): parear dels↔adds del mismo cambio, reset de

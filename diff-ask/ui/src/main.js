@@ -28,6 +28,7 @@ import {
   changedWordRanges, mergedOffToNew, newRangeToMergedSegs, wordRanges,
   anchorStillValid,
 } from "./lib.js";
+import { styleForLang, extOf, nameLangOf, langCounts } from "./lang-icons.js";
 
 const DIFF_URI = "diff://workspace";
 const app = new App({ name: "diff-ask", version: "0.1.0" }, {});
@@ -3396,18 +3397,37 @@ function renderFile(f) {
   }
 }
 
-function renderFileInner(f) {
-  const section = document.createElement("section");
+// Language id used for the badge: our own special names (.env, .gitignore,
+// package.json…) first, then the lib's extension catalogue (hundreds of
+// extensions); "" when neither knows the file (generic FILE badge).
+function langIdOf(f) {
+  const p = f.oldPath ?? f.path;
+  const base = String(p ?? "").split("/").pop() ?? "";
+  return nameLangOf(base) || getFiletypeFromFileName(p) || "";
+}
+
+function renderFileInner(f) {  const section = document.createElement("section");
   section.className = "file" + (collapsedPaths.has(f.path) ? " collapsed" : "");
   document.getElementById("root").appendChild(section);
   const head = document.createElement("div");
   head.className = "file-head";
   const status = f.status ?? "M";
+  // Language badge (0.12.0): the status chip says WHAT changed (A/M/D color);
+  // this one says WHAT KIND of file it is (brand color + monogram), so a
+  // glance over the headers separates a .ts from a .md from a .nu.
+  const langId = langIdOf(f);
+  const ext = extOf(f.path);
+  const badge = styleForLang(langId, ext);
   head.innerHTML = `<span class="chev">▾</span><span class="chip s-${status === "?" ? "A" : status}"></span>
+    <span class="lang-chip"></span>
     <span class="path"></span>
     <span class="counts"></span>
     <span class="fh-spin" hidden title="Cargando el contenido del archivo…"></span>
     <button class="ghost fplus" title="Preguntar sobre este archivo">＋</button>`;
+  const langChip = head.querySelector(".lang-chip");
+  langChip.textContent = badge.mono;
+  langChip.style.setProperty("--lang", badge.color);
+  langChip.title = `${badge.label}${ext ? ` (.${ext})` : ""}`;
   head.querySelector(".path").textContent = f.oldPath ? `${f.oldPath} → ${f.path}` : f.path;
   const counts = head.querySelector(".counts");
   if (f.added !== undefined || f.deleted !== undefined)
@@ -3900,6 +3920,33 @@ function renderAll() {
     if (t.renamed) bits.push(`${t.renamed} renombrado${t.renamed === 1 ? "" : "s"}`);
   }
   header.querySelector(".meta").innerHTML = bits.join(` <span class="dot">·</span> `);
+  // Language recount (0.12.0): how many files of each type this view holds —
+  // the same badges as the file headers, with the full breakdown in the title.
+  const countsByLang = langCounts(filesNow.map((f) => ({ lang: langIdOf(f), ext: extOf(f.path) })));
+  if (countsByLang.length) {
+    const sum = document.createElement("span");
+    sum.className = "lang-sum";
+    sum.title = countsByLang.map((c) => `${c.label}: ${c.n}`).join("\n");
+    for (const c of countsByLang.slice(0, 6)) {
+      const s = document.createElement("span");
+      s.className = "ls";
+      s.style.setProperty("--lang", c.color);
+      const t = document.createElement("span");
+      t.textContent = c.mono;
+      const n = document.createElement("span");
+      n.className = "ls-n";
+      n.textContent = String(c.n);
+      s.append(t, n);
+      sum.appendChild(s);
+    }
+    if (countsByLang.length > 6) {
+      const more = document.createElement("span");
+      more.className = "ls ls-more";
+      more.textContent = `+${countsByLang.length - 6}`;
+      sum.appendChild(more);
+    }
+    header.querySelector(".meta").appendChild(sum);
+  }
   const backBtn = header.querySelector(".back");
   if (backBtn)
     backBtn.onclick = () => {
