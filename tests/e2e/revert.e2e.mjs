@@ -2011,6 +2011,24 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
     check((await evalJs(`__DA.fileContents.size`)) >= 1, "X: el contenido quedó cacheado por turno+archivo");
     check(/2 archivos/.test(viewX.heads.join(" | ")) && !/commit|sucio|ruido/.test(viewX.heads.join(" | ")),
       `X: el encabezado del repo cuenta archivos, no commits ni sucios (${JSON.stringify(viewX.heads)})`);
+    // FOCUS (0.14.0): the host's end-of-turn click names ONE file — that file
+    // opens, every other section collapses (and unmounts).
+    await expandFile(rel("one.ts"));
+    await postTool("get_turn_diff", { turn: pickX.id, focus: xTwo });
+    // The parked focus is consumed by the panel's next TURN read (the notify
+    // path or this explicit refresh — both hit the same one-shot).
+    await evalJs(`__DA.refresh(true)`);
+    const focusX = await waitForExpr(`(() => {
+      if (__DA.diffData?.focusPath !== ${JSON.stringify(rel("two.ts"))}) return null;
+      const one = __DA.rendered.get(${JSON.stringify(rel("one.ts"))});
+      const two = __DA.rendered.get(${JSON.stringify(rel("two.ts"))});
+      const open = [...__DA.rendered.values()].filter((e) => !e.section.classList.contains("collapsed")).map((e) => e.path);
+      return { oneCollapsed: one?.section.classList.contains("collapsed"), oneFd: Boolean(one?.fd), twoFd: Boolean(two?.fd), open };
+    })()`, 15000);
+    check(!!focusX && focusX.oneCollapsed === true && focusX.oneFd === false,
+      `X: el click del host COLAPSA el archivo que no tocaste (${JSON.stringify(focusX)})`);
+    check(!!focusX && focusX.twoFd === true && JSON.stringify(focusX.open) === JSON.stringify([rel("two.ts")]),
+      `X: solo el archivo cliqueado queda abierto (${JSON.stringify(focusX?.open)})`);
     await shot("22-app-turn.png");
     await evalJs(`document.querySelector(".header .back")?.click()`); // ← the list
     await until(async () => !!(await evalJs(`document.querySelector(".turn-row")`)), 6000);

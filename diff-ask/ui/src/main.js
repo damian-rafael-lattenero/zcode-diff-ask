@@ -4134,6 +4134,16 @@ function renderAll() {
   if (diffData.focusPath) {
     const e = rendered.get(diffData.focusPath);
     if (e) {
+      // FOCUS = ONLY this file open (0.14.0): the host clicked one file in
+      // the end-of-turn summary, so every OTHER section collapses (and its
+      // FileDiff is destroyed — memory stays bounded), then the target opens,
+      // scrolls into view and flashes.
+      for (const [p, other] of rendered) {
+        if (p === e.path) continue;
+        collapsedPaths.add(p);
+        other.section.classList.add("collapsed");
+        dehydrateFileDiff(other);
+      }
       collapsedPaths.delete(diffData.focusPath);
       e.section.classList.remove("collapsed");
       collapsedGroups.delete(e.fileData.repoLabel ?? "");
