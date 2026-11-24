@@ -42,9 +42,26 @@ test("styleForLang: brand monogram + color for the languages the owner named", (
   assert.deepEqual(styleForLang("shellscript", "sh").mono, "SH");
 });
 
+test("styleForLang: official vendored marks for the owner's languages", () => {
+  for (const [lang, ext] of [["kotlin", "kt"], ["java", "java"], ["nushell", "nu"], ["typescript", "ts"], ["haskell", "hs"], ["python", "py"]]) {
+    const b = styleForLang(lang, ext);
+    assert.match(b.svg ?? "", /<svg[\s>]/, `${lang} must carry an svg mark`);
+    assert.equal(b.mono.length > 0, true, `${lang} keeps its monogram fallback`);
+  }
+  // Gradient/clip ids are SCOPED per icon: inline SVGs share one document.
+  const kotlin = styleForLang("kotlin", "kt").svg;
+  assert.match(kotlin, /id="da-kotlin-/);
+  assert.doesNotMatch(kotlin, /\bid="(?!da-kotlin-)/);
+  // No mark for protobuf yet: honest monogram, no svg.
+  const pb = styleForLang("protobuf", "proto");
+  assert.equal(pb.svg, undefined);
+  assert.equal(pb.mono, "PB");
+});
+
 test("styleForLang: unknown languages still get a readable badge (extension, else FILE)", () => {
   const bf = styleForLang("brainfuck", "bf");
   assert.deepEqual([bf.mono, bf.label], ["BF", ".bf"]);
+  assert.equal(bf.svg, undefined);
   assert.match(bf.color, /^#[0-9a-f]{6}$/i);
   const none = styleForLang("", "");
   assert.equal(none.mono, "FILE");

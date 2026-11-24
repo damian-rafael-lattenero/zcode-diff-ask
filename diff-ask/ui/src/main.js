@@ -3425,8 +3425,14 @@ function renderFileInner(f) {  const section = document.createElement("section")
     <span class="fh-spin" hidden title="Cargando el contenido del archivo…"></span>
     <button class="ghost fplus" title="Preguntar sobre este archivo">＋</button>`;
   const langChip = head.querySelector(".lang-chip");
-  langChip.textContent = badge.mono;
-  langChip.style.setProperty("--lang", badge.color);
+  if (badge.svg) {
+    // Official vendored mark (static, trusted strings — see lang-icons.js).
+    langChip.classList.add("has-icon");
+    langChip.innerHTML = badge.svg;
+  } else {
+    langChip.textContent = badge.mono;
+    langChip.style.setProperty("--lang", badge.color);
+  }
   langChip.title = `${badge.label}${ext ? ` (.${ext})` : ""}`;
   head.querySelector(".path").textContent = f.oldPath ? `${f.oldPath} → ${f.path}` : f.path;
   const counts = head.querySelector(".counts");
@@ -3930,13 +3936,19 @@ function renderAll() {
     for (const c of countsByLang.slice(0, 6)) {
       const s = document.createElement("span");
       s.className = "ls";
-      s.style.setProperty("--lang", c.color);
-      const t = document.createElement("span");
-      t.textContent = c.mono;
+      if (c.svg) {
+        s.classList.add("has-icon");
+        s.innerHTML = c.svg;
+      } else {
+        s.style.setProperty("--lang", c.color);
+        const t = document.createElement("span");
+        t.textContent = c.mono;
+        s.appendChild(t);
+      }
       const n = document.createElement("span");
       n.className = "ls-n";
       n.textContent = String(c.n);
-      s.append(t, n);
+      s.appendChild(n);
       sum.appendChild(s);
     }
     if (countsByLang.length > 6) {

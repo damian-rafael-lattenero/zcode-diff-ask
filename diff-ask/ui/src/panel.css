@@ -137,6 +137,21 @@ button.ghost { background: transparent; }
   padding: 2px 9px;
   font-weight: 700;
 }
+/* Official mark (0.12.1): the vendored SVG carries its own colors, so the
+   icon stands alone (no chip background) at header size. */
+.lang-chip.has-icon {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: none;
+  overflow: hidden;
+}
+.lang-chip svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
 /* Language badge (0.12.0): monogram + brand color. The text color is mixed
    with --text so even light brands (JS yellow) stay readable on both themes;
    the fill is a tint of the same brand over the card. */
@@ -168,7 +183,7 @@ button.ghost { background: transparent; }
 }
 .lang-sum .ls {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 2px;
   padding: 1px 4px;
   border-radius: 4px;
@@ -178,6 +193,17 @@ button.ghost { background: transparent; }
   color: color-mix(in srgb, var(--lang, #6b7280) 68%, var(--text));
   background: color-mix(in srgb, var(--lang, #6b7280) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--lang, #6b7280) 34%, var(--border));
+}
+.lang-sum .ls.has-icon {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+}
+.lang-sum .ls svg {
+  width: 12px;
+  height: 12px;
+  display: block;
 }
 .lang-sum .ls-n {
   font-weight: 600;

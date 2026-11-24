@@ -1,11 +1,12 @@
 {
   "name": "zcode-diff-ask",
   "private": true,
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Diff Ask — ZCode plugin: live workspace diff panel with per-line \"+\" to ask the agent at the exact line. Repo: plugin source + local dev marketplace + asar patch experiment.",
   "type": "module",
   "scripts": {
     "build": "node diff-ask/ui/build.mjs",
+    "icons": "node scripts/gen-lang-svgs.mjs",
     "check": "node tools/check-server.mjs",
     "test": "node --test --test-concurrency=1 --test-force-exit --test-timeout=15000 tests/",
     "test:e2e": "node tests/e2e/revert.e2e.mjs"

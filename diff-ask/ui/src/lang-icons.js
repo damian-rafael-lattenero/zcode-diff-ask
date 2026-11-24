@@ -1,14 +1,84 @@
 // lang-icons.js — the PURE mapping "file → language badge" (0.12.0).
 //
-// Denotation: a file's badge is its language's short mark and brand color;
-// anything the map does not know still gets a readable badge with its own
-// extension — no file is ever anonymous.
+// Denotation: a file's badge is its language's official mark (vendored SVG)
+// and, for languages we have no mark for, a brand-colored monogram; anything
+// unknown keeps its own extension — no file is ever anonymous.
 //
 // The language ID comes from the lib's own extension catalogue
 // (getFiletypeFromFileName, hundreds of extensions) in the shell; this module
-// is pure: `styleForLang(langId, ext)` answers { mono, color, label }.
-// Monograms (TS, PY, HS…) beat tiny logo paths: readable at 11px, theme-safe,
-// zero external assets and no third-party icon licensing.
+// is pure: `styleForLang(langId, ext)` answers { mono, color, label, svg }.
+// Icons: a vendored subset (src/icons, devicon + simple-icons — see NOTICE)
+// is generated into lang-svgs.generated.js by `npm run icons`; the panel
+// inlines it, so the bundle stays a single self-contained HTML.
+
+import { LANG_SVGS } from "./lang-svgs.generated.js";
+
+/** Language id → vendored icon key. Languages without a mark fall back to
+ *  the monogram; the id→key split keeps aliases (zsh/shellscript → bash). */
+export const ICON_BY_LANG = {
+  typescript: "typescript",
+  tsx: "typescript",
+  javascript: "javascript",
+  jsx: "javascript",
+  json: "json",
+  jsonc: "json",
+  json5: "json",
+  yaml: "yaml",
+  toml: "toml",
+  markdown: "markdown",
+  mdx: "markdown",
+  python: "python",
+  rust: "rust",
+  go: "go",
+  java: "java",
+  kotlin: "kotlin",
+  haskell: "haskell",
+  nushell: "nushell",
+  bash: "bash",
+  zsh: "bash",
+  shellscript: "bash",
+  fish: "bash",
+  powershell: "powershell",
+  html: "html",
+  css: "css",
+  scss: "css",
+  sass: "css",
+  less: "css",
+  vue: "vue",
+  svelte: "svelte",
+  astro: "astro",
+  graphql: "graphql",
+  svg: "svg",
+  dockerfile: "dockerfile",
+  cmake: "cmake",
+  makefile: "makefile",
+  c: "c",
+  cpp: "cpp",
+  csharp: "csharp",
+  ruby: "ruby",
+  php: "php",
+  swift: "swift",
+  dart: "dart",
+  lua: "lua",
+  r: "r",
+  perl: "perl",
+  elixir: "elixir",
+  erlang: "erlang",
+  clojure: "clojure",
+  scala: "scala",
+  zig: "zig",
+  nim: "nim",
+  terraform: "terraform",
+  hcl: "terraform",
+  prisma: "prisma",
+  groovy: "gradle",
+  gradle: "gradle",
+  solidity: "solidity",
+  fsharp: "fsharp",
+  ocaml: "ocaml",
+  sqlite: "sqlite",
+  vim: "vim",
+};
 
 /** Brand color + monogram per language id (pierre/shiki ids and aliases). */
 const LANGS = {
@@ -135,12 +205,12 @@ const NAME_LANGS = {
 
 /**
  * Badge for one file: the language id (from the lib's extension catalogue)
- * decides the brand style; an id we do not style keeps its own monogram (the
- * extension, uppercased) so it is still distinguishable — and an empty
- * extension gets the generic FILE mark.
+ * picks the vendored icon when we have one; otherwise the brand monogram
+ * keeps it distinguishable — and an empty extension gets the generic FILE
+ * mark.
  * @param {string} langId
  * @param {string} ext
- * @returns {{ mono: string, color: string, label: string, lang: string }}
+ * @returns {{ mono: string, color: string, label: string, lang: string, svg?: string }}
  */
 export function styleForLang(langId, ext = "") {
   const id = String(langId ?? "").toLowerCase();
@@ -148,11 +218,14 @@ export function styleForLang(langId, ext = "") {
   const e = String(ext ?? "").toLowerCase();
   const fallbackMono = e ? e.toUpperCase().slice(0, 3) : GENERIC.mono;
   const label = LABELS[id] ?? (e ? `.${e}` : "File");
+  const iconKey = ICON_BY_LANG[id];
+  const svg = iconKey ? LANG_SVGS[iconKey] : undefined;
   return {
     mono: style?.mono ?? fallbackMono,
     color: style?.color ?? NEUTRAL,
     label,
     lang: id || (e ? `ext:${e}` : "file"),
+    ...(svg ? { svg } : {}),
   };
 }
 

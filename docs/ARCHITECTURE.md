@@ -192,17 +192,20 @@ end (measured), the diff itself ~10 ms. While a file's content is being
 fetched, its header shows a spinner (`setEntryBusy`) and the body shows
 skeleton rows.
 
-**Language badges (0.12.0, `lang-icons.js`)**: a file header carries TWO
-chips — the status chip (green/yellow/red: what changed) and the language
-chip (brand color + monogram: what kind of file). The language id comes from
-the lib's own extension catalogue (`getFiletypeFromFileName`, hundreds of
-extensions) with a few name overrides (`.env`, `package.json`, `.gitignore`);
-`styleForLang` is pure: known ids answer their mark and color, an unknown id
-keeps its own extension (`.bf` → `BF`), no extension gets `FILE` — no header
-is ever anonymous. The view header adds a recount (`langCounts`): the same
-badges with file counts, full breakdown in the title. Monograms instead of
-logo paths: readable at 10px, theme-safe via `color-mix`, no external assets
-and no icon licensing.
+**Language badges (0.12.x, `lang-icons.js` + `src/icons`)**: a file header
+carries TWO chips — the status chip (green/yellow/red: what changed) and the
+language badge (what kind of file). The language id comes from the lib's own
+extension catalogue (`getFiletypeFromFileName`, hundreds of extensions) with a
+few name overrides (`.env`, `package.json`, `.gitignore`). `styleForLang` is
+pure and answers the VENDORED official mark (a 50-icon subset of devicon +
+simple-icons, `src/icons/`, generated into `lang-svgs.generated.js` by
+`npm run icons`); languages without a mark keep their brand-colored monogram
+(PB), unknown ids keep their own extension (`.bf` → `BF`), no extension gets
+`FILE` — no header is ever anonymous. Generated ids inside each SVG are
+prefixed per icon (`da-kotlin-…`): inline SVGs share one document, so
+duplicated gradient ids would leak between icons. The view header adds a
+recount (`langCounts`) using the same marks with file counts, full breakdown
+in the title. Sources and licenses: `src/icons/NOTICE.md`.
 
 Cada pasada de decoración (`markChangedWords`) es:
 1. **Pre-gate** (corre SIEMPRE): parear dels↔adds del mismo cambio, reset de

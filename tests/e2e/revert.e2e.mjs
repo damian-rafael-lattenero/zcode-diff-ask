@@ -454,31 +454,34 @@ if (true) {
   if (!bootOk) throw new Error("el panel no renderizó los 9 archivos del fixture");
   log(`panel: ${await evalJs("__DA.rendered.size")} archivos en el diff (working, del repo elegido)`);
 
-  // ---------- language badges (0.12.0): every header says WHAT KIND it is ----
+  // ---------- language badges (0.12.x): every header says WHAT KIND it is ---
   const langUi = await evalJs(`(() => {
     const chips = {};
     for (const [p, e] of __DA.rendered) {
       const c = e.section.querySelector(".lang-chip");
-      chips[p.split("/").pop()] = c ? { mono: c.textContent, title: c.title, color: getComputedStyle(c).color } : null;
+      chips[p.split("/").pop()] = c ? { hasSvg: !!c.querySelector("svg"), title: c.title, text: (c.textContent ?? "").trim() } : null;
     }
     const sum = document.querySelector(".header .lang-sum");
-    return { chips, sum: sum ? { text: sum.textContent, title: sum.title } : null };
+    return { chips, sum: sum ? { text: sum.textContent, title: sum.title, svgs: sum.querySelectorAll("svg").length } : null };
   })()`);
-  const expectedMono = {
-    "notes.md": "MD", "server.ts": "TS", "parser.py": "PY", "runner.nu": "NU",
-    "config.json": "{ }", "types.go": "GO", "styles.css": "CSS", "data.yaml": "YML", "shell.sh": "SH",
-  };
-  for (const [file, mono] of Object.entries(expectedMono)) {
+  // Fixture files all have an official mark; the monogram is only the fallback.
+  const expectedIcons = [
+    "notes.md", "server.ts", "parser.py", "runner.nu", "config.json",
+    "types.go", "styles.css", "data.yaml", "shell.sh", "Makefile",
+  ];
+  for (const file of expectedIcons) {
     if (!(file in langUi.chips)) continue; // fixture file not in this diff view
-    check(langUi.chips[file]?.mono === mono,
-      `tipo de archivo: ${file} muestra su símbolo ${mono} (${JSON.stringify(langUi.chips[file])})`);
+    check(langUi.chips[file]?.hasSvg === true,
+      `tipo de archivo: ${file} muestra su ICONO oficial (${JSON.stringify(langUi.chips[file])})`);
   }
-  check(Object.values(langUi.chips).every((c) => c && c.mono),
-    `TODOS los archivos tienen su badge (${JSON.stringify(Object.fromEntries(Object.entries(langUi.chips).map(([k, v]) => [k, v?.mono])))})`);
+  check(Object.values(langUi.chips).every((c) => c && (c.hasSvg || c.text.length > 0)),
+    `ningún archivo queda anónimo: icono oficial o monograma (${JSON.stringify(Object.fromEntries(Object.entries(langUi.chips).map(([k, v]) => [k, v?.hasSvg ? "svg" : v?.text])))})`);
   check(/TypeScript/.test(langUi.chips["server.ts"]?.title ?? "") && /\.ts/.test(langUi.chips["server.ts"]?.title ?? ""),
     `el badge nombra lenguaje y extensión en el tooltip (${JSON.stringify(langUi.chips["server.ts"]?.title)})`);
   check(!!langUi.sum && /: \d/.test(langUi.sum.title ?? ""),
     `el header trae el recuento por tipo con su desglose (${JSON.stringify(langUi.sum)})`);
+  check((langUi.sum?.svgs ?? 0) > 0,
+    `el recuento usa los mismos iconos (${langUi.sum?.svgs} svg)`);
   check((langUi.sum?.title ?? "").split("\n").some((l) => /^TypeScript: \d+$/.test(l)),
     `el recuento desglosa TypeScript con su cantidad (${JSON.stringify(langUi.sum?.title)})`);
 }
