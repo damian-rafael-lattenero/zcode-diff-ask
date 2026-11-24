@@ -45,7 +45,7 @@ Documentación de profundidad:
   reales, cómo funciona el rig e2e con mouse real, y los pozos que fuimos
   aprendiendo.
 
-## Qué hay (state 0.10.0)
+## What's in it (state 0.11.0)
 
 | Feature | Dónde |
 |---|---|
@@ -53,6 +53,9 @@ Documentación de profundidad:
 | 2 tabs (0.10.0): **Turnos** (default — el último turno ejecutado, agrupado por repo Y carpeta, git vs "Fuera de git", lista de a 10 hacia el pasado) / **Trabajo por repositorio** (selector 📁 solo acá; default = repo con más cambios del último turno vía `suggest_workspace`; su botón **Commits** abre el historial del repo elegido) | server + panel |
 | Turnos v2: ventana prompt→stop por hooks (UserPromptSubmit/Stop), FSEvents sobre $HOME, commits de la ventana + sucios al final, agrupado por repo/worktree | `turns2/` + `turn-tap.nu` |
 | **Render lazy** (0.10.0): cada archivo monta su diff recién al expandirlo; colapsar lo destruye — la memoria queda acotada a lo expandido y un turno de 600 archivos no tilda el panel | `hydrateFileDiff`/`dehydrateFileDiff` (panel) |
+| **Lazy turn payload** (0.11.0): a turn arrives as headers + counts (`light`), each file's before/after rides its own read on expand/hover — 1.5 MB → ~10 KB per turn switch; per-file contents cached by turn+path+revision | `diff://turn?light=1` + `diff://file` (server), `loadFileContent` (panel) |
+| **Loading feedback** (0.11.0): in-flight top bar, skeletons (pending view, lists, file body), spinner on the clicked row/tab, hover prefetch, stale-while-revalidate on switch-back, highlight skipped >200 KB/side | `paintPendingView` + `#loadbar` (panel) |
+| **Incremental turn store** (0.11.0): parsed records cached per file (mtime+size) — a new turn re-reads one file, not 8.7k (~2 s → ~50 ms) | `readTurnFiles` (server) |
 | Refresh con short-circuit: payload idéntico → no se reconstruye el DOM | `payloadSig` (panel) |
 | Chips ↑ahead/↓behind vs upstream en el header de trabajo (la vista "Sin pushear" se eliminó en 0.10.0; la info queda) | server (payload working) + panel |
 | Preguntas ancladas ＋ (línea, rango de cajitas, archivo) | panel + skill |

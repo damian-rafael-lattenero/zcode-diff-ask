@@ -20,6 +20,15 @@ npm test          # 80/80 en ~7 s
 npm run test:e2e  # 100+ checks en ~2 min (requiere Google Chrome instalado)
 ```
 
+0.11.0 adds `tests/server-turns-light.test.mjs` (the light turn payload
+carries no before/after; `buildTurnFile` answers one file byte-identical to
+the full build; the turn store re-parses only the changed record) and the
+e2e's section X now proves the LAZY turn end to end: the panel's payload says
+`light: true` with `deferred` files and no content, expanding a file fetches
+exactly that file's before/after, and the content is cached. The general
+health block also asserts the progress bar and the skeleton animation are
+wired.
+
 ## Por qué esta forma
 
 - **La lógica pura no sabe que existe un browser.** Todo el álgebra del revert

@@ -107,6 +107,17 @@ potencia es `git` + `fs.watch`.
   (`::visualize` references parsed from the reply) — not ported here.
 - `log://commits`, `diff://commit/<hash>` — navegador de commits (páginas de
   10 + búsqueda por hash/título).
+- `diff://turn/<id>?light=1`, `diff://file/<id>?path=<key>` (0.11.0) — the
+  panel's turn view is LAZY. The light read carries the file list, statuses
+  and counts (KBs, even for a 1.5 MB turn) with `light: true` and a
+  `deferred` flag per file; each file's before/after rides its own read when
+  the user expands it (or hovers it: prefetch). The server keeps the parsed
+  entries of the last few turns (LRU 6, 30 s TTL) so a per-file read is a
+  find + ONE file's content, never a turn rebuild. The internal `_src`
+  (which carries the app item — the old payload shipped before/after TWICE)
+  never rides the wire. Store reads are incremental too: parsed records are
+  cached per file by (mtime, size), so a new turn re-reads ONE file instead
+  of the whole store (~2 s → ~50 ms on the live 8.7k-record store).
 
 **Reactividad**: `resources/subscribe` → `fs.watch` (worktree + `.git`,
 debounce 600 ms) → solo notifica si cambió la **firma de git** (status +
@@ -152,6 +163,20 @@ decora POR ENCIMA con capas absolutas posicionadas midiendo
 de pierre — la única excepción es `hlColorize` (§7) que reemplaza el contenido
 de una fila con tokens coloreados. Todo lo demás (cajas, franjas, dots de
 espacios) vive en overlays.
+
+**Loading (0.11.0)**: navigation paints a skeleton shell within a frame
+(`paintPendingView`: modebar + shimmer file sections) and the clicked
+row/tab spins; the top `#loadbar` runs while ANY bridge read/tool call is in
+flight. Turn views render headers from the light payload; a file body shows
+shimmer rows until its content lands, and a failed fetch leaves an honest
+note + Reintentar. Caches: view payloads per URI (switch-back renders the
+cached headers first — stale-while-revalidate, then the signature
+short-circuit skips the rebuild when nothing changed) and file contents per
+turn+path+REVISION (the app's write count rides the header, so a live turn
+that gets another write fetches fresh content instead of a stale diff).
+Hover prefetches (one turn read, at most two file reads). Highlighting is
+skipped above 200 KB per side: content and diff stay complete, only the
+colors are not painted.
 
 Cada pasada de decoración (`markChangedWords`) es:
 1. **Pre-gate** (corre SIEMPRE): parear dels↔adds del mismo cambio, reset de
