@@ -4,3 +4,4 @@ node_modules/
 .DS_Store
 tools/backup/
 tests/e2e/shots/
+.zcode/
