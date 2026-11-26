@@ -1,28 +1,28 @@
-// DIAGNÓSTICO MANUAL (no corre en npm test — no matchea *.test.*):
-// reproduce el reporte "en el edit y en el rollback aparece todo
-// duplicado" — abre el panel, entra al modo ✏️, sale con Esc, fuerza 3
-// refresh con contenido idéntico y cuenta secciones/filas/ocultas en cada
-// paso. Uso: node tests/e2e/diag-edit.mjs (screenshots en tests/e2e/shots/).
-// E2E del revert quirúrgico con MOUSE REAL: lanza Chromium de verdad
-// (CDP Input.dispatchMouseEvent = el mismo pipeline de input que el mouse
-// del usuario), carga el panel REAL (dist/panel.html) puenteado al server
-// MCP REAL (server.mjs por stdio) apuntado a ESTE repo, y verifica cada
-// revert leyendo el archivo en disco (git-verificable). Nada de stubs de
-// selección ni de escritura.
+// MANUAL DIAGNOSTIC (does not run under npm test — it does not match *.test.*):
+// reproduces the report "in edit and in rollback everything shows up
+// duplicated" — opens the panel, enters ✏️ mode, leaves with Esc, forces 3
+// refreshes with identical content and counts sections/rows/hidden ones at each
+// step. Usage: node tests/e2e/diag-edit.mjs (screenshots in tests/e2e/shots/).
+// E2E of the surgical revert with a REAL MOUSE: launches real Chromium
+// (CDP Input.dispatchMouseEvent = the same input pipeline as the user's
+// mouse), loads the REAL panel (dist/panel.html) bridged to the REAL MCP
+// server (server.mjs over stdio) pointed at THIS repo, and verifies each
+// revert by reading the file on disk (git-verifiable). No selection or
+// write stubs.
 //
-// Gestos ejercitados (los de Damian):
-//   - doble-click → palabra exacta
-//   - triple-click → línea entera
-//   - drag izquierda→derecha → rango de chars exacto
-//   - drag derecha→izquierda → mismo rango, normalizado
-//   - drag de UNA letra
-//   - drag vertical en el gutter → cajitas (revert de línea por números)
-//   - Enter = ↩ quirúrgico; palabra de una línea 100% nueva → SOLO la palabra (0.9.2)
-//   - modo brocha ↩ del header: N pintadas acumuladas → UN rollback general (sin popups flotantes)
-//   - UNA fila por línea modificada: roja pareada oculta, original al hover (0.9.4)
-//   - coexistencia: dos palabras en la MISMA fila, drag multilínea multipalabra,
-//     palabra gemela pinta UNA sola, y drag LENTO (>1.5s) sigue vivo (0.9.3)
-// Uso: node tests/e2e/revert.e2e.mjs   (requiere Google Chrome instalado)
+// Gestures exercised (Damian's):
+//   - double-click → exact word
+//   - triple-click → whole line
+//   - left→right drag → exact char range
+//   - right→left drag → same range, normalized
+//   - ONE-letter drag
+//   - vertical drag on the gutter → checkboxes (line revert by numbers)
+//   - Enter = surgical ↩; a word of a 100% new line → ONLY the word (0.9.2)
+//   - header brush mode ↩: N accumulated paints → ONE general rollback (no floating popups)
+//   - ONE row per modified line: paired red hidden, original on hover (0.9.4)
+//   - coexistence: two words on the SAME row, multi-line multi-word drag,
+//     a twin word paints only ONE, and a SLOW drag (>1.5s) stays alive (0.9.3)
+// Usage: node tests/e2e/revert.e2e.mjs   (requires Google Chrome installed)
 
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -158,7 +158,7 @@ const waitPort = () =>
       const got = read();
       if (got) { cleanup(); resolve(got); }
     });
-    const timer = setTimeout(() => { cleanup(); reject(new Error("Chrome no abrió el puerto de debug")); }, 15_000);
+    const timer = setTimeout(() => { cleanup(); reject(new Error("Chrome did not open the debug port")); }, 15_000);
     const cleanup = () => { try { watcher.close(); } catch {} clearTimeout(timer); };
   });
 const { port: cdpPort, path: cdpPath } = await waitPort();
@@ -198,9 +198,9 @@ SESSION = (await (async () => {
 })()).sessionId;
 await cdp("Page.enable");
 await cdp("Runtime.enable");
-// headless ignora --window-size a veces: fijar el viewport EXACTO para que
-// las coordenadas de Input.dispatchMouseEvent (px CSS del viewport) coincidan
-// con los getBoundingClientRect que medimos desde la página.
+// headless sometimes ignores --window-size: fix the EXACT viewport so
+// the Input.dispatchMouseEvent coordinates (CSS px of the viewport) match
+// with the getBoundingClientRect we measure from the page.
 await cdp("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1900, deviceScaleFactor: 1, mobile: false });
 
 const evalJs = async (expr) => {
@@ -241,7 +241,7 @@ const shot = async (name) => {
   fs.writeFileSync(path.join(SHOTS, name), Buffer.from(r.data, "base64"));
 };
 
-// helpers de página: localizar filas/chars en el shadow del diff
+// page helpers: locate rows/chars in the diff's shadow
 await cdp("Page.navigate", { url: `http://127.0.0.1:${PORT}/panel` });
 await waitForExpr("typeof __DA === 'object' && !!document.getElementById('askbar')", 15000);
 await evalJs(`(() => {
@@ -261,17 +261,17 @@ await evalJs(`(() => {
       const host = entry.body.querySelector("diffs-container");
       if (!host?.shadowRoot) return { error: "no shadow" };
       for (const row of host.shadowRoot.querySelectorAll("[data-line]")) {
-        if (row.querySelector("[data-line]")) continue; // wrapper, no fila real
+        if (row.querySelector("[data-line]")) continue; // wrapper, not a real row
         const t = row.dataset.lineType ?? "";
         if (type && t !== type) continue;
         const text = row.textContent ?? "";
         const idx = text.indexOf(needle);
         if (idx < 0) continue;
         if (!noScroll) row.scrollIntoView({ block: "center" });
-        // esperar que el scroll TERMINE antes de medir (si fuera smooth,
-        // medir a mitad de animación da coords que ya no valen al gestear).
-        // noScroll = la fila ya está a la vista (medición doble sin invalidar
-        // la primera con un scroll nuevo): medir directo.
+        // wait for the scroll to FINISH before measuring (if it were smooth,
+        // measuring mid-animation gives coords that are no longer valid when gesturing).
+        // noScroll = the row is already in view (double measurement without invalidating
+        // the first one with a new scroll): measure directly.
         if (!noScroll) await new Promise((res) => {
           const root = document.getElementById("root");
           let last = null, same = 0, n = 0;
@@ -296,8 +296,8 @@ await evalJs(`(() => {
           };
           const hit = walk(row);
           if (hit) return hit;
-          // target == fin EXACTO del texto de la fila: rango válido al final
-          // del último nodo de texto (needles que terminan con la fila)
+          // target == EXACT end of the row text: valid range at the end
+          // of the last text node (needles that end with the row)
           if (lastText && pos.n === target) return { node: lastText, offset: lastText.data.length };
           return null;
         };
@@ -310,8 +310,8 @@ await evalJs(`(() => {
           return r.getBoundingClientRect();
         };
         const full = box(idx, idx + needle.length);
-        // fila OCULTA (la roja pareada, 0.9.4) u otro row sin geometría:
-        // saltarla y seguir con la próxima que contenga el needle
+        // HIDDEN row (the paired red, 0.9.4) or another row without geometry:
+        // skip it and continue with the next one that contains the needle
         if (!full || full.width < 5) continue;
         const chars = [];
         for (let i = 0; i < needle.length; i++) {
@@ -324,7 +324,7 @@ await evalJs(`(() => {
           y: (full.top + full.bottom) / 2, chars,
           gutterX: gutter ? gutter.right + 2 : null };
       }
-      return { error: "sin fila con " + needle + " (" + type + ")" };
+      return { error: "no row with " + needle + " (" + type + ")" };
     },
     frags(rel) { return [...(__DA.fragSel.get(rel) ?? [])].map((f) => ({ text: f.text, offA: f.offA, offB: f.offB, first: f.firstRowIdx, last: f.lastRowIdx })); },
     allFrags() { const o = {}; for (const [p, v] of __DA.fragSel) o[p] = v.map((f) => ({ text: f.text, first: f.firstRowIdx, last: f.lastRowIdx })); return o; },
@@ -349,15 +349,15 @@ await evalJs(`(() => {
 })()`);
 await evalJs(`__DA.refresh(true)`);
 if (!(await waitForExpr("__DA.rendered.size >= 9", 10000)))
-  throw new Error("el panel no renderizó los 9 archivos del fixture");
-log(`panel: ${await evalJs("__DA.rendered.size")} archivos en el diff (Trabajo vs HEAD)`);
+  throw new Error("the panel did not render the fixture's 9 files");
+log(`panel: ${await evalJs("__DA.rendered.size")} files in the diff (Work vs HEAD)`);
 
 // ------------------------------------------------ mouse real
 const mouse = {
   press: (x, y, c = 1) => cdp("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: c }),
   release: (x, y, c = 1) => cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: c }),
-  // button:"left" en los moves es OBLIGATORIO: con "none" Chromium los toma
-  // como hover y nunca extiende la selección (el drag no selecciona nada).
+  // button:"left" on the moves is MANDATORY: with "none" Chromium treats them
+  // as hover and never extends the selection (the drag selects nothing).
   move: (x, y) => cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "left", buttons: 1 }),
 };
 async function click(x, y) { await mouse.press(x, y); await mouse.release(x, y); }
@@ -402,10 +402,10 @@ const waitDisk = async (rel, pred, label) => {
   }
   return ok;
 };
-// El refresh reactivo post-write llega ASÍNCRONO (server debounce 600ms +
-// SSE): si un gesto arranca antes de que el re-render termine, las coords
-// medidas quedan viejas y el mouse pinta OTRA fila. Esperamos a que el
-// panel no vuelva a cambiar (generatedAt + archivos + scroll quietos).
+// The reactive post-write refresh arrives ASYNCHRONOUSLY (server debounce 600ms +
+// SSE): if a gesture starts before the re-render finishes, the coords
+// measured go stale and the mouse paints ANOTHER row. We wait until the
+// panel stops changing (generatedAt + files + scroll quiet).
 const panelStable = async () => {
   await quiesce();
   return JSON.parse(
@@ -424,7 +424,7 @@ const expandFile = async (rel) => {
 };
 const clickRevert = async () => {
   const p = await until(async () => await evalJs("__E2E.popRev()"), 3000);
-  if (!p) throw new Error("no apareció el popup ↩");
+  if (!p) throw new Error("the ↩ popup did not appear");
   await click(p.x, p.y);
 };
 
@@ -439,7 +439,7 @@ const countRows = async (rel) => await evalJs(`(() => {
 })()`);
 try {
   await expandFile(SERVER_TS);
-  console.log("D0 filas:", JSON.stringify(await countRows(SERVER_TS)));
+  console.log("D0 rows:", JSON.stringify(await countRows(SERVER_TS)));
   const editBtn = await evalJs(`(() => {
     const e = [...__DA.rendered.values()].find((x) => x.path === ${JSON.stringify(SERVER_TS)});
     e.section.querySelector(".file-head").scrollIntoView({ block: "start" });
@@ -465,7 +465,7 @@ try {
     await waitForExpr("!__DA.refreshBusy", 8000);
     await quiesce();
     const secs = await evalJs(`[...__DA.rendered.values()].filter((e) => e.path === ${JSON.stringify("tests/diffs/server.ts")}).length`);
-    console.log("D4 refresh " + (i + 1) + " -> secciones de server.ts:", secs, "rendered total:", await evalJs("__DA.rendered.size"));
+    console.log("D4 refresh " + (i + 1) + " -> server.ts sections:", secs, "rendered total:", await evalJs("__DA.rendered.size"));
   }
   console.log("D4b:", JSON.stringify(await countRows(SERVER_TS)));
   await shot("diag-2-tras-refresh.png");

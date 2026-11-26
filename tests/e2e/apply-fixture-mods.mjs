@@ -1,8 +1,8 @@
-// Aplica las modificaciones del playground al fixture tests/diffs: resetea
-// cada archivo a su versión de HEAD y aplica edits determinísticos (adds,
-// dels y palabras cambiadas) para que el panel tenga un diff rico y los
-// tests e2e sepan exactamente qué esperar. Re-ejecutable: siempre parte de
-// HEAD, así el estado final no depende de corridas anteriores.
+// Applies the playground modifications to the tests/diffs fixture: resets
+// each file to its HEAD version and applies deterministic edits (adds,
+// dels and changed words) so the panel has a rich diff and the e2e
+// tests know exactly what to expect. Re-runnable: it always starts from
+// HEAD, so the final state does not depend on earlier runs.
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -11,25 +11,25 @@ import { fileURLToPath } from "node:url";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-// [find, replace] · ["+after", lines] inserta después de la línea que
-// contiene el anchor · ["-line"] borra la línea exacta.
+// [find, replace] · ["+after", lines] inserts after the line that
+// contains the anchor · ["-line"] deletes the exact line.
 const MODS = {
   "tests/diffs/notes.md": [
-    // m1 — palabra cambiada (doble-click + revert → vuelve "individual")
+    // m1 — changed word (double-click + revert → back to "individual")
     ["highlight individual words inside", "highlight singular words inside"],
-    // m2 — palabra AGREGADA "painted" (drag de 3 letras "pai" izq→der)
+    // m2 — ADDED word "painted" (3-letter drag "pai" left→right)
     ["visible as amber stripes until the user clears them.",
      "visible as amber painted stripes until the user clears them."],
-    // m3 — palabra AGREGADA "explicitly" (drag de 3 letras "cit" der→izq)
+    // m3 — ADDED word "explicitly" (3-letter drag "cit" right→left)
     ["The bravo section talks about revert.",
      "The bravo section explicitly talks about revert."],
-    // m4 — palabra AGREGADA "simple" (drag de UNA letra "m")
+    // m4 — ADDED word "simple" (ONE-letter drag "m")
     ["Delta adds bullet lists:", "Delta adds simple bullet lists:"],
-    // m5 — una palabra cambiada en fila de tabla (triple-click = línea entera)
+    // m5 — one changed word in a table row (triple-click = whole line)
     ["| alpha  | select   |", "| alpha  | chosen   |"],
-    // m6 — línea BORRADA (fila roja: pintar una palabra la restaura)
+    // m6 — DELETED line (red row: painting a word restores it)
     ["- second bullet with the word bravo inside"],
-    // m7 — líneas nuevas al final (lado adición del diff)
+    // m7 — new lines at the end (addition side of the diff)
     ["+End of notes.",
      ["## Section Six: foxtrot", "",
       "Foxtrot appends fresh closing lines for the addition side of the diff.", ""]],
@@ -74,9 +74,9 @@ const MODS = {
     ['@echo "nothing to clean"', '@echo "nothing to clean today"'],
   ],
   "tests/diffs/runner.nu": [
-    // nu1 — palabra cambiada en el echo (doble-click + revert)
+    // nu1 — changed word in the echo (double-click + revert)
     ['echo $"alpha total: ($total)"', 'echo $"alpha grand total: ($total)"'],
-    // nu2 — palabra AGREGADA en el where (drag de 3 letras)
+    // nu2 — ADDED word in the where (3-letter drag)
     ["$rows | where kind == one", "$rows | where kind != one"],
   ],
 };
@@ -86,27 +86,27 @@ for (const [rel, ops] of Object.entries(MODS)) {
   let content = execFileSync("git", ["-C", REPO, "show", `HEAD:${rel}`], { encoding: "utf8" });
   for (const op of ops) {
     if (op.length === 1) {
-      // ["línea exacta"] → borrar
+      // ["exact line"] → delete
       const line = op[0];
       if (!content.split("\n").includes(line))
-        throw new Error(`${rel}: no existe la línea a borrar: ${JSON.stringify(line)}`);
+        throw new Error(`${rel}: line to delete does not exist: ${JSON.stringify(line)}`);
       content = content.split("\n").filter((l) => l !== line).join("\n");
     } else if (op[0].startsWith("+")) {
-      // ["+anchor", [líneas]] → insertar después de la línea con anchor
+      // ["+anchor", [lines]] → insert after the line holding the anchor
       const anchor = op[0].slice(1);
       const i = content.split("\n").findIndex((l) => l.includes(anchor));
-      if (i < 0) throw new Error(`${rel}: no encuentro el anchor ${JSON.stringify(anchor)}`);
+      if (i < 0) throw new Error(`${rel}: cannot find the anchor ${JSON.stringify(anchor)}`);
       const lines = content.split("\n");
       lines.splice(i + 1, 0, ...op[1]);
       content = lines.join("\n");
     } else {
       // [find, replace]
       if (!content.includes(op[0]))
-        throw new Error(`${rel}: no encuentro ${JSON.stringify(op[0])}`);
+        throw new Error(`${rel}: cannot find ${JSON.stringify(op[0])}`);
       content = content.replace(op[0], op[1]);
     }
     n++;
   }
   fs.writeFileSync(path.join(REPO, rel), content);
 }
-console.log(`fixture mods: ${n} edits en ${Object.keys(MODS).length} archivos`);
+console.log(`fixture mods: ${n} edits in ${Object.keys(MODS).length} files`);

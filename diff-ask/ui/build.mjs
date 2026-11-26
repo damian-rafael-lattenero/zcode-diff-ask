@@ -71,7 +71,7 @@ function makeHtml(extraHead) {
     ${extraHead}
   </head>
   <body>
-    <div id="root">Cargando Diff Ask…</div>
+    <div id="root">Loading Diff Ask…</div>
     <script>${js}</script>
   </body>
 </html>`;

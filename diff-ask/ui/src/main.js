@@ -11,7 +11,7 @@
 // questions, editable in place) and the askbar (#askbar, always-visible box
 // for free questions — Enter adds to the pile). "+" anchors exist at line
 // level (gutter), file level (file header) and selection level (select text
-// inside a rendered diff). "Enviar todo" (⌘↵) sends ONE message with every
+// inside a rendered diff). "Send all" (⌘↵) sends ONE message with every
 // pending question.
 
 import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
@@ -35,29 +35,29 @@ const app = new App({ name: "diff-ask", version: "0.1.0" }, {});
 
 // Panel modes (0.10.0: TWO tabs — Damian's spec 22/11):
 //   turns     → TURNS: the LAST executed turn with ALL its files (grouped by
-//               repo and folder, git vs "Fuera de git" separated); the list
+//               repo and folder, git vs "Outside git" separated); the list
 //               pages 10 at a time into the past.
-//   working   → WORK BY REPOSITORY: the 📁 selector lives only here; the
+//   working   → WORK PER REPOSITORY: the 📁 selector lives only here; the
 //               default is the repo with the MOST changes of the last turn
-//               (suggest_workspace); no suggestion → "seleccionar
-//               repositorio...". The "Commits" button (internal sub-view, no
+//               (suggest_workspace); no suggestion → "select
+//               repository…". The "Commits" button (internal sub-view, no
 //               tab of its own) opens the chosen repo's history.
 const MODES = [
-  { id: "turns", label: "Turnos", title: "Turn by turn: the files each one wrote — the same ones ZCode's end-of-turn summary lists, grouped by repo and folder (the last one, live)" },
-  { id: "working", label: "Trabajo por repositorio", title: "Uncommitted changes of the repository chosen with 📁 (vs HEAD + untracked); its Commits button opens the history" },
+  { id: "turns", label: "Turns", title: "Turn by turn: the files each one wrote — the same ones ZCode's end-of-turn summary lists, grouped by repo and folder (the last one, live)" },
+  { id: "working", label: "Work per repository", title: "Uncommitted changes of the repository chosen with 📁 (vs HEAD + untracked); its Commits button opens the history" },
 ];
 let mode = "turns";
 let commitSel = null; // hash en vista de diff de commit (null = lista)
-let turnSel = "latest"; // id de turno en vista (null = lista; "latest" = vivo/último)
+let turnSel = "latest"; // turn id in view (null = list; "latest" = live/last)
 let turnsState = { list: [], skip: 0, hasMore: false, total: 0, sessionFilter: null };
 let commitsState = { query: "", skip: 0, list: [], hasMore: false };
 // In-flight flags for the two LIST views (0.11.0): while the first page is on
-// its way the list renders skeleton rows instead of a blank/"Sin …" state.
+// its way the list renders skeleton rows instead of a blank/"No …" state.
 let turnsLoading = false;
 let commitsLoading = false;
 let subscribedUri = null;
 // Repo label (the server's OUTSIDE_LABEL — keep in sync) for files touched
-// outside any git repo: the turns view renders this group as "Fuera de git".
+// outside any git repo: the turns view renders this group as "Outside git".
 const OUTSIDE_LABEL = "~";
 // Collapsed turn-repo group labels — survives reactive re-renders.
 const collapsedGroups = new Set();
@@ -81,27 +81,27 @@ function diffUriFor() {
   return DIFF_URI;
 }
 
-// Scope del mensaje: que el agente sepa QUÉ diff se le pregunta.
+// Message scope: so the agent knows WHICH diff is being asked about.
 function scopeLabel() {
   if (mode === "turns" && diffData?.turn) {
     const tn = diffData.turn;
     const repos = (tn.repos ?? []).map((r) => r.label).join(", ");
-    return `turno ${tn.at?.slice(11, 16) ?? ""}${tn.isLive ? " (en vivo)" : ""}${repos ? ` — repos: ${repos}` : ""}`.trim();
+    return `turn ${tn.at?.slice(11, 16) ?? ""}${tn.isLive ? " (live)" : ""}${repos ? ` — repos: ${repos}` : ""}`.trim();
   }
   if (mode === "commits" && diffData?.commit) return `commit ${diffData.commit.short} ${diffData.commit.subject ?? ""}`.trim();
   return "";
 }
 
-// ------------------------------------------------- carpeta del diff (📁)
-// El server diffea su workspace ACTIVO (arranca en el de la sesión y se
-// cambia con la tool set_workspace). El chip muestra cuál es y permite
-// cambiar a cualquier repo local — al cambiar se limpia TODO el estado
-// anclado (archivos colapsados, pila, commits) porque era de la carpeta vieja.
+// ------------------------------------------------- diff folder (📁)
+// The server diffs its ACTIVE workspace (starts at the session's and is
+// changed with the set_workspace tool). The chip shows which one it is and
+// lets you switch to any local repo — switching clears ALL anchored state
+// (collapsed files, pile, commits) because it belonged to the old folder.
 let currentWorkspace = null;
 // Has a repo actually been CHOSEN for the repo tab (by the last-turn
 // suggestion or by the user)? Until it is, the repo tab shows its picker
 // prompt instead of diffing whatever repo the session happens to live in
-// (spec 22/11: an all-outside last turn ⇒ "seleccionar repositorio...").
+// (spec 22/11: an all-outside last turn ⇒ "select repository…").
 let wsChosen = false;
 // One in-flight suggestion at a time (refresh storms must not stampede
 // suggest_workspace) — and ONE attempt per panel life: re-firing it on every
@@ -121,9 +121,9 @@ function openWorkspaceEditor() {
   const card = document.createElement("div");
   card.className = "ws-editor";
   card.innerHTML = `
-    <div class="ie-head"><span class="anchor">📁 Carpeta del diff</span><button class="ghost close" title="Cancelar">✕</button></div>
+    <div class="ie-head"><span class="anchor">📁 Carpeta del diff</span><button class="ghost close" title="Cancel">✕</button></div>
     <input type="text" spellcheck="false">
-    <div class="ie-actions"><span class="hint">Ruta local de un repo git · Enter aplica · Esc cancela</span><button class="primary ok">Cambiar</button></div>`;
+    <div class="ie-actions"><span class="hint">Local path of a git repo · Enter applies · Esc cancels</span><button class="primary ok">Change</button></div>`;
   const input = card.querySelector("input");
   input.value = currentWorkspace ?? "";
   const close = () => card.remove();
@@ -143,12 +143,12 @@ function openWorkspaceEditor() {
   input.select();
 }
 
-// Picker de repos del chip 📁 (spec Damian 28/10: "un pequeño árbol que yo
-// pueda ir para arriba y me filtre solo las carpetas con .git"). Arranca en
-// el PADRE del workspace actual, ⬆ sube un nivel, y en cada lado lista SOLO
-// repos git — recursivo acotado, lo resuelve el SERVER (list_git_projects:
-// el panel vive sandboxeado y no puede leer el disco). Filtro de texto en
-// vivo encima de la lista; "a mano" abre el editor de ruta de siempre.
+// Repo picker of the 📁 chip (spec Damian 28/10: "a small tree that I
+// can go up and that filters only the folders with .git" [translated]). Starts at
+// the PARENT of the current workspace, ⬆ goes up one level, and on every side lists ONLY
+// git repos — bounded recursion, resolved by the SERVER (list_git_projects:
+// the panel lives sandboxed and cannot read the disk). Live text filter on
+// top of the list; "by hand" opens the usual path editor.
 function wsParentOf(p) {
   if (!p) return null;
   const up = p.replace(/\/+$/, "").split("/").slice(0, -1).join("/");
@@ -163,12 +163,12 @@ function openWorkspacePicker() {
     <div class="ie-head">
       <button class="ghost up" title="Subir un nivel">⬆</button>
       <span class="crumb"></span>
-      <button class="ghost close" title="Cerrar">✕</button>
+      <button class="ghost close" title="Close">✕</button>
     </div>
     <input type="text" spellcheck="false" placeholder="filtrar por nombre…">
     <div class="ws-list"></div>
     <div class="ie-actions">
-      <span class="hint">solo carpetas git · click cambia el diff</span>
+      <span class="hint">git folders only · click changes the diff</span>
       <button class="ghost manual">escribir la ruta a mano…</button>
     </div>`;
   const list = card.querySelector(".ws-list");
@@ -195,7 +195,7 @@ function openWorkspacePicker() {
     if (!ordered.length) {
       const d = document.createElement("div");
       d.className = "ws-empty";
-      d.textContent = repos.length ? "nothing matches the filter" : "no hay repos git acá — probá ⬆";
+      d.textContent = repos.length ? "nothing matches the filter" : "no git repos here — try ⬆";
       list.appendChild(d);
       return;
     }
@@ -229,16 +229,16 @@ function openWorkspacePicker() {
     crumb.textContent = root;
     const parent = wsParentOf(root);
     upBtn.disabled = !parent;
-    upBtn.title = parent ? `Subir a ${parent}` : "You are already at the root";
+    upBtn.title = parent ? `Go up to ${parent}` : "You are already at the root";
     list.textContent = "";
     const d = document.createElement("div");
     d.className = "ws-empty";
-    d.textContent = "buscando repos…";
+    d.textContent = "searching repos…";
     list.appendChild(d);
     try {
       const res = await callTool("list_git_projects", { under: root });
       const sc = res?.structuredContent;
-      if (!sc?.ok) throw new Error(sc?.message ?? "no pude listar");
+      if (!sc?.ok) throw new Error(sc?.message ?? "could not list");
       repos = sc.repos ?? [];
     } catch (e) {
       repos = [];
@@ -278,7 +278,7 @@ async function applyWorkspace(p, { silent = false } = {}) {
     await endAllEdits();
     renderPile();
     // Feedback: switching repo always reads the new tree (git status/diff).
-    paintPendingView(`Cargando ${wsLabel()}…`);
+    paintPendingView(`Loading ${wsLabel()}…`);
     await refresh(true);
     if (!silent) chip(`📁 ${wsLabel()}`);
     return true;
@@ -291,14 +291,14 @@ async function applyWorkspace(p, { silent = false } = {}) {
 /** @type {any} */ let diffData = null;
 /** @type {Map<string, {section: HTMLElement, body: HTMLElement, fd: import("@pierre/diffs").FileDiff|null, patch: string}>} */
 const rendered = new Map();
-// Pila de preguntas pendientes — kind: "line" (ancla path:líneas), "file"
-// (ancla al archivo entero) o "free" (sin ancla, del askbar). Sobrevive los
-// refresh del diff vivo; "Enviar todo" (⌘↵) manda UN solo mensaje.
+// Pending question pile — kind: "line" (anchors path:lines), "file"
+// (anchors the whole file) or "free" (no anchor, from the askbar). Survives
+// live-diff refreshes; "Send all" (⌘↵) sends ONE single message.
 /** @type {{kind:"line"|"file"|"free", path?:string, start?:number, lines?:string, label?:string, quoteLines?:string[], question:string}[]} */
 const pendingAsks = [];
-// Archivos colapsados por path — persiste durante la sesión entre re-renders.
-// Todo archivo NUEVO (incluido el arranque) nace COLAPSADO: el estado inicial
-// del panel es todo cerrado; lo que vos abrís queda abierto entre refresh.
+// Files collapsed by path — persists during the session across re-renders.
+// Every NEW file (including at boot) is born COLLAPSED: the panel's initial
+// state is all closed; what you open stays open across refreshes.
 const collapsedPaths = new Set();
 const seenPaths = new Set();
 let theme = "light";
@@ -306,13 +306,13 @@ let theme = "light";
 // ------------------------------------------------------------- diff text
 
 
-// Colores de líneas con pregunta pendiente: la fila SE pinta (estilo inyectado
-// en el shadow DOM de pierre) según su naturaleza — verde muy oscuro/blanco
-// (adiciones), rojo muy oscuro/blanco (borrados), gris clarito/negro (contexto).
+// Colors of lines with a pending question: the row IS painted (style injected
+// into pierre's shadow DOM) by its nature — very dark green/white
+// (additions), very dark red/white (deletions), light gray/black (context).
 const QA_STYLE = [
-  // bg en la fila; color en la fila Y en todos sus spans (los tokens de
-  // pierre traen color propio del tema y si no se pisan quedan ilegibles).
-  // Vars CSS que heredan al shadow DOM → cambian solas con el tema.
+  // bg on the row; color on the row AND on all its spans (pierre's tokens
+  // carry their own theme color and stay unreadable if not overridden).
+  // CSS vars that inherit into the shadow DOM → they change with the theme.
   '[data-qa="add"]{background:var(--da-qa-add-bg,#0E4429) !important;box-shadow:inset 3px 0 0 var(--da-qa-add-bar,#3DD68C) !important;}',
   '[data-qa="add"],[data-qa="add"] *{color:var(--da-qa-add-fg,#FFFFFF) !important;}',
   '[data-qa="del"]{background:var(--da-qa-del-bg,#5A1E22) !important;box-shadow:inset 3px 0 0 var(--da-qa-del-bar,#F87171) !important;}',
@@ -321,9 +321,9 @@ const QA_STYLE = [
   '[data-qa="ctx"],[data-qa="ctx"] *{color:var(--da-qa-ctx-fg,#101014) !important;}',
 ].join("\n");
 
-// El NÚMERO es la cajita (0.2.16): click en el gutter suma/quita la línea;
-// seleccionada = celda rellena con el número visible en contraste (seguís
-// contando líneas). Números +20% (1.2em) para que se lean como contadores.
+// The NUMBER is the checkbox (0.2.16): click on the gutter adds/removes the
+// line; selected = cell filled with the number visible in contrast (you keep
+// counting lines). Numbers +20% (1.2em) so they read as counters.
 const SEL_STYLE = [
   "[data-gutter] > [data-line-index]{font-size:1.2em !important;}",
   "[data-gutter] > [data-line-index][data-da-sel]{background:var(--accent,#4268d8) !important;color:var(--accent-contrast,#ffffff) !important;font-weight:700 !important;border-radius:4px !important;}",
@@ -339,25 +339,25 @@ function ensureShadowSelStyle(entry) {
   sr.appendChild(st);
 }
 
-// ------------------------------------------- filtros de visibilidad + ⌘F
-// Toggles por tipo de línea: la celda del gutter lleva el MISMO
-// data-line-type que su fila, así que ocultar por selector esconde fila y
-// número juntos (columnas alineadas). Los separadores de hunk existen para
-// el contexto colapsado: con el contexto oculto se van también.
-// [data-da-find]: resaltado de la búsqueda ⌘F (hit = fila con coincidencia,
-// cur = coincidencia actual).
+// ------------------------------------------- visibility filters + ⌘F
+// Toggles per line type: the gutter cell carries the SAME
+// data-line-type as its row, so hiding by selector hides row and
+// number together (aligned columns). Hunk separators exist for
+// collapsed context: with context hidden they go too.
+// [data-da-find]: ⌘F search highlight (hit = row with a match,
+// cur = current match).
 const lineFilter = { add: true, del: true, ctx: true };
 const EXTRA_STYLE = [
   ':host(.da-hide-add) [data-line-type="change-addition"]{display:none !important;}',
   ':host(.da-hide-del) [data-line-type="change-deletion"]{display:none !important;}',
-  // contexto: DOS clases — pierre marca "context" el umbral renderizado y
-  // "context-expanded" el que el usuario expandió de un separador. Ocultar
-  // ambas = cero líneas sin cambio (si no, quedan las expandidas colgadas).
+  // context: TWO classes — pierre marks "context" the rendered threshold and
+  // "context-expanded" the one the user expanded from a separator. Hiding
+  // both = zero unchanged lines (otherwise expanded ones stay hanging).
   ':host(.da-hide-ctx) [data-line-type="context"]{display:none !important;}',
   ':host(.da-hide-ctx) [data-line-type="context-expanded"]{display:none !important;}',
   ':host(.da-hide-ctx) [data-separator]{display:none !important;}',
-  // selección de texto con contraste real en ambos temas (pierre trae la
-  // suya apagada y encima compite con los fondos verde/rojo de las filas)
+  // text selection with real contrast on both themes (pierre ships its own
+  // muted one and on top it competes with the green/red row backgrounds)
   '::selection{background:var(--accent,#4268d8) !important;color:var(--accent-contrast,#ffffff) !important;}',
   '[data-da-find="hit"]{background:var(--da-find-hit,#E9C46A4D) !important;}', 
   '[data-da-find="cur"]{background:var(--da-find-cur,#E9C46AAA) !important;box-shadow:inset 3px 0 0 var(--accent,#4268d8) !important;}',
@@ -376,9 +376,9 @@ function ensureShadowExtraStyle(entry) {
   sr.appendChild(st);
 }
 
-// Aplica los filtros corrientes a un archivo (o a todos) y refresca los
-// botones del header. Las clases viven en el HOST (light DOM nuestro): la
-// sombra las ve vía :host() y sobreviven sus re-renders internos.
+// Applies the current filters to a file (or all of them) and refreshes the
+// header buttons. The classes live in the HOST (our light DOM): the
+// shadow sees them via :host() and they survive its internal re-renders.
 function applyLineFilter(entry = null) {
   const targets = entry ? [entry] : [...rendered.values()];
   for (const e of targets) {
@@ -398,8 +398,8 @@ function applyLineFilter(entry = null) {
   }
 }
 
-// ¿El tipo de línea de esta fila está oculto por el filtro? (para que ⌘F no
-// "encuentre" coincidencias invisibles)
+// Is this row's line type hidden by the filter? (so ⌘F does not
+// "find" invisible matches)
 function rowHiddenByFilter(row) {
   const t = row.dataset.lineType;
   if (t === "change-addition") return !lineFilter.add;
@@ -408,17 +408,17 @@ function rowHiddenByFilter(row) {
   return false;
 }
 
-// ------------------------------------------------- edición en vivo (✏️)
-// El panel ES un editor: ✏️ engancha el Editor de pierre al diff de ese
-// archivo y cada tecla re-difiera EN VIVO (verde/rojo al instante — la
-// sesión de edición de la librería re-renderiza hunk por hunk). Guardado
-// estilo IntelliJ (save-all-always): autosave con debounce 900ms vía la
-// tool write_file del server, ⌘Z nativo del editor, y "↩ Descartar"
-// restaura el contenido del momento del ✏️. Conflicto = GANA EL AGENTE:
-// si el archivo cambió en disco, no se pisa — la versión del panel va a un
-// shelve y la edición se cierra. Mientras haya edición, el refresh
-// reactivo queda EN PAUSA (el editor no puede sobrevivir un re-render);
-// al terminar, se refresca solo.
+// ------------------------------------------------- live editing (✏️)
+// The panel IS an editor: ✏️ hooks pierre's Editor onto that file's diff
+// and every keystroke re-diffs LIVE (green/red instantly — the library's
+// edit session re-renders hunk by hunk). IntelliJ-style saving
+// (save-all-always): autosave with a 900ms debounce through the server's
+// write_file tool, the editor's native ⌘Z, and "↩ Discard"
+// restores the content from the moment of the ✏️. Conflict = AGENT WINS:
+// if the file changed on disk, it is not overwritten — the panel's version
+// goes to a shelve and the edit closes. While an edit is open, the reactive
+// refresh stays PAUSED (the editor cannot survive a re-render);
+// when it ends, it refreshes on its own.
 function editingCount() {
   let n = 0;
   for (const e of rendered.values()) if (e.edit) n++;
@@ -441,7 +441,7 @@ function ensureEditBanner() {
   const b = document.createElement("div");
   b.id = "editbanner";
   b.hidden = true;
-  b.innerHTML = `<span class="msg"></span><button class="ghost close" title="Cerrar">✕</button>`;
+  b.innerHTML = `<span class="msg"></span><button class="ghost close" title="Close">✕</button>`;
   b.querySelector(".close").onclick = () => (b.hidden = true);
   document.body.prepend(b);
 }
@@ -468,7 +468,7 @@ function updateEditUI() {
   ensurePausedChip();
   const paused = editingCount() === 0 && pendingRefresh;
   document.getElementById("pausedchip").hidden = editingCount() === 0;
-  // última edición cerrada → aplicar el refresh diferido
+  // last edit closed → apply the deferred refresh
   if (paused && pendingRefresh) {
     pendingRefresh = false;
     refresh();
@@ -483,7 +483,7 @@ function updateEditUI() {
       btn.className = "ghost danger discard-btn";
       header.querySelector(".filt")?.before(btn);
     }
-    btn.textContent = `↩ Descartar (${n})`;
+    btn.textContent = `↩ Discard (${n})`;
     btn.title = "Discard ALL my edits (goes back to the content from before each ✏️)";
     btn.onclick = discardAllEdits;
   } else if (btn) btn.remove();
@@ -500,7 +500,7 @@ async function startEditing(entry) {
   });
   const detach = editor.edit(entry.fd);
   entry.edit = { editor, detach, origin, lastSaved: origin, timer: null };
-  // modo edición = PURO editor: fuera selecciones y hover de ESTE archivo
+  // edit mode = PURE editor: no selections and no hover for THIS file
   setBoxSel(entry, new Set());
   hideHoverPlus();
   const chip = document.createElement("span");
@@ -534,14 +534,14 @@ async function saveEntry(entry) {
       return;
     }
     if (sc?.conflict) return handleConflict(entry, sc);
-    throw new Error(sc?.message ?? "write_file sin respuesta");
+    throw new Error(sc?.message ?? "write_file with no response");
   } catch (err) {
     showEditBanner(`⚠ No pude guardar ${entry.path}: ${err?.message ?? err}`);
   }
 }
 
-// GANA EL AGENTE: cierro la edición (descarto la sesión local) y aviso dónde
-// quedó mi versión (el server ya la shelfó con su .patch).
+// THE AGENT WINS: I close the editing session (discard the local session) and say where
+// my version ended up (the server already shelved it with its .patch).
 function handleConflict(entry, sc) {
   endEdit(entry, "discard");
   showEditBanner(sc.message ?? "The file changed on disk while you were editing (the agent wins).", true);
@@ -572,9 +572,9 @@ async function endAllEdits() {
   for (const e of [...rendered.values()]) endEdit(e, "complete");
 }
 
-// "↩ Descartar (N)": vuelve cada archivo al contenido del momento de su ✏️.
-// Si el agente lo cambió mientras tanto, gana el agente (drop, sin shelve —
-// mis ediciones ya no están en disco, no hay nada que descartar).
+// "↩ Discard (N)": returns every file to the content from the moment of its ✏️.
+// If the agent changed it in the meantime, the agent wins (drop, no shelve —
+// my edits are no longer on disk, there is nothing to discard).
 async function discardAllEdits() {
   for (const entry of [...rendered.values()]) {
     if (!entry.edit) continue;
@@ -588,7 +588,7 @@ async function discardAllEdits() {
       if (res?.structuredContent?.conflict)
         showEditBanner(`${entry.path}: ${res.structuredContent.message}`);
     } catch (err) {
-      showEditBanner(`⚠ descartar ${entry.path}: ${err?.message ?? err}`);
+      showEditBanner(`⚠ discard ${entry.path}: ${err?.message ?? err}`);
     }
     endEdit(entry, "discard");
   }
@@ -596,12 +596,12 @@ async function discardAllEdits() {
 }
 
 // ------------------------------------------------------- revert (↩)
-// "Dejálo como el original" estilo IDE (revert chunk / discard changes):
-// por SELECCIÓN (las cajitas — verde o rojo da igual: el hunk que cubre esas
-// líneas vuelve a su versión before) y por ARCHIVO completo. La escritura
-// pasa por write_file → misma política AGENTE GANA (conflicto = shelve/aviso,
-// nunca pisa). Revertir mientras el archivo está en edición ✏️ se bloquea
-// (el editor tiene su propio estado del documento).
+// "Leave it as the original", IDE style (revert chunk / discard changes):
+// by SELECTION (the checkboxes — green or red, same thing: the hunk covering
+// those lines goes back to its before version) and by WHOLE file. The write
+// goes through write_file → same AGENT WINS policy (conflict = shelve/notice,
+// never overwrites). Reverting while the file is in ✏️ edit mode is blocked
+// (the editor has its own document state).
 async function writeReverted(entry, content, label) {
   try {
     const res = await callTool("write_file", { path: entry.path, content, base: entry.fileData.after });
@@ -609,14 +609,14 @@ async function writeReverted(entry, content, label) {
     if (sc?.ok) {
       setBoxSel(entry, new Set());
       chip(label);
-      // recarga PROPIA del revert: no esperar al watcher reactivo (fs.watch
-      // puede comerse el evento en macOS y la vista quedaba con la base
-      // vieja → el próximo revert chocaba contra disco y se shelfaba)
+      // the revert's OWN reload: do not wait for the reactive watcher (fs.watch
+      // can swallow the event on macOS and the view kept the old
+      // base → the next revert collided with disk and got shelved)
       refresh();
       return;
     }
     if (sc?.conflict) return showEditBanner(sc.message ?? "The file changed on disk (the agent wins).", true);
-    throw new Error(sc?.message ?? "write_file sin respuesta");
+    throw new Error(sc?.message ?? "write_file with no response");
   } catch (e) {
     chip(`⚠ revert ${entry.path}: ${e?.message ?? e}`);
   }
@@ -634,7 +634,7 @@ function revertGuard(entry) {
   return true;
 }
 
-// Revertir el ARCHIVO entero a su versión original.
+// Revert the WHOLE file to its original version.
 async function revertWholeFile(entryIn) {
   if (refreshInFlight) await refreshInFlight.catch(() => {});
   const entry = rendered.get(entryIn.path) ?? entryIn;
@@ -642,17 +642,17 @@ async function revertWholeFile(entryIn) {
   await writeReverted(entry, entry.fileData.before, `↩ ${entry.path} vuelto al original`);
 }
 
-// Revertir EXACTAMENTE las líneas indicadas (cajitas o hover): las rojas
-// seleccionadas vuelven (selOld), las verdes seleccionadas se van (selNew),
-// el resto no se toca. La reconstrucción es revertLines (pura, testeada)
-// sobre el alineamiento hunkContent del diff interno.
+// Revert EXACTLY the given lines (checkboxes or hover): the selected red
+// ones come back (selOld), the selected green ones go away (selNew),
+// the rest is untouched. The rebuild is revertLines (pure, tested)
+// over the internal diff's hunkContent alignment.
 async function revertKeys(entryIn, keys) {
-  // La carrera del 0.6.1: el propio usuario editó (autosave en disco) pero
-  // el re-render puede seguir EN VUELO — con el alineamiento viejo, sus
-  // líneas nuevas eran "contexto" (no revertible) o el hash base no pegaba
-  // y saltaba el conflicto contra su propio edit. Esperamos el refresh y
-  // re-resolvemos el archivo del render NUEVO (las claves son números de
-  // línea del lado nuevo: siguen válidas).
+  // The 0.6.1 race: the user edited (autosave to disk) but
+  // the re-render may still be IN FLIGHT — with the old alignment, their
+  // new lines were "context" (not revertible) or the base hash did not match
+  // and the conflict fired against their own edit. We wait for the refresh and
+  // re-resolve the file from the NEW render (the keys are new-side line
+  // numbers: still valid).
   if (refreshInFlight) await refreshInFlight.catch(() => {});
   const entry = rendered.get(entryIn.path) ?? entryIn;
   if (!revertGuard(entry)) return;
@@ -676,8 +676,8 @@ async function revertKeys(entryIn, keys) {
     chip("⚠ I could not rebuild the revert (inconsistent alignment)");
     return;
   }
-  // chip HONESTO: si la reconstrucción es idéntica, esas líneas no tenían
-  // cambios que revertir (p.ej. contexto seleccionado solito).
+  // HONEST chip: if the rebuild is identical, those lines had no
+  // changes to revert (e.g. context selected on its own).
   if (newLines.join("\n") === entry.fileData.after) {
     chip("⚠ those lines have no changes to revert");
     return;
@@ -691,22 +691,22 @@ async function revertSelection(entry) {
 }
 
 
-// ------------------------------------------------- pintado de sintaxis
-// Lenguajes del subconjunto bundleado (vendor/shiki-subset) + aliases.
+// ------------------------------------------------- syntax highlighting
+// Languages of the bundled subset (vendor/shiki-subset) + aliases.
 const HL_LANGS = new Set([
   "json", "yaml", "python", "typescript", "javascript", "markdown",
   "html", "css", "bash", "shellscript", "kotlin", "haskell",
   "yml", "py", "ts", "js", "md", "sh", "shell", "zsh", "kt", "hs",
-  // nushell (0.9.19): la gramática registra los DOS ids y pierre mapea
-  // .nu → "nushell" — el panel pide por cualquiera de los dos
+  // nushell (0.9.19): the grammar registers BOTH ids and pierre maps
+  // .nu → "nushell" — the panel asks through either of the two
   "nu", "nushell",
 ]);
-// El motor (vendor/shiki-subset) tokeniza; el RENDERER de pierre no cablea
-// esos tokens en nuestro contexto embebido — así que pintamos las filas
-// nosotras: cada fila plain tiene UN <span> de contenido; lo reemplazamos
-// por spans coloreados por token. Idempotente por tema (data-hl); se re-
-// pinta en el rAF de anclajes (expansión de hunks incluida) y al cambiar
-// el tema. La cita/selección siguen leyendo textContent (intacto).
+// The engine (vendor/shiki-subset) tokenizes; pierre's RENDERER does not wire
+// those tokens into our embedded context — so we paint the rows
+// ourselves: every plain row has ONE content <span>; we replace it
+// with spans colored per token. Idempotent per theme (data-hl); it re-
+// paints in the anchors rAF (hunk expansion included) and when the
+// theme changes. The quote/selection still read textContent (untouched).
 const HL_THEME = () => (theme === "dark" ? "pierre-dark" : "pierre-light");
 // Above this size the highlighter (JS regex engine, whole file per side)
 // costs more than it gives: the file renders plain — content and diff are
@@ -726,11 +726,11 @@ function hlAllowed(entry) {
 }
 
 function hlColorize(entry, lang) {
-  // En EDICIÓN el editor de pierre manda SOLO: sus filas viven re-renderizándose
-  // por tecla (con espejos SPAN colgados del host) y fileData.after queda VIEJO
-  // mientras se edita — reescribirles el innerHTML con tokens del contenido
-  // anterior corrompía el render (lo tipado se veía negro/pisado, reporte
-  // Damian 28/10). También era la raíz del viejo "edit duplicado".
+  // IN EDIT MODE pierre's editor rules ALONE: its rows live re-rendering
+  // on every keystroke (with SPAN mirrors hanging off the host) and fileData.after goes STALE
+  // while editing — rewriting their innerHTML with tokens from the previous
+  // content corrupted the render (what you typed showed black/overwritten, report
+  // Damian 28/10). It was also the root of the old "duplicate edit".
   if (entry.edit) return;
   const api = globalThis.__DA_HL_READY;
   if (!api?.has(lang) || !hlAllowed(entry)) return;
@@ -760,17 +760,17 @@ function hlColorize(entry, lang) {
   }
   const { afterTok, beforeTok } = entry._hlCache;
   if (!afterTok && !beforeTok) return;
-  entry._hlRuns = (entry._hlRuns ?? 0) + 1; // telemetría del rig e2e (sección O)
+  entry._hlRuns = (entry._hlRuns ?? 0) + 1; // e2e rig telemetry (section O)
   for (const r of pending) {
     const isDel = r.dataset.lineType === "change-deletion";
     const toks = (isDel ? beforeTok : afterTok)?.[parseInt(r.dataset.line, 10) - 1];
     if (!toks) continue;
     if (!r.querySelector("span")) continue;
-    // Reemplazar el contenido de la FILA ENTERA, no del primer span: los
-    // tokens de pierre viven en VARIOS spans hermanos y escribir la línea
-    // completa en el primero dejaba los originales restantes = texto
-    // DUPLICADO ("kind: note: note", reporte de Damian en la app; el rig
-    // no lo veía porque las aserciones eran por subcadena).
+    // Replace the content of the WHOLE ROW, not of the first span: pierre's
+    // tokens live in SEVERAL sibling spans and writing the whole line
+    // into the first left the remaining originals = DUPLICATED
+    // text ("kind: note: note", Damian's report in the app; the rig
+    // did not see it because the assertions were substring-based).
     r.innerHTML = toks
       .map((tk) => (tk.color ? `<span style="color:${tk.color}">${esc(tk.content)}</span>` : esc(tk.content)))
       .join("");
@@ -804,12 +804,12 @@ window.addEventListener("da-hl-ready", () => {
   }
 });
 
-// ------------------------------------------------------------ búsqueda ⌘F// ------------------------------------------------------------ búsqueda ⌘F
-// El webview no tiene find nativo (y el shadow DOM lo rompería igual):
-// barra propia. Coincidencia = fila cuyo texto contiene el query
-// (case-insensitive); se resalta la FILA (hit) y la actual (cur, con barra
-// de acento), Enter/⇧Enter ciclan y hacen scrollIntoView. Si la fila está en
-// un archivo colapsado, lo expande al saltar.
+// ------------------------------------------------------------ ⌘F search
+// The webview has no native find (and the shadow DOM would break it anyway):
+// our own bar. Match = row whose text contains the query
+// (case-insensitive); the ROW is highlighted (hit) and the current one (cur, with the accent
+// bar), Enter/⇧Enter cycle and scrollIntoView. If the row is in
+// a collapsed file, it expands on jump.
 const find = { q: "", hits: [], cur: -1, timer: null };
 
 function ensureFindbar() {
@@ -822,7 +822,7 @@ function ensureFindbar() {
     <span id="findbar-count" class="count"></span>
     <button class="ghost" id="findbar-prev" title="Coincidencia anterior (⇧Enter)">↑</button>
     <button class="ghost" id="findbar-next" title="Coincidencia siguiente (Enter)">↓</button>
-    <button class="ghost" id="findbar-close" title="Cerrar (Esc)">✕</button>`;
+    <button class="ghost" id="findbar-close" title="Close (Esc)">✕</button>`;
   document.body.prepend(bar);
   const input = bar.querySelector("#findbar-input");
   input.addEventListener("input", () => {
@@ -917,8 +917,8 @@ function closeFindbar() {
   clearFindMarks();
 }
 
-// ⌘F/ctrl+F abre la barra (aunque el foco esté en el askbar); Esc cierra.
-// Nota: llega como key "f" y en el webview de la app sí llega el evento.
+// ⌘F/ctrl+F opens the bar (even when focus is in the askbar); Esc closes it.
+// Note: it arrives as key "f" and in the app's webview the event does arrive.
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && (e.key === "f" || e.key === "F")) {
     e.preventDefault();
@@ -959,16 +959,16 @@ function applyQuestionMarks() {  for (const [entryPath, entry] of rendered.entri
       r.hasAttribute("data-line-index"),
     );
     for (const a of pendingAsks) {
-      // el span/los spans del GESTO mandan: se pintan exactamente las filas
-      // cubiertas (multi-select = varias corridas). Fallback (asks sin span):
-      // anclas por número DEL LADO (sin cruces).
+      // the GESTURE's span(s) rule: exactly the covered rows are painted
+      // (multi-select = several runs). Fallback (asks without span):
+      // anchors by number OF THE SIDE (no crossings).
       if (a.kind !== "line" || a.path !== entryPath) continue;
       const side = a.side ?? "additions";
       const end = a.end ?? a.start;
       let pairs = a.spans?.map((s) => [s.first, s.last]);
       if (!pairs && a.span) pairs = [{ first: a.span.first, last: a.span.last }].map((s) => [s.first, s.last]);
       if (!pairs) {
-        // fallback numérico (multi-rango si lo hay, sino start..end)
+        // numeric fallback (multi-range if any, else start..end)
         const numRanges = a.ranges ?? [{ start: a.start, end }];
         pairs = numRanges.map((rg) => {
           let first = -1;
@@ -1035,12 +1035,12 @@ function flushFreeInput() {
 async function sendAllPending() {
   flushFreeInput();
   if (!pendingAsks.length) return;
-  await saveAllEditing(); // save-all-always: nada mío queda sin guardar
+  await saveAllEditing(); // save-all-always: nothing of mine is left unsaved
   const { n, text } = buildAskMessage(pendingAsks, scopeLabel());
   try {
     const res = await app.sendMessage({ role: "user", content: [{ type: "text", text }] });
     if (res && res.isError) throw new Error("host rejected sendMessage");
-    chip(`✓ ${n} pregunta${n === 1 ? "" : "s"} en el chat`);
+    chip(`✓ ${n} question${n === 1 ? "" : "s"} in the chat`);
   } catch {
     await app.updateModelContext({ content: [{ type: "text", text }] });
     chip(`↪ context ready (${n} question${n === 1 ? "" : "s"}) — send your message`);
@@ -1050,14 +1050,14 @@ async function sendAllPending() {
   renderAnchors();
 }
 
-// span = {first, last} índices DOM de las filas EXACTAS que cubrió el gesto
-// (drag/hover/selección) — se pintan esas y ninguna más. spans = lista de
-// spans para preguntas de VARIOS fragmentos (el pincel): se marcan las filas
-// EXACTAS de cada frag, no todo el rango intermedio (bug Damian 28/10).
+// span = {first, last} DOM indices of the EXACT rows the gesture covered
+// (drag/hover/selection) — those and no others are painted. spans = list of
+// spans for asks about SEVERAL fragments (the brush): the EXACT rows of each
+// frag are marked, not the whole range in between (bug Damian 28/10).
 function queueQuestion(path, range, quoteLines, question, span, spans, labelOverride) {
   if (!range) {
-    // Pregunta anclada al archivo entero: la "cita" es su mini-resumen.
-    pendingAsks.push({ kind: "file", path, label: "archivo", quoteLines, question });
+    // Ask anchored to the whole file: the "quote" is its mini-summary.
+    pendingAsks.push({ kind: "file", path, label: "file", quoteLines, question });
   } else {
     const { side, lines, label } = rangeLabel(range);
     pendingAsks.push({
@@ -1071,8 +1071,8 @@ function queueQuestion(path, range, quoteLines, question, span, spans, labelOver
 
 // ------------------------------------------------------------------ shell
 
-// #root scrollea; #pile y #askbar viven debajo, fuera del scroll — la caja
-// queda SIEMPRE visible abajo. Se crea una sola vez y sobrevive renderAll.
+// #root scrolls; #pile and #askbar live below, outside the scroll — the box
+// stays ALWAYS visible at the bottom. It is created once and survives renderAll.
 function ensureShell() {
   if (document.getElementById("askbar")) return;
   // Top progress bar (0.11.0): visible only while a read/tool call is in
@@ -1087,9 +1087,9 @@ function ensureShell() {
   askbar.innerHTML = `
     <textarea id="askbar-input" rows="2" placeholder="Ask something about the diff (no anchor)…"></textarea>
     <div class="askbar-actions">
-      <span class="hint">Enter agrega a la pila · Shift+Enter salto de línea · ⌘↵ envía todo</span>
-      <button class="ghost danger" id="askbar-clear" title="Borrar todas las preguntas pendientes">🗑 Borrar todo</button>
-      <button class="primary" id="askbar-send" disabled>Enviar todo (⌘↵)</button>
+      <span class="hint">Enter adds to the pile · Shift+Enter line break · ⌘↵ sends everything</span>
+      <button class="ghost danger" id="askbar-clear" title="Delete every pending question">🗑 Delete all</button>
+      <button class="primary" id="askbar-send" disabled>Send all (⌘↵)</button>
       <span class="ver" title="Panel version — to know which build you are running"></span>
     </div>`;
   document.body.append(loadbar, pile, askbar);
@@ -1129,7 +1129,7 @@ function clearAllAsks() {
   renderAnchors();
 }
 
-// La pila: cada pendiente es una card editable in-place (click y escribí).
+// The pile: every pending item is a card editable in place (click and type).
 function renderPile() {
   const pile = document.getElementById("pile");
   if (!pile) return;
@@ -1137,8 +1137,8 @@ function renderPile() {
   if (send) {
     send.disabled = !pendingAsks.length;
     send.textContent = pendingAsks.length
-      ? `Enviar todo (${pendingAsks.length}) (⌘↵)`
-      : "Enviar todo (⌘↵)";
+      ? `Send all (${pendingAsks.length}) (⌘↵)`
+      : "Send all (⌘↵)";
   }
   const hasChip = pile.querySelector(".sent-chip");
   pile.textContent = "";
@@ -1152,9 +1152,9 @@ function renderPile() {
 
   const head = document.createElement("div");
   head.className = "pile-head";
-  head.innerHTML = `<span class="pile-title"></span><button class="ghost pile-clear">Limpiar</button>`;
+  head.innerHTML = `<span class="pile-title"></span><button class="ghost pile-clear">Clear</button>`;
   head.querySelector(".pile-title").textContent =
-    `${pendingAsks.length} pregunta${pendingAsks.length === 1 ? "" : "s"} en la pila`;
+    `${pendingAsks.length} question${pendingAsks.length === 1 ? "" : "s"} in the pile`;
   head.querySelector(".pile-clear").onclick = () => clearAllAsks();
   pile.appendChild(head);
 
@@ -1166,7 +1166,7 @@ function renderPile() {
       <textarea class="q-edit" rows="1"></textarea>`;
     const anchor = card.querySelector(".anchor");
     anchor.textContent =
-      a.kind === "free" ? "💬 libre" : a.kind === "file" ? `${a.path} · archivo` : `${a.path}:${a.lines}`;
+      a.kind === "free" ? "💬 free" : a.kind === "file" ? `${a.path} · file` : `${a.path}:${a.lines}`;
     anchor.title = anchor.textContent;
     const ta = card.querySelector(".q-edit");
     ta.value = a.question;
@@ -1190,7 +1190,7 @@ function renderPile() {
 // (collapsed hunk) keeps the ask and its head chip, and `free` asks never
 // drop. Runs at the end of every renderAll, so a reactive refresh right after
 // an agent write reconciles the pile by itself. ONLY in live-tree modes:
-// asks anchor the working diff, so browsing Commits/Turnos must not judge
+// asks anchor the working diff, so browsing Commits/Turns must not judge
 // (let alone drop) them against other content.
 function pruneStaleAsks() {
   if (!pendingAsks.length) return;
@@ -1219,10 +1219,10 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// Enter = el ↩ del popup cuando hay palabras pintadas (spec Damian 27/10:
-// "aprieto enter en el rollback" — confirmar el quirúrgico sin ir a buscar
-// el botón flotante). Si el foco está en un control (input, botón,
-// composer, findbar), Enter hace lo suyo y acá no se toca nada.
+// Enter = the popup's ↩ when there are painted words (spec Damian 27/10:
+// "I press enter on the rollback" [translated] — confirm the surgical revert without going to look for
+// the floating button). If focus is in a control (input, button,
+// composer, findbar), Enter does its own thing and nothing here is touched.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
   if (e.target?.closest?.("input, textarea, select, button, [contenteditable], .composer, #findbar")) return;
@@ -1237,9 +1237,9 @@ document.addEventListener("keydown", (e) => {
 });
 
 // -------------------------------------------------------------- composer
-// Span DOM de un rango: el del gesto si "hasta" no se tocó; si se extendió
-// a mano, se re-ancla first/last por número DEL LADO (la extensión es
-// numérica por definición).
+// DOM span of a range: the gesture's if "up to" was not touched; if it was
+// extended by hand, first/last are re-anchored by number OF THE SIDE (the extension is
+// numeric by definition).
 function spanForRange(entry, range, baseSpan, origEnd) {
   if (baseSpan && range.end === origEnd) return baseSpan;
   const crows = contentRowsOf(entry);
@@ -1261,15 +1261,15 @@ function spanForRange(entry, range, baseSpan, origEnd) {
   return first === -1 ? undefined : { first, last };
 }
 
-// El composer aparece JUSTO DEBAJO de la línea seleccionada (contexto a la
-// vista), no al pie del archivo. Fila oculta → fallback al pie del body.
+// The composer appears RIGHT BELOW the selected line (context in
+// view), not at the bottom of the file. Hidden row → fallback to the body's bottom.
 function positionComposerAtRow(entry, card, row) {
   entry.body.appendChild(card);
   card.classList.add("anchored");
   const bodyRect = entry.body.getBoundingClientRect();
   const top = row
     ? row.getBoundingClientRect().bottom - bodyRect.top + 6
-    : 4; // sin fila (＋ de archivo): pegado al inicio del body, bajo el head
+    : 4; // no row (file ＋): glued to the top of the body, under the head
   card.style.top = `${top}px`;
   card.scrollIntoView({ block: "nearest" });
 }
@@ -1277,8 +1277,8 @@ function positionComposerAtRow(entry, card, row) {
 
 
 function openComposer(entry, path, range, opts = {}) {
-  // working: el rango se puede EXTENDER en el composer ("hasta línea") — así
-  // el multi-línea no depende del drag: click en una línea y tipeás hasta dónde.
+  // working: the range can be EXTENDED in the composer ("up to line") — so
+  // multi-line does not depend on drag: click a line and type how far.
   const working = { ...range };
   if (entry.fd)
     entry.fd?.setSelectedLines({ start: working.start, end: working.end, side: working.side, endSide: working.endSide });
@@ -1290,13 +1290,13 @@ function openComposer(entry, path, range, opts = {}) {
     <div class="composer-head">
       <span class="anchor"></span>
       <span class="range-ext" title="Extend the question up to that line">hasta <input type="number" min="${working.start}" step="1"></span>
-      <button class="ghost close" title="Cancelar">✕</button>
+      <button class="ghost close" title="Cancel">✕</button>
     </div>
     <textarea rows="3" placeholder="Ask about ${label}…"></textarea>
     <div class="composer-actions">
-      <span class="hint">⌘↵ envía</span>
-      <button class="ghost cancel">Cancelar</button>
-      <button class="primary ask">Preguntar</button>
+      <span class="hint">⌘↵ sends</span>
+      <button class="ghost cancel">Cancel</button>
+      <button class="primary ask">Ask</button>
     </div>`;
   const anchor = card.querySelector(".anchor");
   const paint = () => {
@@ -1326,7 +1326,7 @@ function openComposer(entry, path, range, opts = {}) {
   function submit() {
     const q = ta.value.trim();
     if (!q) { ta.focus(); return; }
-    // el verbatim vale sólo si no se extendió el rango a mano
+    // verbatim is valid only if the range was not extended by hand
     const verbatim = working.end === range.end ? opts.verbatim : null;
     queueQuestion(path, working, quoteFor(entry, working, verbatim), q, spanForRange(entry, working, opts.span, range.end));
     close();
@@ -1343,15 +1343,15 @@ function closeComposer(entry) {
   entry.section.querySelectorAll(".composer").forEach((n) => n.remove());
 }
 
-// ------------------------------------------------------------ selección
-// Un SOLO modelo de selección: las CAJITAS del riel (0.2.15). Click = sumar o
-// quitar una línea; click y arrastre = pintar/despintar en modo pintura; se
-// pueden marcar varias corridas salteadas; el ＋ grande vive debajo de la
-// ÚLTIMA cajita pintada y abre el composer de toda la selección. La selección
-// de texto del mouse alimenta el mismo modelo (con cita VERBATIM).
+// ------------------------------------------------------------ selection
+// ONE single selection model: the gutter CHECKBOXES (0.2.15). Click = add or
+// remove a line; click and drag = paint/unpaint in paint mode; you
+// can mark several scattered runs; the big ＋ lives below the
+// LAST painted checkbox and opens the composer for the whole selection. The mouse
+// text selection feeds the same model (with a VERBATIM quote).
 
-// El <diffs-container> (light DOM nuestro) que contiene al nodo, cruzando
-// la frontera del shadow root — null si la selección no es de un diff.
+// The <diffs-container> (our light DOM) containing the node, crossing
+// the shadow root boundary — null if the selection is not from a diff.
 function containerOf(node) {
   let root = node?.getRootNode?.();
   while (root instanceof ShadowRoot) {
@@ -1381,9 +1381,9 @@ const diagSel = (() => {
 
 function selectionAsk() {
   const sel = document.getSelection();
-  // OJO: Chromium RETARGETEA selecciones dentro de shadow roots — isCollapsed
-  // da true y el rango queda en light DOM con rects 0×0, PERO el texto sobrevive
-  // (String(sel) completo). isCollapsed ya NO puede decidir solo: hay texto, hay selección.
+  // WARNING: Chromium RETARGETS selections inside shadow roots — isCollapsed
+  // returns true and the range stays in light DOM with 0×0 rects, BUT the text survives
+  // (complete String(sel)). isCollapsed can NO LONGER decide alone: there is text, there is a selection.
   const text = sel?.toString() ?? "";
   if (!sel || !text.trim()) return diagNull("collapsed/empty text");
   if (sel.rangeCount) {
@@ -1397,7 +1397,7 @@ function selectionAsk() {
         if (selRows.length) {
           for (const e of rendered.values()) {
             if (e.body.contains(host)) {
-              diagSel(`selchg → ${selRows.length} filas en ${e.path}`);
+              diagSel(`selchg → ${selRows.length} rows in ${e.path}`);
               return { entry: e, rows: selRows, text };
             }
           }
@@ -1405,32 +1405,32 @@ function selectionAsk() {
       }
     }
   }
-  // Camino B (Chromium real): sin rango usable — match del TEXTO contra las
-  // filas. El anchorNode retargeteado sigue en el light DOM del archivo: nos
-  // dice cuál entry buscar primero.
+  // Path B (real Chromium): no usable range — match the TEXT against the
+  // rows. The retargeted anchorNode stays in the file's light DOM: it tells us
+  // which entry to look in first.
   return selectionFromText(sel, text);
 }
 
-// Match línea a línea: cada línea del texto seleccionado corresponde a UNA
-// fila del diff (el orden se respeta, corrida contigua desde alguna fila).
-// Las líneas parciales (media primera/media última) matchean por inclusión
-// mutua de texto; las líneas vacías matchean cualquier fila (no discriminan).
+// Line-by-line match: every line of the selected text corresponds to ONE
+// diff row (the order is respected, a contiguous run starting at some row).
+// Partial lines (half first/half last) match by mutual text
+// inclusion; empty lines match any row (they do not discriminate).
 function matchRowsToLines(rows, lines, near = -1) {
-  // El String(sel) RETARGETEADO puede llegar INFLADO (trae contenido de más,
-  // p.ej. todo el archivo) y las líneas vacías matchean cualquier fila. Las
-  // vacías NO cuentan: el largo de la corrida = líneas con contenido, y las
-  // vacías del texto pueden caer en cualquier fila de la corrida.
+  // The retargeted String(sel) can arrive INFLATED (it brings extra content,
+  // e.g. the whole file) and empty lines match any row. Empty
+  // ones do NOT count: the run length = lines with content, and the
+  // empty ones of the text can fall on any row of the run.
   const real = lines.map((l) => l.trim()).filter(Boolean);
   if (!real.length || real.length > rows.length) return null;
   const match1 = (line, row) => {
     const rowText = (row.textContent ?? "").trim();
-    // 中文注释：空行绝不是通配符。旧行为 line.includes("") 恒为 true，
-    // 任何一行文本都能匹配到空行上（e2e 实测：双击中文 ADR 行最终把
-    // frag 钉在空行上）。空行不参与文本匹配。
+    // Empty lines are NEVER a wildcard. The old behavior line.includes("") was always true,
+    // so any line of text could match an empty line (e2e measured: double-clicking a Chinese ADR line ended up
+    // pinning the frag on an empty line). Empty lines take no part in text matching.
     if (!rowText || !line) return false;
-    // 中文注释：单行短内容 + includes 方向 = 随机命中（e2e 实测：选中
-    // 文件头文本时，1~3 字符的短行全是文件名的子串，凭空长出幽灵 frag
-    // 且 Esc 只清当前文件清不掉）。多行匹配本身已是强信号，不设限。
+    // Single-line short content + includes direction = random hit (e2e measured: selecting
+    // file-header text, 1-3 char short lines are all substrings of the file name, ghost frags
+    // sprouted from nowhere and Esc only cleared the current file). Multi-line matching is already a strong signal, so no cap.
     if (real.length === 1 && rowText.length < 8 && line.length >= 8) return rowText === line;
     return rowText === line || rowText.includes(line) || line.includes(rowText);
   };
@@ -1443,8 +1443,9 @@ function matchRowsToLines(rows, lines, near = -1) {
     if (ok) runs.push(start);
   }
   if (!runs.length) return null;
-  // texto repetido o inflado: gana la corrida MÁS CERCANA a dónde soltaste
-  // el mouse (geometría real), y entre empatadas la MÁS CORTA en distancia
+  // repeated or inflated text: the run CLOSEST to where you released
+  // the mouse wins (real geometry), and among ties the SHORTEST one in
+  // distance
   let start = runs[0];
   let best = Infinity;
   for (const r of runs) {
@@ -1457,21 +1458,21 @@ function matchRowsToLines(rows, lines, near = -1) {
 function selectionFromText(sel, text) {
   const lines = text.split("\n");
   const candidates = [...rendered.values()];
-  // anchorNode retargeteado (light DOM): si cae en un entry, ése es el archivo
+  // retargeted anchorNode (light DOM): if it falls in an entry, that is the file
   const an = sel.anchorNode;
   const byAnchor = an ? candidates.filter((e) => e.body === an || e.body.contains?.(an) || an.contains?.(e.body)) : [];
   for (const e of [...new Set([...byAnchor, ...candidates])]) {
     if (e.edit) continue;
     const rows = contentRowsOf(e);
-    // pista geométrica: la fila bajo el último pointerup de este archivo
+    // geometric hint: the row under this file's last pointerup
     const near = selPopAt ? rows.indexOf(rowFromPoint(selPopAt.x, selPopAt.y, e)) : -1;
     const matched = matchRowsToLines(rows, lines, near);
     if (matched) {
-      diagSel(`selchg → ${matched.length} filas por TEXTO (retarget) en ${e.path}`);
+      diagSel(`selchg → ${matched.length} rows by TEXT (retarget) in ${e.path}`);
       return { entry: e, rows: matched, text };
     }
   }
-  return diagNull("texto sin match contiguo en filas");
+  return diagNull("text with no contiguous match in the rows");
 }
 
 function diagNull(gate) {
@@ -1479,9 +1480,9 @@ function diagNull(gate) {
   return null;
 }
 
-// boxSel: Map<path, Set<key>> — key "A:<n>" (addiciones/contexto, número
-// nuevo) | "D:<n>" (borrados, número viejo). entry.selVerbatim: cita textual
-// mientras la selección vino del mouse de texto (una cajita la invalida).
+// boxSel: Map<path, Set<key>> — key "A:<n>" (additions/context, new
+// number) | "D:<n>" (deletions, old number). entry.selVerbatim: verbatim quote
+// while the selection came from the mouse over text (a checkbox invalidates it).
 const boxSel = new Map();
 
 function keyOfRow(row) {
@@ -1498,7 +1499,7 @@ function setBoxSel(entry, keys, verbatim = null) {
   if (keys.size) boxSel.set(entry.path, keys);
   else {
     boxSel.delete(entry.path);
-    hideSelPop(); // selección vaciada por cualquier vía → sin popup colgado
+    hideSelPop(); // selection cleared by any path → no popup left hanging
   }
   entry.selVerbatim = verbatim;
   renderSelUI(entry);
@@ -1510,8 +1511,8 @@ function selectedRowsOf(entry) {
   return contentRowsOf(entry).filter((r) => keys.has(keyOfRow(r)));
 }
 
-// Pinta la selección de un archivo: franja tintada por fila + NÚMERO relleno
-// (la cajita ES el número) + ＋ grande debajo de la última seleccionada.
+// Paints a file's selection: tinted stripe per row + filled NUMBER
+// (the checkbox IS the number) + big ＋ below the last selected one.
 function renderSelUI(entry) {
   if (!entry.fd) {
     entry.body.querySelector(".sel-layer")?.remove(); // lazy: no rows to paint
@@ -1525,7 +1526,7 @@ function renderSelUI(entry) {
   }
   layer.textContent = "";
   ensureShadowSelStyle(entry);
-  // fill de números: limpiar los viejos, marcar los seleccionados
+  // number fill: clear the old ones, mark the selected ones
   for (const cell of gutterCellsOf(entry)) cell.removeAttribute("data-da-sel");
   if (entry.section.classList.contains("collapsed")) return;
   const rows = contentRowsOf(entry);
@@ -1555,7 +1556,7 @@ function renderSelUI(entry) {
   big.title = "Ask about the selection";
   const br = last.getBoundingClientRect();
   big.style.top = `${br.bottom - bodyRect.top + 3}px`;
-  big.style.left = "2px"; // riel izquierdo (el número ya no ocupa cajita propia)
+  big.style.left = "2px"; // left rail (the number no longer takes its own checkbox)
   big.onclick = () => openComposerMulti(entry);
   layer.appendChild(big);
   // Chunk revert (IDE-style): the blocks covered by the selection go back to
@@ -1573,14 +1574,14 @@ function renderSelUI(entry) {
   }
 }
 
-// Cambio in-place de una línea seleccionada (sin rebuild: el drag va fluido).
+// In-place change of one selected line (no rebuild: drag stays fluid).
 function applyBoxState(entry, key, on, row) {
   const keys = selKeysOf(entry);
   if (on) keys.add(key);
   else keys.delete(key);
   if (keys.size) boxSel.set(entry.path, keys);
   else boxSel.delete(entry.path);
-  entry.selVerbatim = null; // tocó un número: la cita sale de las líneas
+  entry.selVerbatim = null; // touched a number: the quote comes from the lines
   if (row) {
     const cell = gutterCellOf(entry, row);
     if (on) cell?.setAttribute("data-da-sel", "");
@@ -1600,21 +1601,21 @@ function applyBoxState(entry, key, on, row) {
   } else if (!on && stripe) stripe.remove();
 }
 
-// Gestura sobre el GUTTER: click en un número = seleccionar/deseleccionar
-// esa línea; arrastre = modo pintura (pinta o despinta, según el estado del
-// número donde arrancó) todo lo traversado.
+// Gesture over the GUTTER: click on a number = select/deselect
+// that line; drag = paint mode (paints or unpaints, according to the state of the
+// number where it started) everything traversed.
 let boxDrag = null;
 document.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
   const body = e.target.closest?.(".file-body");
   if (!body) return;
-  // modo edición: el gutter es del editor — ni cajitas ni drag propio
+  // edit mode: the gutter belongs to the editor — no checkboxes and no own drag
   {
     let en = null;
     for (const cand of rendered.values()) if (cand.body === body) { en = cand; break; }
     if (en?.edit) return;
   }
-  // no intervenir sobre nuestra propia UI
+  // do not intervene on our own UI
   if (e.target.closest?.(".inline-editor, .line-marker, .head-marker, .composer, .big-plus, .hover-plus, .sel-layer")) return;
   let entry = null;
   for (const en of rendered.values()) if (en.body === body) { entry = en; break; }
@@ -1622,12 +1623,12 @@ document.addEventListener("pointerdown", (e) => {
   const g = entry.body.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-gutter]");
   if (!g) return;
   const gr = g.getBoundingClientRect();
-  if (e.clientX < gr.left - 4 || e.clientX > gr.right + 14) return; // sólo la zona de números
+  if (e.clientX < gr.left - 4 || e.clientX > gr.right + 14) return; // numbers zone only
   const row = rowFromPoint(e.clientX, e.clientY, entry);
   if (!row) return;
   hideHoverPlus();
-  e.stopPropagation(); // la sesión es nuestra: la lib no arranca la suya
-  e.preventDefault(); // sin selección de texto nativa colgante tras el drag
+  e.stopPropagation(); // the session is ours: the lib does not start its own
+  e.preventDefault(); // no native text selection left hanging after the drag
   const key = keyOfRow(row);
   const mode = !selKeysOf(entry).has(key);
   boxDrag = { entry, mode, x0: e.clientX, y0: e.clientY, moved: false };
@@ -1647,10 +1648,10 @@ function endBoxDrag(e) {
   const { entry } = boxDrag;
   boxDrag = null;
   renderSelUI(entry); // franjas + ＋ grande recalculados al terminar el gesto
-  // 0.7.3: el popup flotante también para la selección de CAJITAS (el gesto
-  // clásico del panel) — no sólo para texto del mouse. Ancla: el punto donde
-  // soltaste (coords del pointerup — selPopAt aún no se actualizó: este
-  // listener corre antes que el de anclaje) + rect de la última fila pintada.
+  // 0.7.3: the floating popup also for the CHECKBOX selection (the panel's
+  // classic gesture) — not only for mouse text. Anchor: the point where
+  // you released (pointerup coords — selPopAt is not updated yet: this
+  // listener runs before the anchoring one) + rect of the last painted row.
   const keys = selKeysOf(entry);
   if (!keys.size || entry.edit) return hideSelPop();
   const rows = selectedRowsOf(entry);
@@ -1665,29 +1666,29 @@ function endBoxDrag(e) {
 document.addEventListener("pointerup", endBoxDrag, true);
 document.addEventListener("pointercancel", endBoxDrag, true);
 
-// Selección de texto del mouse → el MISMO modelo de cajitas (con verbatim)
-// y el popup flotante ＋/↩ anclado a donde terminó el gesto.
+// Mouse text selection → the SAME checkbox model (with verbatim)
+// and the floating ＋/↩ popup anchored to where the gesture ended.
 let selTimer = null;
 document.addEventListener("selectionchange", () => {
   clearTimeout(selTimer);
   selTimer = setTimeout(paintCurrentSelection, 150);
 });
 
-// FLUJO ÚNICO de pintado (0.8.4): 1) geometría del drag (caret sobre el
-// shadow — inmune al retargeting de Chromium); 2) match por texto (fallback);
-// 3) nada. Antes selectionAsk era el portero y si su texto inflado no
-// matcheaba, el pintado moría aunque la geometría del drag fuera perfecta.
+// SINGLE painting flow (0.8.4): 1) drag geometry (caret over the
+// shadow — immune to Chromium's retargeting); 2) text match (fallback);
+// 3) nothing. Before, selectionAsk was the gatekeeper and if its inflated text did not
+// match, painting died even when the drag geometry was perfect.
 function paintCurrentSelection() {
-  if (dragActive) return; // a mitad del drag no pintamos: manda la selección al SOLTAR
-  // click sobre nuestra UI (↩/＋/modos): la selectionchange que sigue es el
-  // settle del click con la selección VIEJA colgando — no re-pintar (stray)
+  if (dragActive) return; // mid-drag we do not paint: the selection decides on RELEASE
+  // click on our UI (↩/＋/modes): the selectionchange that follows is the
+  // click's settle with the OLD selection hanging — do not repaint (stray)
   if (lastUiPointer) return;
   const sel = document.getSelection();
   if (!sel || !String(sel).trim()) {
     if (!boxSel.size && !fragSelTotal()) hideSelPop("selected nothing");
     return;
   }
-  // 1) drag conocido → entry por hit-test del punto inicial, frag por carets
+  // 1) known drag → entry by hit-test of the starting point, frag by carets
   if (dragPath && Date.now() - dragPath.live < 1500) {
     const A = pointToRowInfo(dragPath.x0, dragPath.y0, true);
     diagSel(`caret A=${A?.fail ?? A?.entry?.path.slice(-18) + "@" + A?.idx ?? "fuera"} drag=${dragPath.x0},${dragPath.y0}`);
@@ -1698,20 +1699,20 @@ function paintCurrentSelection() {
       diagSel("caretFrag ✗ over the drag entry (falls back to text match)");
     }
   }
-  // 2) fallback: selección → filas por rango/texto → offsets derivados
+  // 2) fallback: selection → rows by range/text → derived offsets
   const info = selectionAsk();
   if (info && !info.entry.edit) paintFromSelection(info.entry, info.rows, info.text);
   else if (info?.entry?.edit) diagSel("selchg → file in edit mode, ignored");
 }
 
-// 0.7.4 respaldo: si por lo que fuere el selectionchange no llegara (webview
-// raro, foco, IME), el pointerup re-intenta el mismo flujo 180ms después.
-// Nunca ESCONDE: si no hay selección, no hace nada (el popup del gutter
-// recién creado por endBoxDrag debe sobrevivir este camino).
+// 0.7.4 backup: if for whatever reason the selectionchange never arrives (odd
+// webview, focus, IME), pointerup retries the same flow 180ms later.
+// It NEVER HIDES: with no selection it does nothing (the gutter popup
+// just created by endBoxDrag must survive this path).
 document.addEventListener("pointerup", (e) => {
   if (e.button !== 0) return;
-  // click sobre nuestra UI (popup ↩/＋, botones): la selección que quede
-  // colgando es la VIEJA del gesto — no re-pintarla por texto (stray)
+  // click on our UI (↩/＋ popup, buttons): the selection left
+  // hanging is the gesture's OLD one — do not repaint it by text (stray)
   if (e.target?.closest?.(".sel-pop, .hover-plus, .big-plus, .fmode, .composer, button")) return;
   setTimeout(() => {
     if (selPop) return;
@@ -1724,13 +1725,13 @@ document.addEventListener("pointerup", (e) => {
   }, 180);
 }, true);
 
-// --------------------------------- popup flotante ＋/↩ de la selección
-// Al soltar el mouse sobre texto del diff los DOS botones aparecen flotando
-// pegados a donde terminó el gesto: ＋ pregunta sobre la selección, ↩ revierte
-// SOLO lo seleccionado. Hacen exactamente lo mismo que el ＋ grande y la ↩
-// grande que quedan bajo la última línea — el popup es el atajo inmediato,
-// los grandes siguen de ancla cuando scrolleás. Se va solo: scroll, click
-// afuera, Esc, selección nueva/colapsada o re-render.
+// --------------------------------- floating ＋/↩ popup of the selection
+// When you release the mouse over diff text the TWO buttons appear floating
+// glued to where the gesture ended: ＋ asks about the selection, ↩ reverts
+// ONLY what is selected. They do exactly the same as the big ＋ and the big ↩
+// that stay under the last line — the popup is the immediate shortcut,
+// the big ones remain the anchor when you scroll. It goes away on its own: scroll, click
+// outside, Esc, new/collapsed selection or re-render.
 let selPop = null;
 let selPopAt = null;
 
@@ -1740,21 +1741,21 @@ function hideSelPop(why = "") {
   selPop = null;
 }
 
-// última posición del mouse: es el ancla natural del popup (donde soltaste)
+// last mouse position: it is the popup's natural anchor (where you released)
 document.addEventListener("pointerup", (e) => {
   if (e.button === 0) selPopAt = { x: e.clientX, y: e.clientY };
 }, true);
 
-// anchor (opcional): {x, y, top, bottom} — para la selección de CAJITAS, que
-// no tiene selección nativa (rect de rango colapsado = 0 y el gate lo mata).
+// anchor (optional): {x, y, top, bottom} — for the CHECKBOX selection, which
+// has no native selection (collapsed range rect = 0 and the gate kills it).
 function showSelPop(entry, anchor = null, actions = null) {
   let rect;
   let p;
   if (anchor?.row) {
-    // ancla FIN DE SELECCIÓN (spec Damian): la última fila seleccionada, pegado
-    // al borde derecho de SU TEXTO (el span de contenido; el row es todo el
-    // ancho del archivo y mandaría el popup al margen derecho) — flota EN el
-    // área del texto, no en rieles.
+    // END-OF-SELECTION anchor (spec Damian): the last selected row, glued
+    // to the right edge of ITS TEXT (the content span; the row is the whole
+    // file width and would send the popup to the right margin) — it floats IN the
+    // text area, not on the rails.
     const rr = anchor.row.querySelector("span")?.getBoundingClientRect() ?? anchor.row.getBoundingClientRect();
     rect = { top: rr.top, bottom: rr.bottom, left: rr.left, right: rr.right, width: rr.width, height: rr.height };
     p = null;
@@ -1778,7 +1779,7 @@ function showSelPop(entry, anchor = null, actions = null) {
   ask.title = "Ask about the selection";
   ask.onclick = () => { hideSelPop(); actions?.frag ? openFragComposer(entry) : openComposerMulti(entry); };
   pop.appendChild(ask);
-  // ↩ sólo si hay original al cual volver (archivo nuevo no tiene)
+  // ↩ only if there is an original to go back to (a new file has none)
   if (typeof entry.fileData?.before === "string") {
     const rev = document.createElement("button");
     rev.className = "rev";
@@ -1787,7 +1788,7 @@ function showSelPop(entry, anchor = null, actions = null) {
     rev.onclick = () => { hideSelPop(); actions?.frag ? revertPainted(entry) : revertSelection(entry); };
     pop.appendChild(rev);
   }
-  // pointerdown propio sin colapsar la selección nativa al tocar un botón
+  // own pointerdown without collapsing the native selection when touching a button
   pop.addEventListener("pointerdown", (e) => e.preventDefault());
   document.body.appendChild(pop);
   selPop = pop;
@@ -1796,7 +1797,7 @@ function showSelPop(entry, anchor = null, actions = null) {
   let x;
   let y;
   if (anchor?.row) {
-    // al final de la última línea: pegado al borde derecho del texto, arriba
+    // at the end of the last line: glued to the text's right edge, above
     x = rect.right - w + 10;
     y = rect.top - h - 6;
   } else if (p && p.y >= rect.top - 60 && p.y <= rect.bottom + 60) {
@@ -1813,7 +1814,7 @@ function showSelPop(entry, anchor = null, actions = null) {
   diagSel(`popup ＋${pop.children.length > 1 ? "↩" : ""} @${Math.round(x)},${Math.round(y)} (${anchor?.row ? "selection end" : anchor ? "gutter" : "text"})`);
 }
 
-// el popup queda desanclado al scrollear: se va (los grandes siguen)
+// the popup loses its anchor when scrolling: it goes away (the big ones stay)
 document.addEventListener("scroll", () => hideSelPop("scroll"), { capture: true, passive: true });
 document.addEventListener("pointerdown", (e) => {
   if (selPop && !selPop.contains(e.target)) hideSelPop("click afuera");
@@ -1822,14 +1823,14 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hideSelPop("esc");
 });
 
-// ------------------------------------------------ pintado quirúrgico
-// 0.8.0 — la selección de texto es un canal PROPIO, separado de las cajitas
-// del gutter (que quedan exactamente como estaban). frags por archivo:
-// {firstRowIdx, lastRowIdx, offA, offB, text} — offsets planos [A,B) sobre
-// el texto de la primera/última fila (intermedias van completas).
-// Modo por archivo (botones ?/↩ junto a ✏️): neutral = pintada ÚNICA con
-// popup inmediato; modo = acumulativa con toggle (pintar sobre pintado
-// despinta); el botón pasa a ✓-ejecutar; Esc despinta lo del archivo activo.
+// ------------------------------------------------ surgical painting
+// 0.8.0 — text selection is its OWN channel, separate from the gutter
+// checkboxes (which stay exactly as they were). frags per file:
+// {firstRowIdx, lastRowIdx, offA, offB, text} — flat offsets [A,B) over
+// the first/last row's text (intermediate ones go whole).
+// Per-file mode (?/↩ buttons next to ✏️): neutral = SINGLE paint with
+// immediate popup; mode = cumulative with toggle (painting over painted
+// unpaints); the button becomes ✓-execute; Esc unpaints the active file's.
 const fragSel = new Map(); // path → [frag...]
 const fragModes = new Map(); // path → "ask" | "rev"
 let lastPaintedEntry = null;
@@ -1840,12 +1841,12 @@ function fragSelTotal() {
   return n;
 }
 
-// Range interno sobre el span de una fila para offsets planos [a,b]. La
-// RAÍZ del 0.8.6: los offsets de CARACTERES hay que resolverlos hasta el
-// nodo de TEXTO real (los tokens de highlight son spans anidados — `código`
-// con backticks, negritas markdown — y setStart/setEnd sobre un ELEMENTO
-// interpreta el offset como ÍNDICE DE HIJO: "no child at offset N"). El
-// localizador recursivo baja por los subárboles acumulando longitud.
+// Internal range over a row's span for flat offsets [a,b]. The
+// ROOT CAUSE of 0.8.6: CHARACTER offsets must be resolved down to the
+// real TEXT node (highlight tokens are nested spans — `code`
+// with backticks, markdown bold — and setStart/setEnd on an ELEMENT
+// interprets the offset as a CHILD INDEX: "no child at offset N"). The
+// recursive locator walks down the subtrees accumulating length.
 function locatePlain(node, target, posRef) {
   if (node.nodeType === 3) {
     if (posRef.pos + node.data.length >= target) {
@@ -1877,14 +1878,14 @@ function plainOffsetToRange(span, a, b) {
   return range;
 }
 
-// ----------------------------------------------------- espacios de fila
-// La fila verde de una pareja lleva los REMOVIDOS tachados inline (spans
-// [data-da-del], spec 0.9.8 "quiero leer también lo que había antes"): su
-// textContent ya NO es la línea del archivo. Dos espacios de offset conviven:
-//   merged = textContent entero (lo que miden los hit-tests y locatePlain)
-//   new    = texto SIN los tachados — la línea en disco; los frags lado new
-//            y la cirugía del revert SIEMPRE hablan este idioma
-// rowSpaces mapea cada run tachado a su rango merged [mStart,mEnd).
+// ----------------------------------------------------- row spaces
+// A pair's green row carries the REMOVED text struck inline (spans
+// [data-da-del], spec 0.9.8 "I also want to read what was there before" [translated]): its
+// textContent is NO LONGER the file's line. Two offset spaces coexist:
+//   merged = the whole textContent (what hit-tests and locatePlain measure)
+//   new    = text WITHOUT the strikethroughs — the line on disk; new-side frags
+//            and the revert surgery ALWAYS speak this language
+// rowSpaces maps each struck run to its merged range [mStart,mEnd).
 function rowSpaces(row) {
   let txt = "";
   const dels = [];
@@ -1902,7 +1903,7 @@ function rowSpaces(row) {
   return { merged: txt, dels };
 }
 const isDelEl = (n) => n.nodeType === 1 && n.hasAttribute?.("data-da-del");
-// texto nuevo de la fila (sin los runs tachados)
+// the row's new text (without the struck runs)
 function rowNewText(row) {
   const { merged, dels } = rowSpaces(row);
   if (!dels.length) return merged;
@@ -1911,12 +1912,12 @@ function rowNewText(row) {
   for (const d of dels) { out += merged.slice(cur, d.mStart); cur = d.mEnd; }
   return out + merged.slice(cur);
 }
-// merged → new (offset de cirugía): restar los chars tachados previos a mOff
+// merged → new (surgery offset): subtract the struck chars before mOff
 function mergedToNew(row, mOff) {
   return mergedOffToNew(rowSpaces(row).dels, mOff);
 }
-// new [a,b) → segmentos merged (partidos por los runs tachados intermedios):
-// franjas y cajas pintan el texto nuevo SIN invadir los tachados
+// new [a,b) → merged segments (split by the struck runs in between):
+// stripes and boxes paint the new text WITHOUT invading the strikethroughs
 function newToMergedSegs(row, a, b) {
   const { merged, dels } = rowSpaces(row);
   return newRangeToMergedSegs(dels, merged.length, a, b);
@@ -1936,8 +1937,8 @@ function locatePlainNS(node, target, posRef) {
   }
   return null;
 }
-// Range sobre offsets en espacio NEW: en filas sin tachados es idéntico a
-// plainOffsetToRange (por eso las cajitas/dots usan SIEMPRE este)
+// Range over offsets in NEW space: on rows without strikethroughs it is identical to
+// plainOffsetToRange (that is why the checkboxes/dots ALWAYS use this one)
 function plainOffsetToRangeNS(span, a, b) {
   const len = rowNewText(span).length;
   a = Math.max(0, Math.min(a, len));
@@ -1954,29 +1955,29 @@ function plainOffsetToRangeNS(span, a, b) {
   return range;
 }
 
-// Camino del drag de texto: punto inicial y final del gesto. Con el
-// retargeting de Chromium ni el rango ni (a veces) los newlines de
-// String(sel) son confiables — caretRangeFromPoint sobre ESTOS puntos sí
-// atraviesa el shadow root y da fila+offset exactos.
+// Text drag path: the gesture's start and end points. With Chromium's
+// retargeting neither the range nor (sometimes) the newlines of
+// String(sel) are reliable — caretRangeFromPoint over THESE points does
+// cross the shadow root and gives exact row+offset.
 let dragPath = null;
-let dragActive = false; // botón apretado: no se pinta a mitad del gesto
-let lastUiPointer = false; // el último pointerdown cayó sobre la UI del panel
+let dragActive = false; // button held: no painting mid-gesture
+let lastUiPointer = false; // the last pointerdown fell on the panel's UI
 document.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
-  // detail: 1=single, 2=doble (palabra), 3+=triple (línea) — el gesto NATIVO
-  // del mouse define la semántica del pintado, igual que en un editor.
-  // "at" = nacimiento del gesto (id estable para el dedupe de toggle);
-  // "live" = última actividad — un drag humano multilínea tarda >1.2s y el
-  // camino geométrico no puede morir a mitad de gesto (caía al fallback de
-  // texto: gemelas pintadas + "cuesta seleccionar").
+  // detail: 1=single, 2=double (word), 3+=triple (line) — the NATIVE mouse
+  // gesture defines the painting semantics, just like in an editor.
+  // "at" = gesture birth (stable id for the toggle dedupe);
+  // "live" = last activity — a human multi-line drag takes >1.2s and the
+  // geometric path cannot die mid-gesture (it fell back to text
+  // matching: twin paints + "hard to select").
   dragPath = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, at: Date.now(), live: Date.now(), detail: e.detail || 1 };
   dragActive = true;
   lastFragPaint = null;
   lastUiPointer = !!e.target?.closest?.(".sel-pop, .hover-plus, .big-plus, .fmode, .composer, button");
 }, true);
-// click nativo: el detail del click es el conteo REAL del browser (el
-// pointerdown sintético/CDP a veces trae detail=1 en el tercero del
-// triple-click — el click sí sabe que fue el tercero).
+// native click: the click's detail is the browser's REAL count (the
+// synthetic/CDP pointerdown sometimes carries detail=1 on the third click of a
+// triple-click — the click does know it was the third).
 document.addEventListener("click", (e) => {
   if (e.detail > 1 && dragPath) dragPath.detail = Math.max(dragPath.detail || 1, e.detail);
 }, true);
@@ -1988,13 +1989,13 @@ document.addEventListener("pointermove", (e) => {
   if (dragPath && (e.buttons & 1)) { dragPath.x1 = e.clientX; dragPath.y1 = e.clientY; dragPath.live = Date.now(); }
 }, true);
 
-// frag geométrico: hit-test de los extremos del drag contra el shadow DOM
-// (shadowRoot.elementFromPoint SÍ devuelve el elemento interno — y los spans
-// del highlighting son tokens, así que la suma de hermanos previos da offset
-// con precisión de palabra). caretRangeFromPoint NO sirve: retargetea.
-// offset de carácter dentro del span cuya posición horizontal ≈ x, por
-// búsqueda binaria sobre getBoundingClientRect de ranges internos (los rects
-// del shadow SÍ son geometría real aunque la Selection retargetee).
+// geometric frag: hit-test of the drag's ends against the shadow DOM
+// (shadowRoot.elementFromPoint DOES return the inner element — and the
+// highlighting spans are tokens, so summing previous siblings gives an offset
+// with word precision). caretRangeFromPoint does NOT work: it retargets.
+// character offset inside the span whose horizontal position ≈ x, by
+// binary search over getBoundingClientRect of internal ranges (shadow
+// rects ARE real geometry even when the Selection retargets).
 function offsetAtX(span, x) {
   const len = span.textContent.length;
   if (!len) return 0;
@@ -2025,7 +2026,7 @@ function pointToRowInfo(x, y, why = false) {
     const inner = host.shadowRoot.elementFromPoint(x, y);
     if (!inner) {
       if (why) return { fail: "sin inner " + e.path.slice(-16) };
-      continue; // probar el próximo archivo — no es culpa suya
+      continue; // try the next file — it is not its fault
     }
     let node = inner;
     while (node && !node.hasAttribute?.("data-line")) node = node.parentElement;
@@ -2033,11 +2034,11 @@ function pointToRowInfo(x, y, why = false) {
     const rows = contentRowsOf(e);
     const idx = rows.indexOf(node);
     if (idx < 0) return why ? { fail: "idx -1 en " + e.path.slice(-16) } : null;
-    // 中文注释：偏移量必须按整行文本计算。0.8.6 之前 offset 相对第一个
-    // span/token 计算：双击落在后续 token（如 **加粗**、反引号）时 walk 找
-    // 不到第一个 span 的直接子节点，offset 被钉死在第一个 token 的末尾，
-    // caretFrag 得到 a==b 直接失败。locatePlain/offsetAtX 本来就递归下探
-    // 整棵子树，直接对 row 做二分即可拿到整行坐标系下的精确字符偏移。
+    // Offsets must be computed against the whole line's text. Before 0.8.6 the offset was relative to the first
+    // span/token: when a double-click landed on a later token (e.g. **bold**, backticks) the walk could
+    // not find a direct child of the first span, the offset was pinned to the end of the first token,
+    // and caretFrag got a==b and failed outright. locatePlain/offsetAtX already recurse down
+    // the whole subtree, so a binary search over the row gives the exact char offset in the whole-line coordinate system.
     const rowText = node.textContent ?? "";
     let off = 0;
     if (rowText.trim()) {
@@ -2060,23 +2061,23 @@ function caretFrag(entry) {
     diagSel(`caretFrag ✗ A=${A ? A.entry.path.slice(-14) : "null"} B=${B ? B.entry.path.slice(-14) : "null"} (falls back to text match)`);
     return null;
   }
-  // gesto NATIVO: doble-click = palabra, triple-click = línea, drag = rango.
-  // "moved" separa click (sin arrastre, jitter ≤3px) de drag real — un drag
-  // derecha→izquierda en la MISMA fila no debe caer al branch de palabra.
+  // NATIVE gesture: double-click = word, triple-click = line, drag = range.
+  // "moved" separates click (no drag, jitter ≤3px) from a real drag — a right-to-
+  // left drag on the SAME row must not fall into the word branch.
   const moved = Math.abs(dragPath.x1 - dragPath.x0) > 3 || Math.abs(dragPath.y1 - dragPath.y0) > 3;
   const triple = (dragPath.detail || 1) >= 3;
   if (!moved && !triple && A.idx === B.idx) {
-    // doble-click / click sin arrastre: PALABRA bajo el caret (spec Damian —
-    // antes esto caía al fallback de texto y pintaba la LÍNEA ENTERA)
-    // 中文注释：rowText 取整行 textContent（跨 token），词边界用 Unicode 类
-    // （\p{L} 覆盖中日韩与带重音字母），否则中文行永远选不出词。
+    // double-click / click without drag: WORD under the caret (spec Damian —
+    // before this it fell back to text matching and painted the WHOLE LINE)
+    // rowText takes the whole line's textContent (across tokens), word boundaries use Unicode classes
+    // (\p{L} covers CJK and accented letters), otherwise a CJK line can never select a word.
     const row = contentRowsOf(entry)[A.idx];
     const sp = rowSpaces(row ?? document.createElement("div"));
     const rowText = sp.merged;
     const isWord = (ch) => /[\p{L}\p{N}_]/u.test(ch);
-    // el walk NO puede cruzar el borde de un run tachado: "beta̶gamma" (del
-    // pegado al add) sería UNA sola palabra y el doble-click pintaría los
-    // DOS lados juntos (restaurar + borrar a la vez)
+    // the walk must NOT cross the edge of a struck run: "beta̶gamma" (del
+    // glued to add) would be ONE single word and the double-click would paint
+    // BOTH sides together (restore + delete at once)
     const edge = (x) => sp.dels.some((d) => d.mStart === x || d.mEnd === x);
     let a = Math.min(A.off, rowText.length);
     let b = a;
@@ -2091,11 +2092,11 @@ function caretFrag(entry) {
   const last = A.idx <= B.idx ? B : A;
   const rows = contentRowsOf(entry);
   const rowText = (i) => rows[i]?.textContent ?? "";
-  // drag VERTICAL (el gesto natural para "estas líneas enteras"): filas
-  // completas — la componente horizontal no discrimina nada útil
-  // vertical = gesto claramente de líneas enteras: bajó media línea (14px) o
-  // más y casi sin componente horizontal. Diagonales cortas de palabra ya no
-  // clasifican (antes pintaban la fila entera).
+  // VERTICAL drag (the natural gesture for "these whole lines"): whole
+  // rows — the horizontal component discriminates nothing useful
+  // vertical = clearly a whole-lines gesture: it went down half a line (14px) or
+  // more and almost without a horizontal component. Short word diagonals no longer
+  // classify (before, they painted the whole row).
   const vertical = Math.abs(dragPath.y1 - dragPath.y0) >= 14 && Math.abs(dragPath.x1 - dragPath.x0) < 8;
   let offA;
   let offB;
@@ -2103,8 +2104,8 @@ function caretFrag(entry) {
     offA = 0;
     offB = rowText(last.idx).length;
   } else if (first.idx === last.idx) {
-    // drag DENTRO de una fila: derecha→izquierda da A.off > B.off — se
-    // normaliza (mismo resultado que izquierda→derecha, como el editor).
+    // drag INSIDE one row: right→left gives A.off > B.off — it is
+    // normalized (same result as left→right, like the editor).
     offA = Math.min(first.off, last.off);
     offB = Math.max(first.off, last.off);
   } else {
@@ -2114,10 +2115,10 @@ function caretFrag(entry) {
   return fragsFromMergedRange(entry, first.idx, last.idx, offA, offB);
 }
 
-// frag lado OLD de un run tachado de la fila idx: pintarlo restaura la línea
-// ORIGINAL y saca a su pareja verde (semántica pareja atómica de revertFrags:
-// "roja pintada → pareja completa"). offA/offB en la línea VIEJA; line = el
-// número de línea del ARCHIVO viejo (dataset.daOldLine, fijado al parear).
+// OLD-side frag of a struck run in row idx: painting it restores the
+// ORIGINAL line and removes its paired green one (atomic-pair semantics of revertFrags:
+// "red painted → full pair"). offA/offB on the OLD line; line = the
+// old FILE's line number (dataset.daOldLine, fixed when pairing).
 function oldFragOf(entry, idx, row, run) {
   const oldLine = row.dataset.daOld ?? "";
   let offA = oldLine.indexOf(run.text);
@@ -2130,10 +2131,10 @@ function oldFragOf(entry, idx, row, run) {
   };
 }
 
-// Selección merged [offA,offB) de las filas firstIdx..lastIdx → LISTA de
-// frags: el texto no-tachado es UN frag new (offsets de cirugía, espacios
-// new por fila) y cada run tachado cubierto aporta su frag old. Un drag que
-// abarca tachados y nuevos pinta AMBOS lados (coexistencia, spec 0.9.3).
+// Merged selection [offA,offB) of rows firstIdx..lastIdx → LIST of
+// frags: the non-struck text is ONE new frag (surgery offsets, new
+// spaces per row) and each covered struck run contributes its old frag. A drag that
+// spans struck and new text paints BOTH sides (coexistence, spec 0.9.3).
 function fragsFromMergedRange(entry, firstIdx, lastIdx, offA, offB) {
   const rows = contentRowsOf(entry);
   const out = [];
@@ -2164,13 +2165,13 @@ function fragsFromMergedRange(entry, firstIdx, lastIdx, offA, offB) {
     }
   }
   if (newParts.length) out.unshift({ side: "new", firstRowIdx: nFirst, lastRowIdx: nLast, offA: nA, offB: nB, text: newParts.join("\n") });
-  // selección de puros espacios (o vacía tras partir por tachados): no pinta
-  // (mismo criterio que tenía el drag: !t.trim() → null)
+  // selection of pure spaces (or empty after splitting by strikethroughs): paints nothing
+  // (same criterion the drag had: !t.trim() → null)
   return out.some((f) => f.text.trim()) ? out : [];
 }
 
-// Selección → frag. PRIMERO geometría (camino del drag + carets, exacto);
-// si no hay camino usable, match del texto contra las filas (fallback).
+// Selection → frag. FIRST geometry (drag path + carets, exact);
+// if there is no usable path, match the text against the rows (fallback).
 function paintFromSelection(entry, rows, text) {
   const byCaret = caretFrag(entry);
   if (byCaret) return toggleFrag(entry, byCaret);
@@ -2183,14 +2184,14 @@ function paintFromSelection(entry, rows, text) {
   const lines = text.split("\n");
   const firstText = crows[first]?.textContent ?? "";
   const lastText = crows[last]?.textContent ?? "";
-  // línea vacía = la selección nace/muere EN el borde de la fila (no un
-  // "endsWith('')" que mandaría el offset al otro extremo)
+  // empty line = the selection starts/ends AT the row's edge (not an
+  // "endsWith('')" that would send the offset to the other end)
   const firstLine = lines[0] ?? "";
   const lastLine = lines[lines.length - 1] ?? "";
-  // OCURRENCIA por GEOMETRÍA, no por orden de texto: si la palabra se
-  // repite en la fila, indexOf/endsWith pintan una gemela cualquiera ("me
-  // selecciona todas las palabras idénticas"). Elegimos la ocurrencia cuyo
-  // rect queda más cerca del punto donde soltaste el mouse.
+  // OCCURRENCE by GEOMETRY, not by text order: if the word repeats
+  // in the row, indexOf/endsWith paint some arbitrary twin ("it
+  // selects all identical words"). We choose the occurrence whose
+  // rect is closest to the point where you released the mouse.
   const occurrenceAt = (rowEl, line, nearX) => {
     const t = rowEl?.textContent ?? "";
     const hits = [];
@@ -2206,7 +2207,7 @@ function paintFromSelection(entry, rows, text) {
         if (!r.width && !r.height) continue;
         const d = nearX < r.left ? r.left - nearX : nearX > r.right ? nearX - r.right : 0;
         if (d < bestD) { bestD = d; best = h; }
-      } catch { /* rect degenerado: probamos las demás */ }
+      } catch { /* degenerate rect: we try the others */ }
     }
     return best;
   };
@@ -2235,27 +2236,27 @@ let lastFragPaint = null; // {gesture} — un gesto pinta UNA vez
 function toggleFrag(entry, fragsIn) {
   const fragList = Array.isArray(fragsIn) ? fragsIn : [fragsIn];
   if (!fragList.length) return;
-  // Un mismo gesto genera VARIAS selectionchange (release → settle) y cada
-  // una puede re-pintar: mismo frag lo despintaba (toggle), frag DISTINTO
-  // (caret vs fallback por texto) dejaba strays (e2e: "them"+"cit" del mismo
-  // drag). Lock por gesto: la primera pintada post-release gana; un gesto
-  // NUEVO (pointerdown) resetea. Entre gestos el toggle sigue valiendo
-  // (repintar lo mismo a propósito = despintar, spec).
+  // One same gesture generates SEVERAL selectionchange events (release → settle) and each
+  // one can repaint: the same frag unpainted it (toggle), a DIFFERENT frag
+  // (caret vs text fallback) left strays (e2e: "them"+"cit" from the same
+  // drag). Lock per gesture: the first paint after release wins; a NEW
+  // gesture (pointerdown) resets. Between gestures the toggle still holds
+  // (repainting the same on purpose = unpaint, spec).
   const gesture = dragPath?.at ?? 0;
   if (lastFragPaint?.gesture === gesture) return;
   lastFragPaint = { gesture };
   diagSel(`toggle ${fragList.map((f) => `[${f.side ?? "new"} ${f.firstRowIdx}-${f.lastRowIdx} @${f.offA}-${f.offB}] "${f.text.slice(0, 10)}"`).join(" ")} g=${gesture}`);
   lastPaintedEntry = entry;
   const list = fragSel.get(entry.path) ?? [];
-  // 中文注释：画笔永远累加（spec：选一个词再选另一个，两个都保持）。
-  // 旧 neutral 分支用单条替换（fragSel.set([frag])），用户看到的就是
-  // "选第二个词时第一个被擦掉"。模式开关只改变执行入口，不改变累加语义。
-  // COEXISTENCIA por chars (spec Damian 27/10: "se despinta lo pintado al
-  // pintar lo nuevo" + "3 palabras separadas en una línea tienen que quedar
-  // las 3"): sólo se reemplaza lo que SOLAPA caracteres con lo nuevo — y el
-  // solape se mide en espacio MERGED (tachados incluidos como territorio
-  // propio: el frag old de un run no comparte chars con el frag new que lo
-  // rodea, así un drag mixto no se come a sus propios hermanos).
+  // The brush ALWAYS accumulates (spec: pick one word then another, both stay).
+  // The old neutral branch used a single replacement (fragSel.set([frag])), so the user saw
+  // "the first word is erased when I pick the second". The mode switch only changes the execution entry, not the accumulation semantics.
+  // COEXISTENCE per char (spec Damian 27/10: "what is painted gets unpainted when
+  // painting the new" [translated] + "3 separate words on one line have to stay
+  // all 3" [translated]): only what OVERLAPS chars with the new one is replaced — and the
+  // overlap is measured in MERGED space (strikethroughs included as their own
+  // territory: a run's old frag shares no chars with the new frag around
+  // it, so a mixed drag does not eat its own siblings).
   const mSegsOf = (f) => {
     const rows = contentRowsOf(entry);
     const out = [];
@@ -2283,7 +2284,7 @@ function toggleFrag(entry, fragsIn) {
   const sameFrag = (f, g) => !!f && !!g && f.side === g.side && f.firstRowIdx === g.firstRowIdx && f.lastRowIdx === g.lastRowIdx && f.offA === g.offA && f.offB === g.offB;
   let next;
   const eqs = fragList.map((g) => list.find((f) => sameFrag(f, g)));
-  if (eqs.length && eqs.every(Boolean)) next = list.filter((f) => !eqs.includes(f)); // repintar lo MISMO a propósito = despintar
+  if (eqs.length && eqs.every(Boolean)) next = list.filter((f) => !eqs.includes(f)); // repainting the SAME on purpose = unpaint
   else {
     next = list.filter((f) => !overlaps(f));
     next.push(...fragList);
@@ -2293,10 +2294,10 @@ function toggleFrag(entry, fragsIn) {
   else fragSel.delete(entry.path);
   renderFragUI(entry);
   renderFragBadge(entry);
-  // En modo brocha (?/↩) NO hay popup flotante: el botón del header ES el
-  // ejecutor y Enter también (spec Damian 27/10: los botones flotantes de
-  // pregunta y rollback no deben estar en el modo de pintar). Sin modo:
-  // pintada única + popup inmediato.
+  // In brush mode (?/↩) there is NO floating popup: the header button IS the
+  // executor and Enter too (spec Damian 27/10: the floating question and
+  // rollback buttons must not be in paint mode). Without mode:
+  // single paint + immediate popup.
   if (fragModes.get(entry.path)) return hideSelPop("modo brocha");
   if (fragSel.get(entry.path)?.length) {
     const rows = contentRowsOf(entry);
@@ -2307,7 +2308,7 @@ function toggleFrag(entry, fragsIn) {
   }
 }
 
-// franjas de lo pintado: rects reales de la porción [a,b) de cada fila
+// stripes of what is painted: real rects of the [a,b) portion of each row
 function renderFragUI(entry) {
   let layer = entry.body.querySelector(".frag-layer");
   const frags = fragSel.get(entry.path) ?? [];
@@ -2321,13 +2322,13 @@ function renderFragUI(entry) {
   try {
     renderFragRows(entry, layer, frags);
   } catch (err) {
-    // telemetría del throw: fila/datos exactos que lo causan
+    // throw telemetry: exact row/data that cause it
     const rows = contentRowsOf(entry);
     const dump = frags.flatMap((f) => {
       const out = [];
       for (let i = f.firstRowIdx; i <= f.lastRowIdx && out.length < 4; i++) {
         const c = rows[i];
-        out.push({ i, hay: !!c, span: !!c?.querySelector("span"), tc: (c?.textContent ?? "").length, offA: f.offA, offB: f.offB, tipo: c?.dataset?.lineType });
+        out.push({ i, has: !!c, span: !!c?.querySelector("span"), tc: (c?.textContent ?? "").length, offA: f.offA, offB: f.offB, type: c?.dataset?.lineType });
       }
       return out;
     });
@@ -2341,15 +2342,15 @@ function renderFragRows(entry, layer, frags) {
   const frag = document.createDocumentFragment();
   for (const f of frags) {
     for (let i = f.firstRowIdx; i <= f.lastRowIdx; i++) {
-      // fila a fila a prueba de todo: una fila rara no puede tumbar el
-      // pintado entero (y si explota, el dump dice exactamente qué era)
+      // row by row, bulletproof: one odd row cannot take down the whole
+      // painting (and if it blows up, the dump says exactly what it was)
       try {
         const row = crows[i];
         if (!row) continue;
-        // 中文注释：行文本与高亮矩形都按整行计算（offset 坐标系一致）；
-        // 空行没有字符 rect，回退整行矩形——选中跨空行时视觉不断层。
-        // lado old → franja sobre el/los runs TACHADOS; lado new → segmentos
-        // merged del texto nuevo (partidos por los tachados, sin invadirlos)
+        // Row text and highlight rects are both computed over the whole line (consistent offset space);
+        // an empty line has no char rect, so fall back to the whole row's rect — the selection never breaks visually across empty lines.
+        // old side → stripe over the STRUCK run(s); new side → merged
+        // segments of the new text (split by the strikethroughs, without invading them)
         const nt = rowNewText(row);
         let rects = [];
         if (f.side === "old") {
@@ -2385,15 +2386,15 @@ function renderFragRows(entry, layer, frags) {
         }
       } catch (err) {
         const c = crows[i];
-        diagSel(`fila ${i} THROW ${err.message} ⟵ nodeType=${c?.nodeType} tc=${typeof c?.textContent} span=${!!c?.querySelector?.("span")} kids=${c?.childNodes?.length}`);
+        diagSel(`row ${i} THROW ${err.message} ⟵ nodeType=${c?.nodeType} tc=${typeof c?.textContent} span=${!!c?.querySelector?.("span")} kids=${c?.childNodes?.length}`);
       }
     }
   }
   layer.appendChild(frag);
 }
 
-// circulito de 4px para whitespace agregado (una corrida contigua
-// de espacios = un punto, no una hilera de puntos). Offsets en espacio NEW
+// 4px dot for added whitespace (a contiguous run
+// of spaces = one dot, not a row of dots). Offsets in NEW space
 function wcAddDot(frag, row, a, b, bodyRect, cls) {
   try {
     const rects = plainOffsetToRangeNS(row, a, b).getClientRects();
@@ -2407,22 +2408,24 @@ function wcAddDot(frag, row, a, b, bodyRect, cls) {
   } catch { /* skip */ }
 }
 
-// ---- 垫片方框：行内词级变化高亮（spec：整行全红/全绿时保持原底色，
-// 只换了个别词的行把那些词用更醒目的红/绿方框标出来）----
-// 配对单位是 hunk 内同序的 del↔add 行；没配上的行（纯新增/纯删除的
-// 余量）不标——整行新 = 整行红绿，正是 spec 要求的样子。
+// ---- shim box: inline word-level change highlight (spec: a whole red/green line keeps
+// its base background; rows with just a few changed words get those words marked with a
+// more visible red/green box) ----
+// The pairing unit is same-order del↔add rows inside a hunk; unpaired rows (pure addition /
+// pure deletion residue) are not marked — a whole new line = whole red/green, exactly what
+// the spec asks for.
 function wcAddRects(frag, row, a, b, bodyRect, cls) {
   try {
-    // offsets en espacio NEW: los tachados de la fila no existen para las
-    // cajas de los agregados
+    // offsets in NEW space: the row's strikethroughs do not exist for the
+    // boxes of the added text
     const rects = plainOffsetToRangeNS(row, a, b).getClientRects();
     for (const r of rects) {
       if (!r.width && !r.height) continue;
       const d = document.createElement("div");
       d.className = cls;
-      // 1px de aire por lado: con UNA CAJA POR PALABRA y el espacio limpio
-      // entre ellas, las cajas vecinas ya no se tocan (padX 2 las superponía
-      // 4px cuando cambiaban muchas palabras — spec 28/10 "difícil leer")
+      // 1px of air per side: with ONE BOX PER WORD and clean space
+      // between them, neighbor boxes no longer touch (padX 2 overlapped them
+      // by 4px when many words changed — spec 28/10 "hard to read")
       const padX = 1;
       const padY = 1.5;
       d.style.top = `${Math.max(0, r.top - bodyRect.top - padY)}px`;
@@ -2431,31 +2434,31 @@ function wcAddRects(frag, row, a, b, bodyRect, cls) {
       d.style.height = `${r.height + padY * 2}px`;
       frag.appendChild(d);
     }
-  } catch { /* 行结构异常：跳过该标记 */ }
+  } catch { /* weird row structure: skip that mark */ }
 }
 
 function markChangedWords(entry) {
-  // 中文注释：编辑模式是纯编辑视图（spec），不画任何 overlay。
+  // Edit mode is a pure editing view (spec), it draws no overlay at all.
   if (entry.edit) return;
   const rows = contentRowsOf(entry);
   const bodyRect = entry.body.getBoundingClientRect();
   let layer = entry.body.querySelector(".wc-layer");
   if (!rows.length) { layer?.remove(); entry._wcSig = null; return; }
-  // 幂等签名：行数 + 变更行文本总长 + 宿主高度。高度很关键：文件折叠时
-  // 行 rect 全是 0（标记全部被跳过但签名已记下），展开后只有高度变化
-  // 才能让签名失效并重新计算（e2e 实测：展开后垫片永远不出现）。
-  // 另外空层也重试——签名相等但没有标记成功过，多半是布局还没就绪。
-  // El largo se mide en espacio NEW (sin tachados): insertar los runs del
-  // no cambia la firma — la inserción es idempotente y estable.
+  // Idempotent signature: line count + total length of changed row text + host height. Height is key:
+  // with the file collapsed the row rects are all 0 (all marks are skipped but the signature was already recorded), and after
+  // expanding only a height change can invalidate the signature and recompute (e2e measured: after expanding, the shims never appeared).
+  // Also retry on an empty layer — equal signature but no mark ever succeeded is most likely a layout that is not ready yet.
+  // Length is measured in NEW space (without strikethroughs): inserting the
+  // runs does not change the signature — the insertion is idempotent and stable.
   const host = entry.body.querySelector("diffs-container");
   const hostH = Math.round(host?.getBoundingClientRect().height ?? -1);
   let sig = `${rows.length}:${hostH}`;
   for (const r of rows) if (r.dataset.lineType === "change-deletion" || r.dataset.lineType === "change-addition") sig += ":" + rowNewText(r).length;
-  // UNA fila por línea: OBSOLETO — spec FINAL Damian 28/10: "quiero ver un
-  // diff normal, línea a línea, como en GitHub: la línea roja con la palabra
-  // en rojo resaltada, y ABAJO la línea verde con la palabra verde
-  // resaltada". AMBAS filas visibles siempre; sin tachados ni colapso. El
-  // reset sigue por si un build viejo dejó filas escondidas/tachadas.
+  // ONE row per line: OBSOLETE — FINAL spec Damian 28/10: "I want to see a
+  // normal diff, line by line, like on GitHub: the red line with the word
+  // highlighted in red, and BELOW the green line with the word in green
+  // highlighted" [translated]. BOTH rows always visible; no strikethroughs and no collapse. The
+  // reset stays in case an old build left rows hidden/struck.
   const groups = [];
   {
     let i = 0;
@@ -2478,13 +2481,13 @@ function markChangedWords(entry) {
       delete r.dataset.daMergeKey;
     }
   }
-  // el color de las cajitas es el VERDE/ROJO REAL del diff: se muestrea el
-  // backgroundColor de una fila (+/-) del propio componente (respeta tema
-  // claro/oscuro). Pierre expone el color en sintaxis MODERNA (lab(...) —
-  // visto en el e2e) y NINGUNA normalización clásica lo aplana (canvas
-  // incluido): no se parsea nada, las cajitas usan var(--wc-*) con opacity
-  // 0.25 y el navegador resuelve (spec Damian: "la palabra resaltada, 25%
-  // más fuerte que la fila").
+  // the boxes' color is the REAL GREEN/RED of the diff: we sample the
+  // backgroundColor of a (+/-) row of the component itself (respects light/dark
+  // theme). Pierre exposes the color in MODERN syntax (lab(...) —
+  // seen in the e2e) and NO classic normalization flattens it (canvas
+  // included): nothing is parsed, the boxes use var(--wc-*) with opacity
+  // 0.25 and the browser resolves (spec Damian: "the highlighted word, 25%
+  // stronger than the row" [translated]).
   const solid = (row) => {
     if (!row) return null;
     const raw = getComputedStyle(row).backgroundColor;
@@ -2506,12 +2509,12 @@ function markChangedWords(entry) {
     entry.body.appendChild(layer);
   }
   layer.textContent = "";
-  // GitHub-style: la fila ROJA lleva su palabra removida resaltada en rojo,
-  // la fila VERDE su palabra agregada en verde (changedWordRanges por pareja
-  // del mismo cambio). UNA CAJA POR PALABRA (spec 28/10): el rango mergeado
-  // cubre "word1 word2 word3" entero = un bloque continuo difícil de leer
-  // cuando cambian muchas palabras; partiendo por palabra, el espacio queda
-  // limpio entre cajas y la línea se lee.
+  // GitHub-style: the RED row carries its removed word highlighted in red,
+  // the GREEN row its added word in green (changedWordRanges per pair
+  // of the same change). ONE BOX PER WORD (spec 28/10): the merged range
+  // covers "word1 word2 word3" whole = one continuous block that is hard to read
+  // when many words change; splitting per word leaves clean space
+  // between boxes and the line reads.
   const frag = document.createDocumentFragment();
   for (const g of groups) {
     const n = Math.min(g.dels.length, g.adds.length);
@@ -2530,15 +2533,15 @@ function markChangedWords(entry) {
   layer.appendChild(frag);
 }
 
-// (Los tachados inline de la 0.9.8 y la burbuja de hover se ELIMINARON en
-// 0.9.11: spec final Damian — diff clásico línea a línea como GitHub, la
-// fila ROJA visible con su palabra resaltada y la VERDE debajo con la suya.)
+// (The inline strikethroughs of 0.9.8 and the hover bubble were REMOVED in
+// 0.9.11: final spec Damian — classic line-by-line diff like GitHub, the
+// RED row visible with its word highlighted and the GREEN one below with its own.)
 
 function clearFrags(entry) {
   fragSel.delete(entry.path);
   renderFragUI(entry);
   renderFragBadge(entry);
-  hideSelPop("esc despinta");
+  hideSelPop("esc unpaints");
 }
 
 function renderFragBadge(entry) {
@@ -2549,11 +2552,11 @@ function renderFragBadge(entry) {
     const active = mode === m;
     btn.classList.toggle("on", active);
     if (m === "ask") btn.textContent = active ? (n ? "?✓" : "?") : "?";
-    // ↩ DOBLE apilado (spec Damian 28/10): distingue el rollback MULTI-
-    // LÍNEA (quirúrgico, dos flechas) del rollback de ARCHIVO (una)
+    // STACKED DOUBLE ↩ (spec Damian 28/10): distinguishes the MULTI-LINE
+    // rollback (surgical, two arrows) from the FILE rollback (one)
     else btn.innerHTML = '<span class="dbl">↩</span><span class="dbl">↩</span>' + (active && n ? '<span class="ok">✓</span>' : "");
     btn.title = active
-      ? (n ? `Ejecutar sobre ${n} fragmento${n === 1 ? "" : "s"} pintado${n === 1 ? "" : "s"} (Esc despinta)` : "Paint mode to ask — select fragments")
+      ? (n ? `Run on ${n} painted fragment${n === 1 ? "" : "s"} (Esc unpaints)` : "Paint mode to ask — select fragments")
       : m === "ask"
         ? "Brush mode: paint fragments and then ask"
         : "Brush mode: paint fragments and then revert (surgical)";
@@ -2563,7 +2566,7 @@ function renderFragBadge(entry) {
 function setFragMode(entry, m) {
   const cur = fragModes.get(entry.path);
   if (cur === m) {
-    // ya activo: con pintadas = EJECUTAR; sin pintadas = apagar
+    // already active: with paints = RUN; without paints = turn off
     const n = fragSel.get(entry.path)?.length ?? 0;
     if (n && m === "ask") return openFragComposer(entry);
     if (n && m === "rev") return revertPainted(entry);
@@ -2574,13 +2577,13 @@ function setFragMode(entry, m) {
   renderFragBadge(entry);
 }
 
-// ---- ejecutores ----
+// ---- executors ----
 function fragsToLib(entry) {
   const crows = contentRowsOf(entry);
   const out = [];
   for (const f of fragSel.get(entry.path) ?? []) {
-    // frag old (tachado pintado): restaurar la línea vieja — line/offA/offB
-    // ya vienen en el idioma del archivo ANTES (fijados al pintar el run)
+    // old frag (painted strikethrough): restore the old line — line/offA/offB
+    // already come in the BEFORE file's language (fixed when painting the run)
     if (f.side === "old") {
       if (Number.isFinite(f.line)) out.push({ side: "old", line: f.line, offA: f.offA, offB: f.offB });
       continue;
@@ -2588,10 +2591,10 @@ function fragsToLib(entry) {
     for (let i = f.firstRowIdx; i <= f.lastRowIdx; i++) {
       const row = crows[i];
       if (!row) continue;
-      // 中文注释：与 renderFragRows 同一坐标系—— offsets en espacio NEW
-      // (sin los runs tachados insertados en la fila): es el idioma de
-      // afterLines/beforeLines, lo que garantiza que el revert toque los
-      // chars QUE SE VEN pintados.
+      // Same coordinate space as renderFragRows — offsets in NEW space
+      // (without the struck runs inserted in the row): it is the language of
+      // afterLines/beforeLines, which guarantees the revert touches the
+      // chars THAT ARE SEEN painted.
       const nt = rowNewText(row);
       const a = i === f.firstRowIdx ? f.offA : 0;
       const b = i === f.lastRowIdx ? Math.min(f.offB, nt.length) : nt.length;
@@ -2631,13 +2634,13 @@ async function openFragComposer(entry) {
   card.innerHTML = `
     <div class="composer-head">
       <span class="anchor"></span>
-      <button class="ghost close" title="Cancelar">✕</button>
+      <button class="ghost close" title="Cancel">✕</button>
     </div>
     <textarea rows="3"></textarea>
     <div class="composer-actions">
-      <span class="hint">⌘↵ envía</span>
-      <button class="ghost cancel">Cancelar</button>
-      <button class="primary ask">Preguntar</button>
+      <span class="hint">⌘↵ sends</span>
+      <button class="ghost cancel">Cancel</button>
+      <button class="primary ask">Ask</button>
     </div>`;
   card.querySelector(".anchor").textContent = `${entry.path} · ${frags.length} fragmento${frags.length === 1 ? "" : "s"}`;
   const ta = card.querySelector("textarea");
@@ -2649,16 +2652,16 @@ async function openFragComposer(entry) {
   const submit = () => {
     const q = ta.value.trim();
     if (!q) { ta.focus(); return; }
-    // cita verbatim: los fragmentos concatenados con separador ⋯
+    // verbatim quote: the fragments concatenated with a ⋯ separator
     const quote = [];
     frags.forEach((f, i) => {
       if (i) quote.push("⋯");
       quote.push(...f.text.split("\n"));
     });
-    // MARCAS EXACTAS (bug Damian 28/10: dos palabras de filas lejanas
-    // subrayaban TODAS las intermedias): el anclado lleva las filas EXACTAS
-    // de cada frag (spans) y el nombra las líneas una por una — el rango
-    // min-max queda sólo como fallback numérico.
+    // EXACT MARKS (bug Damian 28/10: two words from distant rows
+    // underlined ALL the rows in between): the anchor carries the EXACT rows
+    // of every frag (spans) and names the lines one by one — the
+    // min-max range stays only as a numeric fallback.
     const rows = contentRowsOf(entry);
     const spans = frags.map((f) => ({ first: f.firstRowIdx, last: f.lastRowIdx }));
     const labelLines = spans
@@ -2698,7 +2701,7 @@ async function revertPainted(entry) {
   clearFrags(entry);
 }
 
-// mini aviso efímero (p.ej. "no diff selected") — infimo, esquina inferior
+// ephemeral mini notice (e.g. "no diff selected") — tiny, bottom corner
 function miniNotice(msg) {
   const d = document.createElement("div");
   d.className = "mini-notice";
@@ -2707,7 +2710,7 @@ function miniNotice(msg) {
   setTimeout(() => d.remove(), 2200);
 }
 
-// Esc en cascada: composer → findbar → pintado del activo → edición (descarta)
+// Cascading Esc: composer → findbar → active paint → editing (discard)
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   const composer = document.querySelector(".composer");
@@ -2716,10 +2719,10 @@ document.addEventListener("keydown", (e) => {
   if (fb && !fb.hidden) { closeFindbar(); return; }
   const entry = lastPaintedEntry && rendered.get(lastPaintedEntry.path) ? lastPaintedEntry : null;
   if (entry && (fragSel.get(entry.path)?.length || fragModes.get(entry.path))) {
-    // 中文注释：Esc 顺手收起原生选区——不收起的话，选区会变僵尸：之后
-    // 任何 selectionchange（点文件头/按钮）都会让文本匹配把旧词重新
-    // 画出来（e2e 实测："señal"在另一个文件里复活成幽灵 frag）。
-    try { document.getSelection()?.removeAllRanges(); } catch { /* 选区只读时无所谓 */ }
+    // Esc also collapses the native selection — if not, the selection turns zombie: afterwards
+    // any selectionchange (clicking a file header/button) lets text matching repaint the old word
+    // (e2e measured: a Spanish test word came back as a ghost frag in another file).
+    try { document.getSelection()?.removeAllRanges(); } catch { /* a read-only selection does not matter */ }
     clearFrags(entry);
     fragModes.delete(entry.path);
     renderFragBadge(entry);
@@ -2727,15 +2730,15 @@ document.addEventListener("keydown", (e) => {
   }
   const editing = entry?.edit ? entry : [...rendered.values()].find((en) => en.edit);
   if (editing) {
-    // ✏️ mismo contrato que ?: apretar de nuevo acepta, Esc DESESTIMA todo
+    // ✏️ same contract as ?: pressing again accepts, Esc DISMISSES everything
     discardAllEdits();
   }
 });
 
-// ------------------------------------------------ hover-＋ (riel izquierdo)
-// Hover en una línea → ＋ chiquito pegado a la IZQUIERDA (sobre los números,
-// nunca sobre el texto seleccionable). Se va con el mouse. Click → composer
-// de esa línea. Un solo botón global que vive en el body de su archivo.
+// ------------------------------------------------ hover-＋ (left rail)
+// Hover on a line → small ＋ glued to the LEFT (over the numbers,
+// never over selectable text). It goes with the mouse. Click → composer
+// for that line. A single global button that lives in its file's body.
 let hoverPlus = null;
 let hoverRevert = null;
 let hoverRow = null;
@@ -2756,9 +2759,9 @@ function rangeOfRow(row) {
 }
 
 function showHoverPlus(entry, row) {
-  // 中文注释：编辑模式（✏️ 按下）是纯编辑视图——spec 规定不带任何
-  // overlay。旧的 hover ＋/↩ 会照常浮出来，看起来像"选中文字的弹窗
-  // 跑进了编辑模式"。
+  // Edit mode (✏️ pressed) is a pure editing view — the spec requires no
+  // overlay at all. The old hover ＋/↩ floated anyway, looking like "the text
+  // selection popup ran into edit mode".
   if (entry.edit) return hideHoverPlus();
   if (row === hoverRow && hoverPlus?.isConnected) return;
   hideHoverPlus();
@@ -2773,8 +2776,8 @@ function showHoverPlus(entry, row) {
     openComposer(entry, entry.path, rangeOfRow(row), { row, span: { first: idx, last: idx } });
   };
   entry.body.appendChild(hoverPlus);
-  // ↩ por línea en el riel DERECHO (donde viven los 💬): sólo filas CAMBIADAS
-  // (agregada se quita / borrada vuelve). Convive con el ＋ izquierdo.
+  // ↩ per line on the RIGHT rail (where the 💬 live): only CHANGED rows
+  // (an added one is removed / a deleted one comes back). Coexists with the left ＋.
   const t = row.dataset.lineType;
   if (t === "change-addition" || t === "change-deletion") {
     hoverRevert = document.createElement("button");
@@ -2796,31 +2799,31 @@ function showHoverPlus(entry, row) {
 
 document.addEventListener("pointermove", (e) => {
   if (boxDrag) { hideHoverPlus(); return; }
-  if (e.target.closest?.(".hover-plus")) return; // parado sobre el ＋: queda
+  if (e.target.closest?.(".hover-plus")) return; // standing on the ＋: it stays
   const body = e.target.closest?.(".file-body");
   if (!body) { hideHoverPlus(); return; }
   let entry = null;
   for (const en of rendered.values()) if (en.body === body) { entry = en; break; }
-  if (!entry || entry.edit) { hideHoverPlus(); return; } // edición = puro editor
+  if (!entry || entry.edit) { hideHoverPlus(); return; } // editing = pure editor
   const row = rowFromPoint(e.clientX, e.clientY, entry);
   if (!row) { hideHoverPlus(); return; }
   showHoverPlus(entry, row);
 });
 document.documentElement.addEventListener("pointerleave", hideHoverPlus);
 
-// ------------------------------------------------- filas del shadow DOM
-// El acceso a las filas de pierre (shadow DOM) para hover-＋ y cajitas:
-// document.elementFromPoint NO atraviesa el shadow (devuelve el host), hay
-// que preguntarle directo al shadowRoot del diffs-container.
+// ------------------------------------------------- shadow DOM rows
+// Access to pierre's rows (shadow DOM) for hover-＋ and checkboxes:
+// document.elementFromPoint does NOT cross the shadow (it returns the host), you have to
+// ask the diffs-container's shadowRoot directly.
 function contentRowsOf(entry) {
   const content = entry.body.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-content]");
   return content ? [...content.children].filter((r) => r.hasAttribute("data-line")) : [];
 }
 
-// Fila bajo un punto: GEOMETRÍA sobre los rects de las filas de contenido.
-// El hit-test clásico no sirve acá: nuestros overlays (cajitas, franjas,
-// hover-＋) tapan el punto y elementFromPoint los devuelve a ellos — medir
-// rects es inmune a lo que esté encima (y no depende del shadow DOM).
+// Row under a point: GEOMETRY over the content rows' rects.
+// Classic hit-testing does not work here: our overlays (checkboxes, stripes,
+// hover-＋) cover the point and elementFromPoint returns them — measuring
+// rects is immune to whatever is on top (and does not depend on the shadow DOM).
 function rowFromPoint(x, y, entry) {
   for (const r of contentRowsOf(entry)) {
     const rect = r.getBoundingClientRect();
@@ -2829,8 +2832,8 @@ function rowFromPoint(x, y, entry) {
   return null;
 }
 
-// Lado del ancla de un conjunto de filas: si toca algo no-borrado es el
-// lado nuevo; si es todo borrado, el viejo (mismo criterio que el resto).
+// Anchor side of a set of rows: if it touches something not-deleted it is the
+// new side; if it is all deletions, the old one (same criterion as the rest).
 function rangeFromRows(rows) {
   const news = [];
   const olds = [];
@@ -2847,8 +2850,8 @@ function rangeFromRows(rows) {
   return { start: Math.min(...nums), end: Math.max(...nums), side: byNew ? "additions" : "deletions" };
 }
 
-// Composer de la SELECCIÓN multi: filas seleccionadas → corridas → rangos
-// numéricos por lado; el ＋ grande (debajo de la última cajita) abre esto.
+// Composer for the multi SELECTION: selected rows → runs → numeric
+// ranges per side; the big ＋ (below the last checkbox) opens this.
 function openComposerMulti(entry) {
   const rows = selectedRowsOf(entry);
   if (!rows.length) return;
@@ -2875,13 +2878,13 @@ function openComposerMulti(entry) {
   card.innerHTML = `
     <div class="composer-head">
       <span class="anchor"></span>
-      <button class="ghost close" title="Cancelar">✕</button>
+      <button class="ghost close" title="Cancel">✕</button>
     </div>
     <textarea rows="3"></textarea>
     <div class="composer-actions">
-      <span class="hint">⌘↵ envía</span>
-      <button class="ghost cancel">Cancelar</button>
-      <button class="primary ask">Preguntar</button>
+      <span class="hint">⌘↵ sends</span>
+      <button class="ghost cancel">Cancel</button>
+      <button class="primary ask">Ask</button>
     </div>`;
   card.querySelector(".anchor").textContent = `${entry.path}:${lines}`;
   const ta = card.querySelector("textarea");
@@ -2899,7 +2902,7 @@ function openComposerMulti(entry) {
       lines, label: `lines ${lines} · ${side}`, side, quoteLines, question: q, spans, ranges,
     });
     close();
-    setBoxSel(entry, new Set()); // la pregunta quedó anclada: selección a cero
+    setBoxSel(entry, new Set()); // the ask got anchored: selection back to zero
     renderPile();
     renderAnchors();
   }
@@ -2911,9 +2914,9 @@ function openComposerMulti(entry) {
   ta.focus();
 }
 
-// Re-posicionado de anclajes REACTIVO: un solo rAF coalesce cualquier
-// cantidad de disparadores (onHunkExpand, observer estructural, colapso) —
-// cero "esperar N ms a ver si asentó".
+// REACTIVE anchor re-positioning: a single rAF coalesces any
+// number of triggers (onHunkExpand, structural observer, collapse) —
+// zero "wait N ms to see if it settled".
 let anchorsScheduled = false;
 function scheduleAnchors() {
   if (anchorsScheduled) return;
@@ -2924,10 +2927,10 @@ function scheduleAnchors() {
     const _stage = [];
     renderAnchors();
     const _a1 = performance.now();
-    // filas nuevas (expansión) o motor recién listo → re-pintar sintaxis.
-    // Archivo en EDICIÓN ✏️: NADA nuestro lo toca — el MutationObserver dispara
-    // con cada tecla del editor y nuestras capas (tokens, tachados, franjas)
-    // escribirían encima de filas vivas con contenido viejo.
+    // new rows (expansion) or engine just ready → repaint syntax.
+    // File in EDIT mode ✏️: NOTHING of ours touches it — the MutationObserver fires
+    // on every editor keystroke and our layers (tokens, strikethroughs, stripes)
+    // would write over live rows with stale content.
     for (const entry of rendered.values()) {
       if (!entry.fd || !entry.fileData || entry.edit) continue; // lazy: skip not-hydrated
       const _e0 = performance.now();
@@ -2935,20 +2938,20 @@ function scheduleAnchors() {
       if (l && HL_LANGS.has(l)) hlColorize(entry, l);
       const _e1 = performance.now();
       if (fragSel.has(entry.path)) renderFragUI(entry); // overlays tras repaint
-      try { markChangedWords(entry); } catch { /* 词级标记失败不影响主渲染 */ }
+      try { markChangedWords(entry); } catch { /* word-level marking failure does not affect the main render */ }
       const _e2 = performance.now();
       _stage.push({ path: entry.path, hl: Math.round(_e1 - _e0), mark: Math.round(_e2 - _e1) });
     }
-    // Al expandir un separador aparecen filas NUEVAS: re-marcar la búsqueda
-    // activa sin mover el scroll (el match podía estar en el contexto
-    // colapsado y hasta ahora era invisible para ⌘F).
+    // Expanding a separator brings NEW rows: re-mark the active search
+    // without moving the scroll (the match could be in the collapsed
+    // context and until now it was invisible to ⌘F).
     if (find.q && !document.getElementById("findbar")?.hidden) runFind(find.q, false);
     window.__DA_ANCHORS = { anchors: Math.round(_a1 - _a0), total: Math.round(performance.now() - _a0), entries: _stage, at: Date.now() };
   });
 }
 
-// La lib re-acomoda filas al expandir separadores / re-render de tema: el
-// observer del shadowRoot reacciona a esos cambios estructurales.
+// The lib re-arranges rows when expanding separators / a theme re-render: the
+// shadowRoot observer reacts to those structural changes.
 function attachStructureObserver(entry) {
   if (entry.structureObserver) return;
   const sr = entry.body.querySelector("diffs-container")?.shadowRoot;
@@ -2958,10 +2961,10 @@ function attachStructureObserver(entry) {
   entry.structureObserver = mo;
 }
 
-// ------------------------------------------------- anclajes inline (0.2.1)
-// Cada pregunta ANCLADA vive colapsada sobre su línea: un 💬 en el borde
-// derecho de la fila (chip en el file-head para archivo/línea oculta).
-// Click → editor in-place (editar / borrar). Free questions van a la pila.
+// ------------------------------------------------- inline anchors (0.2.1)
+// Every ANCHORED ask lives collapsed over its line: a 💬 on the row's right
+// edge (chip in the file-head for a file/hidden line).
+// Click → in-place editor (edit / delete). Free questions go to the pile.
 
 function ensureLayer(entry) {
   let layer = entry.body.querySelector(".anchor-layer");
@@ -2975,7 +2978,7 @@ function ensureLayer(entry) {
   return layer;
 }
 
-// La fila del shadow DOM que muestra esa línea (según el lado del ancla).
+// The shadow DOM row that shows that line (according to the anchor's side).
 function findRow(entry, start, side) {
   const host = entry.body.querySelector("diffs-container");
   const content = host?.shadowRoot?.querySelector("[data-content]");
@@ -2995,7 +2998,7 @@ function addHeadChip(entry, i, note) {
   chip.className = "head-marker";
   chip.textContent = "💬";
   const a = pendingAsks[i];
-  chip.title = note ? `${a.path}:${a.lines} (line not visible — expand it)` : `${a.path} · archivo`;
+  chip.title = note ? `${a.path}:${a.lines} (line not visible — expand it)` : `${a.path} · file`;
   chip.onclick = () => openInlineEditor(i, chip);
   entry.section.querySelector(".file-head .fplus").after(chip);
 }
@@ -3005,7 +3008,7 @@ function renderAnchors() {
   document.querySelectorAll(".head-marker").forEach((n) => n.remove());
   for (const entry of rendered.values()) {
     ensureLayer(entry);
-    renderSelUI(entry); // cajitas + franjas + ＋ grande sobreviven el re-render
+    renderSelUI(entry); // checkboxes + stripes + big ＋ survive the re-render
   }
   pendingAsks.forEach((a, i) => {
     if (a.kind === "free") return;
@@ -3031,7 +3034,7 @@ function renderAnchors() {
   applyQuestionMarks();
 }
 
-// Editor in-place del anclaje: editar la pregunta o borrarla, ahí mismo.
+// In-place editor of the anchor: edit the question or delete it, right there.
 function openInlineEditor(i, at) {
   document.querySelectorAll(".inline-editor").forEach((n) => n.remove());
   const a = pendingAsks[i];
@@ -3039,11 +3042,11 @@ function openInlineEditor(i, at) {
   const card = document.createElement("div");
   card.className = "inline-editor";
   card.innerHTML = `
-    <div class="ie-head"><span class="anchor"></span><button class="ghost danger ie-del" title="Borrar esta pregunta">🗑 Borrar</button></div>
+    <div class="ie-head"><span class="anchor"></span><button class="ghost danger ie-del" title="Delete this question">🗑 Delete</button></div>
     <textarea rows="2"></textarea>
-    <div class="ie-actions"><span class="hint">Enter guarda · Shift+Enter salto de línea</span><button class="primary ie-ok">Listo</button></div>`;
+    <div class="ie-actions"><span class="hint">Enter saves · Shift+Enter line break</span><button class="primary ie-ok">Done</button></div>`;
   card.querySelector(".anchor").textContent =
-    a.kind === "file" ? `${a.path} · archivo` : `${a.path}:${a.lines}`;
+    a.kind === "file" ? `${a.path} · file` : `${a.path}:${a.lines}`;
   const ta = card.querySelector("textarea");
   ta.value = a.question;
   ta.addEventListener("input", () => { a.question = ta.value; });
@@ -3060,22 +3063,22 @@ function openInlineEditor(i, at) {
   ta.focus();
 }
 
-// Nota: los clicks en NUESTRA UI (💬, editor, composer, ＋) no disparan
-// nada — el reposicionado llega por eventos (onHunkExpand, observer), no
-// por clicks adivinados con timers (los setTimeout de 0.2.4, fuera).
-// El editor flotante se cierra al scrollear (queda lejos de su línea).
+// Note: clicks on OUR UI (💬, editor, composer, ＋) trigger
+// nothing — re-positioning arrives through events (onHunkExpand, observer), not
+// through clicks guessed with timers (the 0.2.4 setTimeout calls, gone).
+// The floating editor closes on scroll (it is far from its line).
 document.getElementById("root").addEventListener("scroll", () => {
   document.querySelectorAll(".inline-editor").forEach((n) => n.remove());
 });
 
 // --------------------------------------------------------------- render
 
-// BORRADORES que sobreviven el refresh (URGENTE Damian 28/10: "estoy
-// escribiendo y si aparece un nuevo cambio me borra la caja y lo que
-// escribí"): clearRendered destruye las secciones y con ellas los composers
-// abiertos — se guardan con su archivo y renderAll los RE-CUELGA en la
-// sección nueva, texto y foco incluidos. Escribir mientras la carpeta
-// cambia tiene que ser posible.
+// DRAFTS that survive a refresh (URGENT Damian 28/10: "I am
+// typing and if a new change shows up it wipes my box and what
+// I wrote" [translated]): clearRendered destroys the sections and with them the open
+// composers — they are stashed with their file and renderAll RE-HANGS them in the
+// new section, text and focus included. Typing while the folder
+// changes has to be possible.
 let keptComposers = []; // { path, node, focus }
 function stashComposersOf(entry) {
   for (const card of entry.section.querySelectorAll(".composer")) {
@@ -3122,7 +3125,7 @@ function turnRepoHead(label, repo) {
   head.innerHTML = `<span class="trh-chev"></span><span class="trh-icon"></span><span class="trh-label"></span><span class="trh-counts"></span>`;
   head.querySelector(".trh-chev").textContent = collapsedGroups.has(label) ? "▸" : "▾";
   head.querySelector(".trh-icon").textContent = outside ? "📄" : "🗂";
-  head.querySelector(".trh-label").textContent = outside ? "Fuera de git" : label || "(sin repo)";
+  head.querySelector(".trh-label").textContent = outside ? "Outside git" : label || "(no repo)";
   // An app-backed turn (0.10.10) knows every file's before and after; the
   // captured model only meets loose files as they are now.
   head.title = outside
@@ -3131,7 +3134,7 @@ function turnRepoHead(label, repo) {
       : "Files the turn touched outside any git repository (shown whole in green; there is no way to know how they were before)."
     : `Every file in this group belongs to the repository ${repo?.path ?? label}`;
   const bits = [];
-  if (repo?.files !== undefined) bits.push(`${repo.files} archivo${repo.files === 1 ? "" : "s"}`);
+  if (repo?.files !== undefined) bits.push(`${repo.files} file${repo.files === 1 ? "" : "s"}`);
   if (repo?.commits) bits.push(`${repo.commits} commit${repo.commits === 1 ? "" : "s"}`);
   if (repo?.dirty) bits.push(`${repo.dirty} sucio${repo.dirty === 1 ? "" : "s"}`);
   if (repo?.dirtyHidden) bits.push(`+${repo.dirtyHidden} ruido oculto`);
@@ -3345,7 +3348,7 @@ function loadFileContent(entry) {
   setEntryBusy(entry, true);
   paintBodySkeleton(entry);
   fileLoadCount++;
-  const load = withTimeout(app.readServerResource({ uri: turnFileUri(entry.turnId, entry.path) }), "archivo", 15_000)
+  const load = withTimeout(app.readServerResource({ uri: turnFileUri(entry.turnId, entry.path) }), "file", 15_000)
     .then((res) => {
       const c = JSON.parse(res?.contents?.[0]?.text ?? "{}");
       if (c?.error) throw new Error(c.message ?? c.error);
@@ -3423,7 +3426,7 @@ function renderFileInner(f) {  const section = document.createElement("section")
     <span class="path"><span class="fname"></span><span class="fdir"></span></span>
     <span class="counts"></span>
     <span class="fh-spin" hidden title="Loading the file content…"></span>
-    <button class="ghost fplus" title="Preguntar sobre este archivo">＋</button>`;
+    <button class="ghost fplus" title="Ask about this file">＋</button>`;
   const langChip = head.querySelector(".lang-chip");
   if (badge.svg) {
     // Official vendored mark (static, trusted strings — see lang-icons.js).
@@ -3469,7 +3472,7 @@ function renderFileInner(f) {  const section = document.createElement("section")
       collapsedPaths.delete(f.path);
       hydrateFileDiff(entry);
     }
-    scheduleAnchors(); // rAF: reposicionar cuando el layout ya cambió
+    scheduleAnchors(); // rAF: re-position once the layout has changed
   });
   // Hover = prefetch (0.11.0): expanding a file right after pointing at it
   // finds the content already cached.
@@ -3632,7 +3635,7 @@ function hydrateFileDiff(entry) {
     const info = document.createElement("div");
     info.className = "plain-note";
     info.textContent =
-      f.status === "R" ? "Rename with no content changes." : "Sin parche (archivo grande o sin cambios de texto).";
+      f.status === "R" ? "Rename with no content changes." : "No patch (large file or no text changes).";
     entry.body.appendChild(info);
     return;
   }
@@ -3665,9 +3668,9 @@ function dehydrateFileDiff(entry) {
   entry._wcSig = null;
 }
 
-// Composer del ＋ por archivo: mismo look, sin setSelectedLines (no hay
-// rango). Funciona COLAPSADO también: la caja vive bajo el encabezado (el
-// body está display:none — el composer no puede ir ahí).
+// Composer of the per-file ＋: same look, no setSelectedLines (there is no
+// range). It also works COLLAPSED: the box lives under the header (the
+// body is display:none — the composer cannot go there).
 function openComposerFile(entry, path, summary) {
   closeComposer(entry);
   const card = document.createElement("div");
@@ -3675,16 +3678,16 @@ function openComposerFile(entry, path, summary) {
   card.innerHTML = `
     <div class="composer-head">
       <span class="anchor"></span>
-      <button class="ghost close" title="Cancelar">✕</button>
+      <button class="ghost close" title="Cancel">✕</button>
     </div>
     <textarea rows="3" placeholder="Ask about this file…"></textarea>
     <div class="composer-actions">
-      <span class="hint">⌘↵ envía</span>
-      <button class="ghost cancel">Cancelar</button>
-      <button class="primary ask">Preguntar</button>
+      <span class="hint">⌘↵ sends</span>
+      <button class="ghost cancel">Cancel</button>
+      <button class="primary ask">Ask</button>
     </div>`;
   const anchor = card.querySelector(".anchor");
-  anchor.textContent = `${path} · archivo`;
+  anchor.textContent = `${path} · file`;
   const ta = card.querySelector("textarea");
   const ask = card.querySelector(".ask");
   const close = () => card.remove();
@@ -3701,7 +3704,7 @@ function openComposerFile(entry, path, summary) {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); }
   });
   if (entry.section.classList.contains("collapsed")) {
-    // colapsado: bajo el head, estático — el body está oculto.
+    // collapsed: under the head, static — the body is hidden.
     card.classList.add("under-head");
     entry.section.appendChild(card);
     card.scrollIntoView({ block: "nearest" });
@@ -3728,11 +3731,11 @@ function renderModebar(root) {
     modebar.appendChild(b);
   }
   // 📁 repo selector + Commits button: ONLY in the repo tab (and its Commits
-  // sub-view). Turnos is global — there is no single repo to pick there.
+  // sub-view). Turns is global — there is no single repo to pick there.
   if (mode === "working" || mode === "commits") {
     const ws = document.createElement("button");
     ws.className = "ghost ws" + (wsChosen ? "" : " empty");
-    ws.textContent = wsChosen ? `📁 ${wsLabel()}` : "📁 seleccionar repositorio...";
+    ws.textContent = wsChosen ? `📁 ${wsLabel()}` : "📁 select repository...";
     ws.title = wsChosen && currentWorkspace
       ? `${currentWorkspace}\n(click to change the diff folder)`
       : "Choose the repository whose work you want to see";
@@ -3765,7 +3768,7 @@ function renderRepoPickerPrompt() {
   p.textContent = "No repository chosen: the last turn left no changes in any git repo (or there are no turns).";
   const b = document.createElement("button");
   b.className = "ghost ws-switch";
-  b.textContent = "📁 seleccionar repositorio…";
+  b.textContent = "📁 select repository…";
   b.title = "Choose the repository whose work you want to see";
   b.onclick = openWorkspacePicker;
   box.append(p, b);
@@ -3813,7 +3816,7 @@ function renderRepoError(root, message) {
   p.textContent = message;
   const b = document.createElement("button");
   b.className = "ghost ws-switch";
-  b.textContent = "📁 Elegir otra carpeta";
+  b.textContent = "📁 Pick another folder";
   b.title = "The current workspace does not exist or is not a git repo — switch to a valid folder";
   b.onclick = openWorkspacePicker;
   box.append(p, b);
@@ -3883,46 +3886,46 @@ function renderAll() {
   header.className = "header";
   header.innerHTML = `
     <div class="meta"></div>
-    ${mode === "commits" || mode === "turns" ? `<button class="ghost back" title="Volver a la lista">${mode === "commits" ? "← Commits" : "← Turnos"}</button>` : ""}
+    ${mode === "commits" || mode === "turns" ? `<button class="ghost back" title="Back to the list">${mode === "commits" ? "← Commits" : "← Turns"}</button>` : ""}
     <button class="ghost filt" data-filt="add" title="Show/hide added lines">＋</button>
     <button class="ghost filt" data-filt="del" title="Show/hide removed lines">−</button>
     <button class="ghost filt" data-filt="ctx" title="Show/hide context lines (no change)">≡</button>
-    <button class="ghost fold" title="Colapsar todos los archivos">⊟</button>
-    <button class="ghost unfold" title="Expandir todos los archivos">⊞</button>
-    <button class="ghost refresh" title="Refrescar el diff ahora">⟳</button>`;
-  // Resumen REAL del diff (los números de la tarjeta Git de la app son
-  // cálculo propio de ella): líneas +/- y archivos nuevos/modificados/
-  // eliminados. Extras por modo: upstream/📸/commit.
+    <button class="ghost fold" title="Collapse every file">⊟</button>
+    <button class="ghost unfold" title="Expand every file">⊞</button>
+    <button class="ghost refresh" title="Refresh the diff now">⟳</button>`;
+  // REAL diff summary (the numbers on the app's Git card are its own
+  // calculation): +/- lines and new/modified/deleted
+  // files. Extras per mode: upstream/📸/commit.
   const t = diffTotals(diffData.files);
   const bits = [];
   if (mode === "commits" && diffData.commit) {
     const c = diffData.commit;
     bits.push(`<b>${esc(c.short)}</b> ${esc(c.subject)}`);
     if (c.author || c.date) bits.push(esc([c.author, c.date].filter(Boolean).join(" · ")));
-    if (diffData.isMerge) bits.push('<span class="tot-m">merge (vs primer padre)</span>');
+    if (diffData.isMerge) bits.push('<span class="tot-m">merge (vs first parent)</span>');
   } else if (mode === "turns" && diffData.turn) {
     const tn = diffData.turn;
     const from = tn.at?.slice(11, 16) ?? "";
     const to = tn.stoppedAt ? ` → ${esc(tn.stoppedAt.slice(11, 16))}` : "";
-    bits.push(`<b>turno ${esc(from)}${to}</b>`);
-    if (tn.isLive) bits.push('<span class="tot-a">en vivo</span>');
+    bits.push(`<b>turn ${esc(from)}${to}</b>`);
+    if (tn.isLive) bits.push('<span class="tot-a">live</span>');
     if (tn.interrupted) bits.push('<span class="tot-m">interrupted by the next prompt</span>');
     for (const r of tn.repos ?? []) {
       // An app-backed turn counts the files it wrote (0.10.10); the captured
       // model counts commits and dirty files.
-      const fl = r.files !== undefined ? ` · ${r.files} archivo${r.files === 1 ? "" : "s"}` : "";
+      const fl = r.files !== undefined ? ` · ${r.files} file${r.files === 1 ? "" : "s"}` : "";
       const c = r.commits ? ` · ${r.commits} commit${r.commits === 1 ? "" : "s"}` : "";
-      const d = r.dirty ? ` · ${r.dirty} sucio${r.dirty === 1 ? "" : "s"}` : "";
-      const h = r.dirtyHidden ? ` (+${r.dirtyHidden} ruido oculto)` : "";
+      const d = r.dirty ? ` · ${r.dirty} dirty` : "";
+      const h = r.dirtyHidden ? ` (+${r.dirtyHidden} hidden noise)` : "";
       bits.push(`<b>${esc(r.label)}</b>${fl}${c}${d}${h}`);
     }
     if (!(tn.repos ?? []).length)
-      bits.push(`<span class="tot-m">${tn.source === "app" ? "sin archivos escritos" : "sin repos tocados"}</span>`);
-    bits.push(`${diffData.fileCount} archivo${diffData.fileCount === 1 ? "" : "s"}`);
+      bits.push(`<span class="tot-m">${tn.source === "app" ? "no files written" : "no repos touched"}</span>`);
+    bits.push(`${diffData.fileCount} file${diffData.fileCount === 1 ? "" : "s"}`);
     bits.push(`<span class="tot-a">+${t.added}</span>`, `<span class="tot-d">−${t.deleted}</span>`);
   } else {
     bits.push(`${esc(diffData.branch)} @ ${esc(diffData.head)}`);
-    // Upstream chips ride the working header since 0.10.0 (the "Sin pushear"
+    // Upstream chips ride the working header since 0.10.0 (the "Unpushed"
     // tab is gone — the info stays, the dedicated view doesn't).
     if (diffData.upstream) {
       const ab = [];
@@ -3930,12 +3933,12 @@ function renderAll() {
       if (diffData.behind !== undefined) ab.push(`<span class="tot-d">↓${diffData.behind}</span>`);
       bits.push(`${ab.join(" ")} vs ${esc(diffData.upstream)}`);
     }
-    bits.push(`${diffData.fileCount} archivo${diffData.fileCount === 1 ? "" : "s"}`);
+    bits.push(`${diffData.fileCount} file${diffData.fileCount === 1 ? "" : "s"}`);
     bits.push(`<span class="tot-a">+${t.added}</span>`, `<span class="tot-d">−${t.deleted}</span>`);
-    if (t.newFiles) bits.push(`<span class="tot-a">${t.newFiles} nuevo${t.newFiles === 1 ? "" : "s"}</span>`);
-    if (t.modFiles) bits.push(`<span class="tot-m">${t.modFiles} modificado${t.modFiles === 1 ? "" : "s"}</span>`);
-    if (t.delFiles) bits.push(`<span class="tot-d">${t.delFiles} eliminado${t.delFiles === 1 ? "" : "s"}</span>`);
-    if (t.renamed) bits.push(`${t.renamed} renombrado${t.renamed === 1 ? "" : "s"}`);
+    if (t.newFiles) bits.push(`<span class="tot-a">${t.newFiles} new</span>`);
+    if (t.modFiles) bits.push(`<span class="tot-m">${t.modFiles} modified</span>`);
+    if (t.delFiles) bits.push(`<span class="tot-d">${t.delFiles} deleted</span>`);
+    if (t.renamed) bits.push(`${t.renamed} renamed`);
   }
   header.querySelector(".meta").innerHTML = bits.join(` <span class="dot">·</span> `);
   // Language recount (0.12.0): how many files of each type this view holds —
@@ -3979,7 +3982,7 @@ function renderAll() {
       endAllEdits().finally(() => {
         commitSel = null;
         turnSel = null;
-        paintPendingView(mode === "commits" ? "Cargando commits…" : "Cargando turnos…");
+        paintPendingView(mode === "commits" ? "Loading commits…" : "Loading turns…");
         refresh(true);
       });
     };
@@ -4029,7 +4032,7 @@ function renderAll() {
         ? "This turn wrote no files: ZCode's end-of-turn summary lists none either."
         : `Clean tree — no changes against ${diffData.baseLabel ?? "HEAD"}.`;
     root.appendChild(clean);
-    keptComposers = []; // el diff quedó vacío: las preguntas ancladas no tienen ancla
+    keptComposers = []; // the diff came out empty: anchored asks have no anchor
     return;
   }
   if (diffData.truncated) {
@@ -4102,9 +4105,9 @@ function renderAll() {
     for (const f of diffData.files) emitFileSection(f);
   }
   applyLineFilter();
-  // BORRADORES (ver keptComposers): los composers abiertos vuelven a su
-  // sección — texto, listeners y foco intactos. Si el archivo salió del
-  // diff (se revirtió entero), la pregunta quedó sin ancla: se descarta.
+  // DRAFTS (see keptComposers): the open composers go back to their
+  // section — text, listeners and focus untouched. If the file left the
+  // diff (it was reverted whole), the question lost its anchor: it is dropped.
   if (keptComposers.length) {
     const refocus = keptComposers.find((k) => k.focus);
     for (const k of keptComposers) {
@@ -4121,7 +4124,7 @@ function renderAll() {
       });
     }
   }
-  // re-render: restaurar overlays/modos de pintado (sobreviven por path)
+  // re-render: restore overlays/paint modes (they survive by path)
   for (const [p] of fragSel) {
     const e = rendered.get(p);
     if (e) { renderFragUI(e); renderFragBadge(e); }
@@ -4155,15 +4158,15 @@ function renderAll() {
       setTimeout(() => e.section.classList.remove("focus-flash"), 2400);
     }
   }
-  // Si hay búsqueda activa, re-marcar sobre las filas nuevas SIN saltar el
-  // scroll (el refresh reactivo no debe moverle la lectura a nadie).
+  // With an active search, re-mark over the new rows WITHOUT jumping the
+  // scroll (a reactive refresh must not move anyone's reading).
   if (find.q && !document.getElementById("findbar")?.hidden) runFind(find.q, false);
 }
 
 // --------------------------------------------------------------- commits
-// Lista del modo Commits: buscador (hash o texto del título, Enter), filas
-// [hash · subject · autor · fecha] y "…" para traer 10 más. Un click abre
-// el diff de ese commit (commitSel → refresh renderiza archivos).
+// Commits mode list: search box (hash or subject text, Enter), rows
+// [hash · subject · author · date] and "…" to bring 10 more. A click opens
+// that commit's diff (commitSel → refresh renders files).
 
 async function loadCommits(reset = false) {
   if (reset) commitsState = { query: commitsState.query, skip: 0, list: [], hasMore: false };
@@ -4250,7 +4253,7 @@ function renderCommits() {
       commitSel = c.hash;
       row.classList.add("loading");
       endAllEdits().finally(() => {
-        paintPendingView("Cargando commit…");
+        paintPendingView("Loading commit…");
         refresh(true).finally(() => row.classList.remove("loading"));
       });
     };
@@ -4264,7 +4267,7 @@ function renderCommits() {
     more.title = "Load 10 more commits";
     more.onclick = () => {
       more.classList.add("loading");
-      more.textContent = "cargando…";
+      more.textContent = "loading…";
       loadCommits().finally(() => {
         more.classList.remove("loading");
         more.textContent = "…";
@@ -4274,11 +4277,11 @@ function renderCommits() {
   }
 }
 
-// ---------------------------------------------------------------- turnos
-// Lista del modo Turnos: una fila por mensaje del usuario — [hora] [prompt
-// recortado] [💬 prompt completo] [✕ borrar]. El de arriba con "en vivo" es
-// el último turno (contra el working tree actual). "Borrar todo" pide
-// confirmación inline (un click lo arma, el segundo confirma).
+// ---------------------------------------------------------------- turns
+// Turns mode list: one row per user message — [time] [trimmed
+// prompt] [💬 full prompt] [✕ delete]. The top one with "live" is
+// the last turn (against the current working tree). "Delete all" asks for
+// inline confirmation (one click arms it, the second confirms).
 
 // Turns list, paginated like Commits (Damian 22/11: 2000+ rows froze the
 // panel; 0.10.0: pages of 10 — spec "de a diez hacia el pasado"). reset=true
@@ -4332,9 +4335,9 @@ function openPromptCard(turn) {
   const card = document.createElement("div");
   card.className = "prompt-card";
   card.innerHTML = `
-    <div class="ie-head"><span class="anchor"></span><button class="ghost close" title="Cerrar (Esc)">✕</button></div>
+    <div class="ie-head"><span class="anchor"></span><button class="ghost close" title="Close (Esc)">✕</button></div>
     <pre></pre>`;
-  card.querySelector(".anchor").textContent = `Turno ${turn.at?.slice(11, 16) ?? ""} — prompt y resumen`;
+  card.querySelector(".anchor").textContent = `Turn ${turn.at?.slice(11, 16) ?? ""} — prompt and summary`;
   card.querySelector("pre").textContent = [turn.prompt || "(sin texto)", turn.reply ? `\n— resumen del agente —\n${turn.reply}` : ""].join("");
   card.querySelector(".close").onclick = () => card.remove();
   document.addEventListener("keydown", function esc(e) {
@@ -4371,7 +4374,7 @@ function renderTurns() {
     : "";
   const clear = document.createElement("button");
   clear.className = "ghost danger";
-  clear.textContent = "🗑 Borrar todo";
+  clear.textContent = "🗑 Delete all";
   clear.title = "Delete ALL turns (global, every session)";
   clear.onclick = () => {
     if (clear.dataset.armed) {
@@ -4384,7 +4387,7 @@ function renderTurns() {
     clear.textContent = "Sure? DELETE EVERYTHING";
     setTimeout(() => {
       delete clear.dataset.armed;
-      clear.textContent = "🗑 Borrar todo";
+      clear.textContent = "🗑 Delete all";
     }, 4000);
   };
   bar.append(count, clear);
@@ -4402,7 +4405,7 @@ function renderTurns() {
   const list = document.createElement("div");
   list.className = "commit-list turn-list";
   // Day dividers: rows arrive newest-first — a small header per day keeps
-  // scrolling oriented (Hoy / Ayer / dd/mm/yyyy).
+  // scrolling oriented (Today / Yesterday / dd/mm/yyyy).
   let lastDay = null;
   for (const t of turnsState.list) {
     const day = t.at?.slice(0, 10) ?? "";
@@ -4422,16 +4425,16 @@ function renderTurns() {
       <span class="commit-meta turn-meta"></span>
       <span class="turn-live"></span>
       <button class="ghost turn-prompt-btn" title="See the prompt and the turn summary">💬</button>
-      <button class="ghost danger turn-del" title="Borrar este turno">✕</button>`;
+      <button class="ghost danger turn-del" title="Delete this turn">✕</button>`;
     row.querySelector(".turn-time").textContent = time;
     row.querySelector(".turn-prompt").textContent = (t.prompt || "(sin texto)").split("\n")[0];
     row.querySelector(".turn-prompt").title = [t.prompt, t.reply].filter(Boolean).join("\n\n");
     const meta = [];
     if (t.repoCount) meta.push(`${t.repoCount} repo${t.repoCount === 1 ? "" : "s"}`);
-    if (t.fileCount) meta.push(`${t.fileCount} archivo${t.fileCount === 1 ? "" : "s"}`);
+    if (t.fileCount) meta.push(`${t.fileCount} file${t.fileCount === 1 ? "" : "s"}`);
     if (t.reply) meta.push(`💬 ${t.reply.split("\n")[0].slice(0, 90)}`);
     row.querySelector(".turn-meta").textContent = meta.join(" · ");
-    if (t.isLive) row.querySelector(".turn-live").textContent = "en vivo";
+    if (t.isLive) row.querySelector(".turn-live").textContent = "live";
     else row.querySelector(".turn-del").remove(); // live row has no file to delete
     if (t.interrupted) row.querySelector(".turn-live").textContent = "interrumpido";
     row.querySelector(".turn-prompt-btn").onclick = (e) => {
@@ -4457,7 +4460,7 @@ function renderTurns() {
     more.title = "Load 10 more turns";
     more.onclick = () => {
       more.classList.add("loading");
-      more.textContent = "cargando…";
+      more.textContent = "loading…";
       loadTurns().finally(() => {
         more.classList.remove("loading");
         more.textContent = "…";
@@ -4471,16 +4474,16 @@ function renderTurns() {
 function dayLabel(day) {
   if (!day) return "(sin fecha)";
   const iso = (d) => new Date(d).toISOString().slice(0, 10);
-  if (day === iso(Date.now())) return "Hoy";
-  if (day === iso(Date.now() - 86_400_000)) return "Ayer";
+  if (day === iso(Date.now())) return "Today";
+  if (day === iso(Date.now() - 86_400_000)) return "Yesterday";
   return day.split("-").reverse().join("/");
 }
 
 // ------------------------------------------------------------ data flow
 
-// Suscripción reactiva al URI del modo ACTUAL: al cambiar de modo/vista se
-// baja el viejo y se sube el nuevo (la firma git del server notifica a los
-// suscriptos; el ⟳ manual sigue existiendo como fallback).
+// REACTIVE subscription to the CURRENT mode's URI: on a mode/view change the
+// old one is dropped and the new one subscribed (the server's git signature notifies
+// subscribers; the manual ⟳ still exists as a fallback).
 async function resubscribe(uri) {
   if (uri === subscribedUri) return;
   try {
@@ -4498,26 +4501,26 @@ async function resubscribe(uri) {
 function navigateToTurn(id, row = null) {
   turnSel = id;
   row?.classList.add("loading");
-  paintPendingView(id === "latest" ? "Cargando el turno en vivo…" : "Cargando turno…");
+  paintPendingView(id === "latest" ? "Loading the live turn…" : "Loading turn…");
   const run = refresh(true);
   if (row) run?.finally?.(() => row.classList.remove("loading"));
   return run;
 }
 
 // Mode switch (top tabs). Leaving Commits/Turns clears the selection and the
-// search; entering Turnos opens the LAST turn directly (live if one is open).
+// search; entering Turns opens the LAST turn directly (live if one is open).
 // Same-tab click = explicit re-entry: a stuck view must always have a way
 // out (report 22/11: repo tab unresponsive, clicking its own tab did
 // nothing).
 async function setMode(m) {
   if (m === mode) {
-    // Re-entry on Turnos ALWAYS means the last turn again (0.14.1): the tab
+    // Re-entry on Turns ALWAYS means the last turn again (0.14.1): the tab
     // used to only refresh whatever was on screen, so after opening an older
-    // turn from the list — or coming back to the list — clicking "Turnos"
+    // turn from the list — or coming back to the list — clicking "Turns"
     // kept showing that old turn and the latest one seemed to never load.
     if (m === "turns" && turnSel !== "latest") {
       turnSel = "latest";
-      paintPendingView("Cargando el turno en vivo…");
+      paintPendingView("Loading the live turn…");
     }
     refresh(true);
     return;
@@ -4531,10 +4534,10 @@ async function setMode(m) {
   document.querySelectorAll(".modebar button[data-mode]").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === m);
   });
-  // Immediate feedback: entering Turnos always hits the server (last turn);
+  // Immediate feedback: entering Turns always hits the server (last turn);
   // the repo tab does unless it still has to choose a repo (instant prompt).
-  if (m === "turns") paintPendingView("Cargando el turno en vivo…");
-  else if (wsChosen) paintPendingView(`Cargando ${wsLabel()}…`);
+  if (m === "turns") paintPendingView("Loading the live turn…");
+  else if (wsChosen) paintPendingView(`Loading ${wsLabel()}…`);
   await refresh(true);
 }
 
@@ -4549,7 +4552,7 @@ async function openCommits() {
   document.querySelectorAll(".modebar button[data-mode]").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === "working");
   });
-  if (wsChosen) paintPendingView("Cargando commits…");
+  if (wsChosen) paintPendingView("Loading commits…");
   await refresh(true);
 }
 
@@ -4561,7 +4564,7 @@ async function backToWorking() {
   document.querySelectorAll(".modebar button[data-mode]").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === "working");
   });
-  if (wsChosen) paintPendingView(`Cargando ${wsLabel()}…`);
+  if (wsChosen) paintPendingView(`Loading ${wsLabel()}…`);
   await refresh(true);
 }
 
@@ -4669,7 +4672,7 @@ function withTimeout(p, what, ms = READ_TIMEOUT_MS, { quiet = false } = {}) {
   if (!quiet) pushBusy();
   return new Promise((resolve, reject) => {
     const t = setTimeout(
-      () => reject(new Error(`${what}: sin respuesta en ${Math.round(ms / 1000)}s`)),
+      () => reject(new Error(`${what}: no response in ${Math.round(ms / 1000)}s`)),
       ms,
     );
     p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
@@ -4885,8 +4888,8 @@ async function boot() {
   await refresh();
 }
 
-// errores con STACK visible (0.8.3): el mensaje solo no alcanza para ubicar
-// la bomba — el primer frame del stack dice el archivo/función exactos.
+// errors with a visible STACK (0.8.3): the message alone is not enough to locate
+// the bomb — the stack's first frame names the exact file/function.
 window.addEventListener('error', (e) => {
   const stack = String(e.error?.stack ?? '').split('\n').slice(0, 4).join(' ⏐ ');
   const d = document.createElement('div');
@@ -4957,10 +4960,10 @@ if (window.__DA_TEST__) {
   renderPile();
   // Fake send so the composer flow can be exercised outside the app too.
   app.sendMessage = async () => ({ mode: "sent", ok: true });
-  // __DA_E2E__: puente al server MCP REAL (tests/e2e): readServerResource y
-  // callServerTool viajan por http al harness, que los reenvía por stdio al
-  // server.mjs de verdad — el revert escribe archivos REALES y el refresh
-  // llega por SSE igual que el notify reactivo de la app.
+  // __DA_E2E__: bridge to the REAL MCP server (tests/e2e): readServerResource and
+  // callServerTool travel over http to the harness, which forwards them over stdio to the
+  // real server.mjs — the revert writes REAL files and the refresh
+  // arrives over SSE just like the app's reactive notify.
   if (window.__DA_E2E__) {
     app.readServerResource = async ({ uri }) => {
       const r = await fetch(`/mcp?read=${encodeURIComponent(uri)}`);
@@ -4974,14 +4977,14 @@ if (window.__DA_TEST__) {
       });
       return { structuredContent: await r.json() };
     };
-    // en modo test boot() no corre: nadie registra el notification handler,
-    // así que el SSE refresca directo (mismo efecto que el notify reactivo).
+    // in test mode boot() does not run: nobody registers the notification handler,
+    // so the SSE refreshes directly (same effect as the app's reactive notify).
     new EventSource("/events").onmessage = () => {
-      try { refresh(); } catch { /* refresco best-effort */ }
+      try { refresh(); } catch { /* best-effort refresh */ }
     };
   } else {
-  // Recursos mockeados (window.__DA_TEST__.mockResources[uri]) para ejercitar
-  // las vistas que leen recursos (turn://list, diff://turn/…) sin host.
+  // Mocked resources (window.__DA_TEST__.mockResources[uri]) to exercise
+  // the views that read resources (turn://list, diff://turn/…) without a host.
   app.readServerResource = async ({ uri }) => {
     const mock = window.__DA_TEST__?.mockResources?.[uri];
     if (mock !== undefined)

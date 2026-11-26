@@ -1,10 +1,10 @@
-// lib — capa PURA del panel: parseo de parches, etiquetas de rango, citas,
-// totales y ensamblado del mensaje. Sin DOM y sin estado — importable desde
-// node:test (tests/lib.test.mjs) y del panel (main.js) por igual.
+// lib — the panel's PURE layer: patch parsing, range labels, quotes, totals and
+// message assembly. No DOM and no state — importable from node:test
+// (tests/lib.test.mjs) and from the panel (main.js) alike.
 //
-// Convención: todo lo que se puede probar sin navegador vive acá; main.js es
-// la capa de presentación (DOM, eventos, MCP App) y se ejercita con el
-// harness visual (dist/dev.html).
+// Convention: everything testable without a browser lives here; main.js is the
+// presentation layer (DOM, events, MCP App) and is exercised with the visual
+// harness (dist/dev.html).
 
 export function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => (
@@ -53,8 +53,8 @@ export function rangeLabel(range) {
   return { side, lines, label: `lines ${lines} · ${side === "deletions" ? "deletions" : "additions"}` };
 }
 
-// Índices de fila seleccionados (SET de cajitas) → corridas contiguas
-// [{first,last}] ordenadas — la unidad de pintado y de cita del multi-select.
+// Selected row indices (the SET of checkboxes) → contiguous runs
+// [{first,last}] sorted — the unit of painting and of quoting for multi-select.
 export function compressRuns(indices) {
   const sorted = [...new Set(indices)].sort((a, b) => a - b);
   const runs = [];
@@ -66,15 +66,15 @@ export function compressRuns(indices) {
   return runs;
 }
 
-// Etiqueta de líneas multi-rango: "3-5, 9, 12-14" (para el ancla y el título).
+// Multi-range line label: "3-5, 9, 12-14" (for the anchor and the title).
 export function linesLabel(ranges) {
   return ranges
     .map((r) => (r.end > r.start ? `${r.start}-${r.end}` : `${r.start}`))
     .join(", ");
 }
 
-// Cita de varias corridas: cada rango por su lado, concatenadas en orden
-// (los rangos son disjuntos y crecientes — sin duplicados ni saltos de ida).
+// Quote of several runs: each range on its side, concatenated in order
+// (the ranges are disjoint and increasing — no duplicates, no round trips).
 export function quoteForRanges(entry, ranges, side) {
   const out = [];
   for (const r of ranges) out.push(...quoteFor(entry, { ...r, side }, null));
@@ -98,9 +98,9 @@ export function anchorStillValid(quoteLines, lineText) {
   return norm(lineText).includes(q);
 }
 
-// Cita las líneas del rango: desde el contenido completo si lo hay (render
-// desde before/after — números de línea directos), sino desde el parche.
-// `verbatim` (selección de texto) gana siempre: es lo que el usuario vio.
+// Quote the lines of the range: from the full content when available (render
+// from before/after — direct line numbers), otherwise from the patch.
+// `verbatim` (text selection) always wins: it is what the user saw.
 export function quoteFor(entry, range, verbatim) {
   if (verbatim) return verbatim.split("\n");
   const side = range.side ?? "additions";
@@ -115,20 +115,20 @@ export function quoteFor(entry, range, verbatim) {
   return extractLines(entry.patch, side, range.start, range.end);
 }
 
-// Revertir LÍNEAS puntuales al original (no bloques): camina el
-// alineamiento exacto de cada hunk (hunkContent: context/change con índices
-// 1-based implícitos desde additionStart/deletionStart). selOld = números de
-// líneas viejas a RESTAURAR (borradas que vuelven); selNew = números de
-// líneas nuevas a QUITAR (agregadas que se van). El resto queda tal cual.
-// Devuelve null si un hunk no trae hunkContent o es inconsistente (no toca nada).
+// Revert PUNCTUAL LINES to the original (not blocks): walks the exact
+// alignment of each hunk (hunkContent: context/change with 1-based indices
+// implied by additionStart/deletionStart). selOld = old line numbers to
+// RESTORE (deleted lines that come back); selNew = new line numbers to
+// REMOVE (added lines that go away). The rest stays as is.
+// Returns null if a hunk has no hunkContent or is inconsistent (touches nothing).
 export function revertLines(beforeLines, afterLines, hunks, selOld, selNew) {
   const sorted = [...hunks].sort((a, b) => a.additionStart - b.additionStart);
   const out = [];
-  let nIdx = 1; // puntero 1-based sobre afterLines
+  let nIdx = 1; // 1-based pointer over afterLines
   for (const h of sorted) {
     if (!Array.isArray(h.hunkContent) || h.hunkContent.length === 0) return null;
-    if (h.additionStart - 1 > afterLines.length || h.additionStart < nIdx) return null; // solapado
-    out.push(...afterLines.slice(nIdx - 1, h.additionStart - 1)); // tramo idéntico
+    if (h.additionStart - 1 > afterLines.length || h.additionStart < nIdx) return null; // overlapping
+    out.push(...afterLines.slice(nIdx - 1, h.additionStart - 1)); // identical stretch
     let oldN = h.deletionStart;
     let newN = h.additionStart;
     for (const c of h.hunkContent) {
@@ -139,12 +139,12 @@ export function revertLines(beforeLines, afterLines, hunks, selOld, selNew) {
           newN++;
         }
       } else {
-        // PARES atómicos (0.9.0, spec Damian): la cajita de una línea
-        // MODIFICADA revierte la PAREJA — la verde seleccionada restaura su
-        // roja pareada (antes la línea DESAPARECÍA: el del no volvía solo —
-        // "selecciono una línea y el revert no funciona"); la roja
-        // seleccionada se lleva su verde pareada puesta. Sin pareja (adición
-        // o borrada pura) el comportamiento es el de siempre.
+        // ATOMIC PAIRS (0.9.0, spec Damian): the checkbox of a MODIFIED line
+        // reverts the PAIR — the selected green line restores its paired red
+        // line (before, the line DISAPPEARED: the deleted one did not come
+        // back alone — "I select a line and the revert does nothing"); the
+        // selected red line takes its paired green line with it. Without a
+        // pair (pure addition or deletion) the behavior is the usual one.
         const dels = [];
         for (let i = 0; i < c.deletions; i++) dels.push(oldN + i);
         const adds = [];
@@ -164,11 +164,11 @@ export function revertLines(beforeLines, afterLines, hunks, selOld, selNew) {
           }
         }
         for (let i = 0; i < c.deletions; i++) {
-          if (restoreOld.has(dels[i])) out.push(beforeLines[dels[i] - 1]); // restaurar
+          if (restoreOld.has(dels[i])) out.push(beforeLines[dels[i] - 1]); // restore
           oldN++;
         }
         for (let i = 0; i < c.additions; i++) {
-          if (!dropNew.has(adds[i])) out.push(afterLines[adds[i] - 1]); // conservar
+          if (!dropNew.has(adds[i])) out.push(afterLines[adds[i] - 1]); // keep
           newN++;
         }
       }
@@ -179,9 +179,9 @@ export function revertLines(beforeLines, afterLines, hunks, selOld, selNew) {
   return out;
 }
 
-// Totales reales del diff para el header: líneas +/- y archivos por status.
-// Los counts llegan como STRINGS (git numstat) y pueden faltar (binarios,
-// truncados) — NaN no suma.
+// Real diff totals for the header: +/- lines and files by status.
+// The counts arrive as STRINGS (git numstat) and may be missing (binaries,
+// truncated) — NaN does not add.
 export function diffTotals(files) {
   const t = { added: 0, deleted: 0, newFiles: 0, delFiles: 0, modFiles: 0, renamed: 0 };
   for (const f of files) {
@@ -198,10 +198,10 @@ export function diffTotals(files) {
   return t;
 }
 
-// Ensambla el mensaje único de "Enviar todo": bloques anclados (línea o
-// archivo, con cita) y libres (texto plano), con el encabezado que cuenta.
-// scope (opcional) aclara QUÉ diff se está preguntando — "Sin pushear",
-// "commit a1b2c3d", "último turno 📸" — para que el agente sepa qué mirar.
+// Assemble the single "Send all" message: anchored blocks (line or file, with a
+// quote) and free ones (plain text), with a header that counts them.
+// scope (optional) states WHICH diff is being asked about — "unpushed",
+// "commit a1b2c3d", "last turn 📸" — so the agent knows what to look at.
 export function buildAskMessage(asks, scope = "") {
   const n = asks.length;
   const blocks = asks.map((a) => {
@@ -217,40 +217,40 @@ export function buildAskMessage(asks, scope = "") {
   const libres = n - anchored;
   const label =
     anchored && libres
-      ? `${anchored} anclada${anchored === 1 ? "" : "s"} + ${libres} libre${libres === 1 ? "" : "s"}`
-      : `${n} pregunta${n === 1 ? "" : "s"} anclada${n === 1 ? "" : "s"}`;
+      ? `${anchored} anchored + ${libres} free`
+      : `${n} anchored question${n === 1 ? "" : "s"}`;
   const scopeTxt = scope ? ` (${scope})` : "";
-  return { n, label, text: `Diff Ask — ${label} al diff${scopeTxt}:\n\n${blocks.join("\n\n")}` };
+  return { n, label, text: `Diff Ask — ${label} on the diff${scopeTxt}:\n\n${blocks.join("\n\n")}` };
 }
 
-// ------------------------------------------- revert quirúrgico (0.8.0)
-// Fragmentos PINTADOS con el mouse (chars exactos, no líneas enteras).
-// frags: [{side:"new"|"old", line, offA, offB}] — offsets planos [A,B) sobre
-//   la línea: side new = número de línea del AFTER (fila verde/contexto,
-//   texto visible); side old = número de línea del BEFORE (fila roja).
-// Semántica (Damian; 0.9.0 — la cirugía de chars NO puede resucitar lo
-// borrado, así que la cobertura COMPLETA del cambio restaura la línea):
-//   - new, pintado PARCIAL: los chars que el cambio AGREGÓ dentro de lo
-//     pintado se eliminan; los que ya existían quedan. "Hola Mundo"→"Hola
-//     Cruel Mundo": pinto "el" → "Hola Cru Mundo". Espacios agregados
-//     pegados a la eliminación se comen (no queda doble espacio).
-//   - new, pintado que cubre la LÍNEA entera o TODOS los rangos agregados
-//     (= pintaste la palabra/las palabras cambiadas): la línea vuelve AL
-//     ORIGINAL del before — incluidas las palabras que el cambio borró.
-//     Antes quedaba un híbrido ("alpha  gamma") que seguía apareciendo en
-//     el diff: el "rebota" del revert de línea.
-//   - old (fila roja) pintada: la pareja DEL VUELTA ENTERA — la línea
-//     original se restaura y su contraparte verde se va (media línea
-//     revertida es peor que la línea sin revertir). Si la roja no tiene
-//     pareja (línea puramente borrada), se restaura tal cual.
-//   - new, línea de ADICIÓN PURA (sin before pareado): quirúrgico también
-//     — se borran SÓLO los chars pintados y la línea queda, aunque el
-//     resultado sea sintaxis rota: es el pincel de Damian (spec confirmada
-//     27/10: "elijo 3 palabras de 3 filas → me rollbackea las 3 líneas NO
-//     las 3 palabras"). La línea sólo se elimina si queda vacía (0.9.1 la
-//     sacaba entera: mal).
-//   - Línea que queda vacía tras la cirugía → se elimina entera.
-// Devuelve {lines} | {noDiff:true} | null (alineamiento inconsistente).
+// ------------------------------------------- surgical revert (0.8.0)
+// Fragments PAINTED with the mouse (exact chars, not whole lines).
+// frags: [{side:"new"|"old", line, offA, offB}] — flat offsets [A,B) over
+//   the line: side new = AFTER line number (green/context row, visible text);
+//   side old = BEFORE line number (red row).
+// Semantics (Damian; 0.9.0 — char surgery CANNOT resurrect what was deleted,
+// so COMPLETE coverage of the change restores the line):
+//   - new, PARTIAL paint: the chars the change ADDED inside the painted span
+//     are removed; the ones that already existed stay. "Hello World"→"Hello
+//     Cruel World": paint "el" → "Hello Cru World". Added spaces glued to the
+//     deletion are eaten (no double space left).
+//   - new, paint that covers the WHOLE line or ALL the added ranges
+//     (= you painted the changed word(s)): the line goes back to the
+//     ORIGINAL from before — including the words the change deleted.
+//     Before this it left a hybrid ("alpha  gamma") that kept showing up in
+//     the diff: the "bounce" of the line revert.
+//   - old (red row) painted: the pair flips WHOLE — the original line is
+//     restored and its green counterpart goes away (half a reverted line is
+//     worse than a line that was never reverted). If the red one has no pair
+//     (purely deleted line), it is restored as is.
+//   - new, PURE ADDITION line (no paired before): surgical too — only the
+//     painted chars are deleted and the line stays, even if the result is
+//     broken syntax: it is Damian's brush (spec confirmed 27/10: "I pick 3
+//     words from 3 rows → it rolls back the 3 lines, NOT the 3 words"). The
+//     line is only removed if it ends up empty (0.9.1 removed it whole:
+//     wrong).
+//   - A line left empty after the surgery → removed whole.
+// Returns {lines} | {noDiff:true} | null (inconsistent alignment).
 export function tokenizeLine(s) {
   const out = [];
   const re = /\s+|\w+|[^\s\w]+/g;
@@ -260,8 +260,8 @@ export function tokenizeLine(s) {
 }
 
 function lcsMatch(aT, bT) {
-  // match de tokens AFTER contra BEFORE (LCS clásico); devuelve para cada
-  // índice de aT el índice de bT con el que matchea (o -1 = agregado)
+  // token match of AFTER against BEFORE (classic LCS); returns, for each aT
+  // index, the bT index it matches (or -1 = added)
   const n = aT.length;
   const m = bT.length;
   const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
@@ -279,16 +279,16 @@ function lcsMatch(aT, bT) {
   return match;
 }
 
-// Aplica la cirugía a UNA línea after con selecciones (lista de [a,b)
-// MERGEADAS). beforeLine null = adición pura. Devuelve {line} (aunque idéntica)
-// o {noChange:true} si lo pintado no tocó ningún char agregado.
+// Apply the surgery to ONE after line with selections (list of MERGED [a,b)
+// ranges). beforeLine null = pure addition. Returns {line} (even if identical)
+// or {noChange:true} if the paint touched no added char.
 function surgeryLine(afterLine, beforeLine, sels) {
   if (beforeLine === afterLine) return { noChange: true };
   const aT = tokenizeLine(afterLine);
   const bT = beforeLine != null ? tokenizeLine(beforeLine) : [];
   const match = lcsMatch(aT, bT);
   const added = aT.map((_, k) => match[k] === -1);
-  // chars a borrar: intersección sel ∩ tokens agregados
+  // chars to delete: sel ∩ added tokens
   const del = new Array(afterLine.length).fill(false);
   let touched = false;
   for (let k = 0; k < aT.length; k++) {
@@ -304,10 +304,10 @@ function surgeryLine(afterLine, beforeLine, sels) {
     }
   }
   if (!touched) return { noChange: true };
-  // espacios AGREGADOS que tras las eliminaciones quedarían ADYACENTES a
-  // otro espacio sobreviviente: se comen (sin esto "Cruel" pintado deja
-  // "Hola  Mundo"). Con "el" pintado NO quedan adyacentes ("Cru" en el
-  // medio) y el espacio queda ("Hola Cru Mundo").
+  // ADDED spaces that after the deletions would sit ADJACENT to another
+  // surviving space: they are eaten (without this, painting "Cruel" leaves
+  // "Hello  World"). With "el" painted they are NOT adjacent ("Cru" in the
+  // middle) and the space stays ("Hello Cru World").
   for (let k = 0; k < aT.length; k++) {
     const t = aT[k];
     if (!added[k] || !/^\s+$/.test(t.text)) continue;
@@ -318,11 +318,11 @@ function surgeryLine(afterLine, beforeLine, sels) {
     const near = (c) => c >= 0 && /\s/.test(afterLine[c]);
     if (near(left) || near(right)) for (let x = t.start; x < t.end; x++) del[x] = true;
   }
-  // token agregado NO-blanco borrado ENTERO con espacios SOBREVIVIENTES a
-  //AMBOS lados: uno de los dos se come (matched, no agregado — el bloque de
-  // arriba no los tocó). "alpha delta epsilon" con "delta" pintado (cambio
-  // parcial de una línea con más cambios) → "alpha epsilon", sin doble
-  // espacio. Si sólo UN lado tiene espacio, queda (no hay doble).
+  // added NON-blank token deleted WHOLE with surviving spaces on BOTH sides:
+  // one of the two is eaten (matched, not added — the block above left them
+  // alone). "alpha delta epsilon" with "delta" painted (partial change of a
+  // line with more changes) → "alpha epsilon", no double space. If only ONE
+  // side has a space, it stays (there is no double).
   for (let k = 0; k < aT.length; k++) {
     const t = aT[k];
     if (!added[k] || /^\s+$/.test(t.text)) continue;
@@ -341,9 +341,9 @@ function surgeryLine(afterLine, beforeLine, sels) {
   return { line: out };
 }
 
-// ¿la pintada cubre el cambio ENTERO de la línea? Dos formas equivalentes
-// de "quiero esta línea como el original": la línea completa (recortada) o
-// todos los rangos que el cambio agregó (= las palabras cambiadas pintadas).
+// Does the paint cover the WHOLE change of the line? Two equivalent ways of
+// saying "I want this line as the original": the full line (trimmed) or all
+// the ranges the change added (= the changed words painted).
 function coversFullChange(sels, beforeLine, afterLine) {
   let first = 0;
   while (first < afterLine.length && /\s/.test(afterLine[first])) first++;
@@ -357,9 +357,9 @@ function coversFullChange(sels, beforeLine, afterLine) {
 export function revertFrags(beforeLines, afterLines, hunks, frags) {
   if (!Array.isArray(hunks) || !frags.length) return { noDiff: true };
   const sorted = [...hunks].sort((a, b) => a.additionStart - b.additionStart);
-  // agrupar frags new por línea after (merge de rangos) y old por línea before
+  // group new frags by after line (merging ranges) and old frags by before line
   const newSels = new Map(); // afterLine → [[a,b),...]
-  let oldSels = []; // {line, a, b} en orden
+  let oldSels = []; // {line, a, b} in order
   for (const f of frags) {
     if (f.side === "old") oldSels.push(f);
     else {
@@ -371,8 +371,8 @@ export function revertFrags(beforeLines, afterLines, hunks, frags) {
   oldSels.sort((x, y) => x.line - y.line || x.offA - y.offA);
   let changed = false;
 
-  // caminar los hunks como revertLines; restaurar frags old en su punto de
-  // borrado y aplicar cirugía/restauración a las líneas after marcadas
+  // walk the hunks like revertLines; restore old frags at their deletion point
+  // and apply surgery/restoration to the marked after lines
   const out = [];
   let nIdx = 1;
   for (const h of sorted) {
@@ -399,14 +399,14 @@ export function revertFrags(beforeLines, afterLines, hunks, frags) {
       const dels = [];
       for (let i = 0; i < c.deletions; i++) dels.push(oldN + i);
       oldN += c.deletions;
-      // frags ROJAS del bloque: la pareja se restaura QUIRÚRGICAMENTE (spec
-      // Damian 28/10: "pintar una palabra de la roja restaura SOLO esa
-      // palabra en su lugar"); la roja SIN pareja (línea borrada entera)
-      // sigue volviendo tal cual — no hay dónde splicearla parcialmente.
-      // Si la restauración no cambia nada (media palabra pintada), la verde
-      // sigue su camino normal, pintadas verdes incluidas.
+      // RED frags of the block: the pair is restored SURGICALLY (spec Damian
+      // 28/10: "painting a word of the red one restores ONLY that word in
+      // place"); the red one WITHOUT a pair (whole line deleted) still comes
+      // back as is — there is nowhere to splice it partially. If the
+      // restoration changes nothing (half a word painted), the green one goes
+      // its normal way, green paints included.
       const dropNew = new Set();
-      const swapped = new Map(); // línea new N → texto restaurado quirúrgicamente
+      const swapped = new Map(); // new line N → text restored surgically
       for (let i = 0; i < dels.length; i++) {
         const L = dels[i];
         const selsL = oldSels.filter((f) => f.line === L);
@@ -418,7 +418,7 @@ export function revertFrags(beforeLines, afterLines, hunks, frags) {
           const N = addStart + i;
           const r = restoreOldWords(afterLines[N - 1], beforeLine, selsL.map((f) => [f.offA, f.offB]));
           if (!r.noChange) {
-            dropNew.add(N); // sus pintadas verdes se ignoran: gana el lado viejo
+            dropNew.add(N); // its green paints are ignored: the old side wins
             swapped.set(N, r.line);
             changed = true;
           }
@@ -446,16 +446,16 @@ export function revertFrags(beforeLines, afterLines, hunks, frags) {
         const r = surgeryLine(afterLine, beforeLine, sels);
         if (r.noChange) { out.push(afterLine); continue; }
         changed = true;
-        if (r.line !== "") out.push(r.line); // vacía → línea eliminada
+        if (r.line !== "") out.push(r.line); // empty → line removed
       }
     }
-    // ojo: NO hacer flushOld(Infinity) acá — se comía frags rojas de hunks
-    // POSTERIORES (m6 en el hunk 2 lo insertaba el hunk 1 como slice). El
-    // consumo in-block de arriba ya restaura las rojas de este hunk; lo que
-    // quede sin consumir al final es inconsistencia → null.
+    // careful: do NOT call flushOld(Infinity) here — it ate red frags of LATER
+    // hunks (m6 in hunk 2 was inserted by hunk 1 as a slice). The in-block
+    // consumption above already restores this hunk's reds; whatever is left
+    // unconsumed at the end is an inconsistency → null.
     nIdx = newN;
   }
-  if (oldSels.length) return null; // frag roja fuera de todo hunk: inconsistente
+  if (oldSels.length) return null; // red frag outside every hunk: inconsistent
   if (!changed) return { noDiff: true };
   out.push(...afterLines.slice(nIdx - 1));
   return { lines: out };
@@ -472,10 +472,12 @@ export function mergeRanges(ranges) {
   return out;
 }
 
-// 行内词级 diff：一对 old/new 行中真正变化（无 LCS 匹配）的词区间 [a,b)。
-// 中文注释：给 UI 的"只改了几个词就用更醒目的红绿垫片方框标出"用
-// （spec：整行全新时保持整行红绿底色——那种情况调用方根本不配对，不会走到这）。
-// 匹配单位是 tokenizeLine 的 token（含空白 token；空白自身不参与标记）。
+// Inline word-level diff: in a pair of old/new lines, the word ranges that
+// really changed (no LCS match) as [a,b). Used by the UI to box a change of a
+// few words in a more visible red/green shim (spec: a whole new line keeps the
+// full-row red/green background — that case never pairs, so it never gets
+// here). The matching unit is the tokenizeLine token (whitespace tokens
+// included; whitespace itself takes no mark).
 export function changedWordRanges(oldLine, newLine) {
   if (oldLine == null || newLine == null || oldLine === newLine) return null;
   const oT = tokenizeLine(oldLine);
@@ -507,17 +509,17 @@ export function changedWordRanges(oldLine, newLine) {
     if (matchN[k] !== -1) return;
     (/\S/.test(t.text) ? add : addWs).push([t.start, t.end]);
   });
-  // ws: circulitos (spec Damian — cambio SOLO de espacios también se señala)
+  // ws: little circles (spec Damian — a change of SPACES only is marked too)
   if (!del.length && !add.length && !delWs.length && !addWs.length) return null;
   return { del: mergeRanges(del), add: mergeRanges(add), delWs: mergeRanges(delWs), addWs: mergeRanges(addWs) };
 }
 
-// Secuencia INTERCALADA de una pareja old/new — la base de la fila única con
-// los removidos visibles: items {k:"same"|"del"|"add", text} en orden de
-// lectura, con los runs contiguos fusionados y "del" ANTES de "add" cuando
-// son vecinos (se lee "era ~~alpha~~, es beta"). changedWordRanges da los
-// rangos de CADA lado por separado; esto dice dónde van unos respecto a
-// otros (spec Damian 27/10: "quiero leer también lo que había antes").
+// INTERLEAVED sequence of an old/new pair — the base of the single row with
+// the removals visible: items {k:"same"|"del"|"add", text} in reading order,
+// with contiguous runs merged and "del" BEFORE "add" when they are neighbors
+// (reads "was ~~alpha~~, is beta"). changedWordRanges gives the ranges of EACH
+// side separately; this one says where they go relative to each other (spec
+// Damian 27/10: "I also want to read what was there before").
 export function mergeWords(oldLine, newLine) {
   if (oldLine == null || newLine == null) return null;
   const oT = tokenizeLine(oldLine);
@@ -546,12 +548,11 @@ export function mergeWords(oldLine, newLine) {
   return out;
 }
 
-// Parte un rango [a,b) de una línea en rangos por PALABRA (las corridas de
-// espacios quedan afuera). changedWordRanges devuelve rangos MERGEADOS que
-// cubren "word1 word2 word3" entero — una sola caja gigante; con una caja
-// por palabra y el espacio limpio entre ellas, un cambio de muchas palabras
-// se sigue leyendo (spec Damian 28/10: "muchas palabras → boxes superpuestos
-// y difícil leer").
+// Split a range [a,b) of a line into per-WORD ranges (whitespace runs stay
+// out). changedWordRanges returns MERGED ranges that cover "word1 word2
+// word3" whole — one giant box; with one box per word and clean space
+// between them, a many-word change is still readable (spec Damian 28/10:
+// "many words → overlapping boxes and hard to read").
 export function wordRanges(text, a, b) {
   const out = [];
   const re = /\S+/g;
@@ -564,12 +565,13 @@ export function wordRanges(text, a, b) {
   return out;
 }
 
-// ---- cortes de espacio merged↔new (fila verde con runs tachados) ----
-// Puro y sin DOM para poder testear: `dels` es la lista de runs tachados con
-// su rango merged [mStart,mEnd) (rowSpaces en main.js la arma del DOM real).
+// ---- merged↔new space cuts (green row with struck runs) ----
+// Pure and DOM-free so it can be tested: `dels` is the list of struck runs with
+// their merged range [mStart,mEnd) (rowSpaces in main.js builds it from the
+// real DOM).
 
-// offset merged → offset new (el idioma de la cirugía): restar los chars
-// tachados que quedan antes de mOff
+// merged offset → new offset (the language of the surgery): subtract the
+// struck chars that come before mOff
 export function mergedOffToNew(dels, mOff) {
   let cut = 0;
   for (const d of dels) {
@@ -579,13 +581,13 @@ export function mergedOffToNew(dels, mOff) {
   return mOff - cut;
 }
 
-// new [a,b) → segmentos merged, PARTIDOS por los runs tachados intermedios
-// (franjitas y cajas pintan el texto nuevo sin invadir los tachados)
+// new [a,b) → merged segments, SPLIT by the struck runs in between
+// (strips and boxes paint the new text without invading the struck runs)
 export function newRangeToMergedSegs(dels, mergedLen, a, b) {
   if (!dels.length) return [[a, b]];
   const segs = [];
-  let n = 0; // chars nuevos contados hasta el borde izquierdo del run actual
-  let cur = 0; // posición merged del texto nuevo que sigue
+  let n = 0; // new chars counted up to the left border of the current run
+  let cur = 0; // merged position of the new text that follows
   const piece = (txtLen) => {
     const lo = Math.max(0, a - n);
     const hi = Math.min(txtLen, b - n);
@@ -600,24 +602,24 @@ export function newRangeToMergedSegs(dels, mergedLen, a, b) {
   return segs;
 }
 
-// Restauración QUIRÚRGICA del lado viejo (spec Damian 28/10: pintar una
-// palabra de la línea ROJA restaura SOLO esa palabra en su lugar). La
-// pareja se recorre por REGIONES de cambio (tokens no-matcheados contiguos
-// entre matches del LCS), a nivel TOKEN — mergeWords fusiona los runs y
-// perdería la granularidad por palabra. Regla por región:
-//   - TODOS los tokens viejos de la región pintados (enteros) → la región
-//     vuelve al texto viejo: el run nuevo se va (swap completo — pintar la
-//     roja entera reproduce la vieja pareja atómica).
-//   - ALGUNOS pintados → los pintados vuelven a su lugar y el run nuevo
-//     SE MANTIENE ("the quick brown fox"→"the slow fox" con "quick"
-//     pintada → "the quick slow fox": aceptás la eliminación de a poco).
-//   - pintura PARCIAL de un token (media palabra) no restaura nada: hay que
-//     pintar la palabra entera (el doble-click la pinta entera) — espejo
-//     predecible de la cirugía del lado verde, que sí es por chars.
-// Los espacios: los tokens de espacio INTERIORES entre tokens pintados se
-// conservan; los saltos con el texto nuevo se rellenan con un espacio para
-// no pegar palabras.
-// Devuelve {line} | {noChange:true}.
+// SURGICAL restoration of the old side (spec Damian 28/10: painting a word of
+// the RED line restores ONLY that word in place). The pair is walked by
+// REGIONS of change (contiguous unmatched tokens between LCS matches), at
+// TOKEN level — mergeWords merges the runs and would lose the per-word
+// granularity. Rule per region:
+//   - ALL the old tokens of the region painted (whole) → the region goes back
+//     to the old text: the new run goes away (full swap — painting the whole
+//     red side reproduces the old atomic pair).
+//   - SOME painted → the painted ones go back to their place and the new run
+//     STAYS ("the quick brown fox"→"the slow fox" with "quick" painted →
+//     "the quick slow fox": you accept the deletion little by little).
+//   - PARTIAL paint of a token (half a word) restores nothing: the whole word
+//     must be painted (the double-click paints it whole) — a predictable
+//     mirror of the green-side surgery, which is char-based.
+// The spaces: INTERIOR whitespace tokens between painted tokens are kept; the
+// seams with the new text are filled with one space so words do not stick
+// together.
+// Returns {line} | {noChange:true}.
 export function restoreOldWords(afterLine, beforeLine, sels) {
   if (beforeLine == null || beforeLine === afterLine) return { noChange: true };
   const oT = tokenizeLine(beforeLine);
@@ -629,7 +631,7 @@ export function restoreOldWords(afterLine, beforeLine, sels) {
   for (let i = n - 1; i >= 0; i--)
     for (let j = m - 1; j >= 0; j--)
       dp[i][j] = oT[i].text === nT[j].text ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-  // items token a token (del lleva sus offsets EXACTOS en la línea vieja)
+  // items token by token (del carries its EXACT offsets in the old line)
   const items = [];
   let i = 0;
   let j = 0;
@@ -647,7 +649,7 @@ export function restoreOldWords(afterLine, beforeLine, sels) {
   let k = 0;
   while (k < items.length) {
     if (items[k].k === "same") { out += items[k].text; k++; continue; }
-    // región de cambio: items del/add contiguos
+    // region of change: contiguous del/add items
     const dels = [];
     let addText = "";
     while (k < items.length && items[k].k !== "same") {
@@ -656,16 +658,16 @@ export function restoreOldWords(afterLine, beforeLine, sels) {
       k++;
     }
     const inc = dels.map((d) => full(d.a, d.b));
-    // swap completo cuando TODA la palabra-vieja CONTENTIVA está pintada: los
-    // tokens de espacio sin pintar no cuentan (dos doble-clicks en quick y
-    // brown pintan las palabras, no el espacio del medio — y el swap tiene
-    // que salir igual que pintar "quick brown" de una)
+    // full swap when EVERY CONTENT old word is painted: unpainted whitespace
+    // tokens do not count (two double-clicks on quick and brown paint the
+    // words, not the space in between — and the swap has to come out the same
+    // as painting "quick brown" at once)
     const content = dels.filter((d) => !/^\s+$/.test(d.text));
     if (content.length && content.every((d) => full(d.a, d.b))) {
-      out += dels.map((d) => d.text).join(""); // swap completo
+      out += dels.map((d) => d.text).join(""); // full swap
       changed = true;
     } else if (inc.some(Boolean)) {
-      // parcial: los pintados + espacios interiores; el run nuevo queda
+      // partial: the painted ones + interior spaces; the new run stays
       let back = "";
       dels.forEach((d, x) => {
         if (inc[x]) back += d.text;

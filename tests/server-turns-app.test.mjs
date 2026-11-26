@@ -57,7 +57,7 @@ async function openTurn(sid, cwd, at, prompt) {
   sendEvent({ type: "prompt", sid, cwd, prompt, at: iso(at) });
   await processInbox();
 }
-async function closeTurn(sid, cwd, at, reply = "listo") {
+async function closeTurn(sid, cwd, at, reply = "done") {
   sendEvent({ type: "stop", sid, cwd, reply, at: iso(at) });
   await processInbox();
 }
@@ -72,7 +72,7 @@ test("a turn shows exactly the files ZCode's end-of-turn summary shows — nothi
   fs.writeFileSync(path.join(A, "old-dirty.txt"), "dirty since yesterday\n");
   await setActiveWorkspace(A);
 
-  await openTurn(sid, A, T, "cambiá main y creá new");
+  await openTurn(sid, A, T, "change main and create new");
   // The app checkpoints each tool write as it lands.
   fs.writeFileSync(path.join(A, "src/new.ts"), "export const n = 1;\n");
   store.checkpoint(sid, T + 10_000, "Write", [written(path.join(A, "src/new.ts"), "export const n = 1;\n")]);
@@ -83,7 +83,7 @@ test("a turn shows exactly the files ZCode's end-of-turn summary shows — nothi
   commitAt(A, T + 30_000, "committed.txt", "by git in a shell\n", "commit made during the turn");
   await closeTurn(sid, A, T + 60_000);
 
-  const row = await recordOf("cambiá main y creá new");
+  const row = await recordOf("change main and create new");
   assert.ok(row, "the turn is listed");
   assert.deepEqual([row.fileCount, row.repoCount], [2, 1], "the row counts what the summary counts");
   const d = await buildTurnDiff(row.id);
@@ -111,12 +111,12 @@ test("a turn that wrote nothing shows nothing — commits and dirty files do not
   const A = makeRepo();
   commitAt(A, T - 100_000, "a.txt", "base\n", "base");
   await setActiveWorkspace(A);
-  await openTurn(sid, A, T, "solo commiteá");
+  await openTurn(sid, A, T, "only commit");
   commitAt(A, T + 10_000, "b.txt", "x\n", "a commit made by a shell command");
   fs.writeFileSync(path.join(A, "c.txt"), "dirty\n");
   await closeTurn(sid, A, T + 30_000);
 
-  const row = await recordOf("solo commiteá");
+  const row = await recordOf("only commit");
   assert.deepEqual([row.fileCount, row.repoCount], [0, 0], "ZCode's summary lists no file for this turn");
   const d = await buildTurnDiff(row.id);
   assert.equal(d.turn.source, "app");
@@ -140,7 +140,7 @@ test("records stored before 0.10.10 (captured repos) render from the app's truth
       id,
       sid,
       workspace: A,
-      prompt: "turno viejo",
+      prompt: "old turn",
       reply: "",
       startedAt: iso(T),
       stoppedAt: iso(T + 60_000),
@@ -152,7 +152,7 @@ test("records stored before 0.10.10 (captured repos) render from the app's truth
   assert.equal(d.error, undefined);
   assert.equal(d.turn.source, "app", "the app's truth wins over what was captured");
   assert.deepEqual(d.files.map((f) => f.path), [`${path.basename(A)}/real.ts`]);
-  assert.equal((await recordOf("turno viejo")).fileCount, 1);
+  assert.equal((await recordOf("old turn")).fileCount, 1);
 });
 
 test("the live turn is what the agent has written so far", async () => {
@@ -160,7 +160,7 @@ test("the live turn is what the agent has written so far", async () => {
   const { store, T, sid } = scene();
   const A = makeRepo();
   await setActiveWorkspace(A);
-  await openTurn(sid, A, T, "en vivo");
+  await openTurn(sid, A, T, "live");
   assert.deepEqual((await buildTurnDiff("latest")).files.map((f) => f.path), [], "nothing written yet");
 
   store.checkpoint(sid, T + 10_000, "Write", [written(path.join(A, "one.ts"), "1\n")]);

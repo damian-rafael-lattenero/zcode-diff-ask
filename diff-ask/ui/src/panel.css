@@ -37,8 +37,8 @@ html, body {
   color: var(--text);
   background: var(--bg);
 }
-/* Shell: el diff scrollea en #root; la pila y la caja viven DEBAJO, fuera
-   del scroll — la caja queda siempre visible al pie. */
+/* Shell: the diff scrolls in #root; the pile and the box live BELOW, outside
+   the scroll — the box stays always visible at the bottom. */
 body {
   display: flex;
   flex-direction: column;
@@ -282,7 +282,7 @@ html[data-theme="dark"] .lang-sum .ls.has-icon.is-dark svg {
   background: var(--card);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
 }
-/* Anclado bajo la línea seleccionada: flotante dentro del body del archivo. */
+/* Anchored under the selected line: floating inside the file body. */
 .composer.anchored {
   position: absolute;
   z-index: 14;
@@ -334,7 +334,7 @@ html[data-theme="dark"] .lang-sum .ls.has-icon.is-dark svg {
 .sent-chip.sent { color: var(--ok); border: 1px solid var(--ok); }
 .sent-chip.context { color: var(--warn); border: 1px solid var(--warn); }
 
-/* Pila de preguntas pendientes — sobre la caja fija, editable in-place. */
+/* Pending question pile — over the fixed box, editable in place. */
 #pile {
   flex: none;
   max-height: 38vh;
@@ -398,7 +398,7 @@ html[data-theme="dark"] .lang-sum .ls.has-icon.is-dark svg {
   background: var(--card);
 }
 
-/* La caja fija: siempre visible abajo del diff (responsive por flex). */
+/* The fixed box: always visible below the diff (responsive via flex). */
 #askbar {
   flex: none;
   padding: 8px 10px;
@@ -433,10 +433,10 @@ html[data-theme="dark"] .lang-sum .ls.has-icon.is-dark svg {
 }
 
 
-/* Botón peligroso (Borrar todo / 🗑). */
+/* Dangerous button (Delete all / 🗑). */
 button.danger:hover { border-color: var(--err); color: var(--err); }
 
-/* Anclajes inline: la pregunta vive colapsada sobre su línea. */
+/* Inline anchors: the question lives collapsed over its line. */
 .file-body.has-anchors { position: relative; }
 .anchor-layer, .sel-layer {
   position: absolute;
@@ -472,9 +472,9 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
 }
 .head-marker:hover { background: var(--accent); color: var(--accent-contrast); }
 
-/* Selección: el NÚMERO es la cajita (0.2.16 — el fill vive en el shadow DOM
-   de pierre via SEL_STYLE). Acá queda la franja tintada por fila y el ＋
-   grande debajo del último número seleccionado, en el riel izquierdo. */
+/* Selection: the NUMBER is the checkbox (0.2.16 — the fill lives in pierre's
+   shadow DOM via SEL_STYLE). What stays here is the tinted stripe per row and
+   the big ＋ below the last selected number, on the left rail. */
 .drag-stripe {
   position: absolute;
   left: 0;
@@ -499,12 +499,12 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   border: none;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
 }
-/* Composer del ＋ de archivo con el archivo COLAPSADO: estático bajo el
-   encabezado (el body está display:none — ahí no se ve). */
+/* Composer of the file ＋ with the file COLLAPSED: static under the header
+   (the body is display:none — it is not visible there). */
 .composer.under-head {
   margin: 8px 10px;
 }
-/* Editor in-place de un anclaje (editar / borrar ahí mismo). */
+/* In-place editor of an anchor (edit / delete right there). */
 .inline-editor {
   position: fixed;
   z-index: 30;
@@ -555,7 +555,7 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   font-size: 11px;
 }
 
-/* Extensión de rango "hasta línea" en el composer (multi-línea sin drag). */
+/* "Up to line" range extension in the composer (multi-line without drag). */
 .composer-head .range-ext {
   flex: none;
   display: inline-flex;
@@ -576,7 +576,7 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   color: var(--text);
 }
 .composer-head .range-ext input:focus { outline: none; border-color: var(--accent); }
-/* Sello de versión. */
+/* Version stamp. */
 #askbar .ver {
   flex: none;
   color: var(--muted);
@@ -585,8 +585,8 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   font-family: ui-monospace, Menlo, monospace;
 }
 
-/* Hover-＋: el ＋ de una línea, en el riel izquierdo (sobre los números),
-   aparece con el hover y se va con el mouse — nunca tapa el texto. */
+/* Hover-＋: the ＋ of one line, on the left rail (over the numbers), appears
+   on hover and goes with the mouse — never covers the text. */
 .hover-plus {
   position: absolute;
   left: 2px;
@@ -608,26 +608,26 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
 }
 .hover-plus:hover { background: var(--accent); color: var(--accent-contrast); opacity: 1; }
 
-/* Colores de líneas con pregunta (WCAG): variables que HEREDAN al shadow DOM
-   de pierre — el tema las cambia solas. Ratios verificados: light 11-16:1,
-   dark 6.5-8.3:1 (AA doblado / AAA). */
-/* Barra de acento al borde izquierdo de cada fila pintada (inset: no
-   desplaza el layout) — el golpe de vista extra. */
+/* Colors of lines with a question (WCAG): variables that INHERIT into
+   pierre's shadow DOM — the theme changes them on its own. Verified ratios:
+   light 11-16:1, dark 6.5-8.3:1 (double AA / AAA). */
+/* Accent bar on the left edge of every painted row (inset: does not shift the
+   layout) — the extra eye-catch. */
 :root {
   --da-qa-add-bg: #0E4429; --da-qa-add-fg: #FFFFFF; --da-qa-add-bar: #3DD68C;
   --da-qa-del-bg: #5A1E22; --da-qa-del-fg: #FFFFFF; --da-qa-del-bar: #F87171;
   --da-qa-ctx-bg: #EBEBEF; --da-qa-ctx-fg: #101014; --da-qa-ctx-bar: #8B95A8;
 }
 :root[data-theme="dark"] {
-  /* +20% potencia: más saturación/brillo manteniendo ≥5:1 (AA doblado);
-     el verde no puede subir más de fondo sin rozar el límite — su golpe
-     extra lo lleva la barra de acento brillante. */
+  /* +20% power: more saturation/brightness while keeping ≥5:1 (double AA);
+     the green cannot go higher as a background without grazing the limit —
+     its extra punch is carried by the bright accent bar. */
   --da-qa-add-bg: #1B7F50; --da-qa-add-fg: #FFFFFF; --da-qa-add-bar: #3DD68C;
   --da-qa-del-bg: #B23A3E; --da-qa-del-fg: #FFFFFF; --da-qa-del-bar: #F87171;
   --da-qa-ctx-bg: #4C5568; --da-qa-ctx-fg: #F2F3F5; --da-qa-ctx-bar: #A5B4CC;
 }
 
-/* ⟳ refrescar: más grande (se ve qué es) y gira al usarse — feedback. */
+/* ⟳ refresh: bigger (you see what it is) and spins when used — feedback. */
 .header .refresh {
   font-size: 17px;
   line-height: 1;
@@ -642,7 +642,7 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   to { transform: rotate(360deg); }
 }
 
-/* ---- modos (0.3.0): barra de modos, commits, 📸 ---- */
+/* ---- modes (0.3.0): mode bar, commits, 📸 ---- */
 .modebar {
   display: flex;
   flex-wrap: wrap;
@@ -724,7 +724,7 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
   padding: 4px 18px;
 }
 
-/* ---- ⌘F + filtros de visibilidad (0.3.1) ---- */
+/* ---- ⌘F + visibility filters (0.3.1) ---- */
 #findbar {
   display: flex;
   align-items: center;
@@ -754,7 +754,7 @@ button.danger:hover { border-color: var(--err); color: var(--err); }
 }
 #findbar button { padding: 3px 8px; }
 
-/* Chips ＋/−/≡: activo (categoría VISIBLE) = punto de acento */
+/* Chips ＋/−/≡: active (VISIBLE category) = accent dot */
 button.filt { position: relative; padding: 4px 10px; }
 button.filt.on { border-color: var(--accent); color: var(--accent); }
 button.filt.on::after {
@@ -770,12 +770,12 @@ button.filt.on::after {
 :root { --da-find-hit: #e9c46a4d; --da-find-cur: #e9c46aaa; }
 :root[data-theme="dark"] { --da-find-hit: #e9c46a3d; --da-find-cur: #e9c46acc; }
 
-/* ---- toolbar sticky + 📁 (0.3.2) ---- */
-/* Modos + header siempre visibles al scrollear. #root tiene padding 10px:
-   márgenes negativos para cubrir el ancho completo y top:-10px para tapar el
-   padding superior; fondo sólido para que el diff no se vea por debajo.
-   z-index 20: por encima del contenido y del composer (14), por debajo del
-   inline-editor fijo (30). */
+/* ---- sticky toolbar + 📁 (0.3.2) ---- */
+/* Modes + header always visible while scrolling. #root has padding 10px:
+   negative margins to cover the full width and top:-10px to hide the top
+   padding; solid background so the diff does not show underneath.
+   z-index 20: above the content and the composer (14), below the fixed
+   inline-editor (30). */
 .toolbar {
   position: sticky;
   top: -10px;
@@ -795,7 +795,7 @@ button.filt.on::after {
   white-space: nowrap;
 }
 .modebar .ws:hover { color: var(--text); border-color: var(--accent); }
-/* "seleccionar repositorio..." (nothing chosen yet) + the Commits sub-button. */
+/* "select repository…" (nothing chosen yet) + the Commits sub-button. */
 .modebar .ws.empty { font-style: italic; }
 .modebar .ws-commits { font-size: 12px; }
 /* Sub-view open: a subtle outline "current" state — never the tab fill. */
@@ -820,8 +820,8 @@ button.filt.on::after {
   flex-direction: column;
   gap: 6px;
 }
-/* picker de repos del chip 📁 (0.9.18): ⬆ sube, lista solo carpetas git,
-   filtro en vivo — el árbol lo resuelve el server (list_git_projects) */
+/* repo picker of the 📁 chip (0.9.18): ⬆ goes up, lists only git folders,
+   live filter — the tree is resolved by the server (list_git_projects) */
 .ws-picker {
   position: fixed;
   top: 44px;
@@ -871,7 +871,7 @@ button.filt.on::after {
 }
 .ws-picker .ws-row:hover { background: var(--accent-dim, rgba(127,127,127,0.12)); }
 .ws-picker .ws-row.current { border-color: var(--accent); }
-.ws-picker .ws-row.current b::after { content: " · actual"; font-weight: 400; font-size: 10px; color: var(--accent); }
+.ws-picker .ws-row.current b::after { content: " · current"; font-weight: 400; font-size: 10px; color: var(--accent); }
 .ws-picker .ws-row span { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; opacity: 0.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-picker .ws-row .wt { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; font-style: normal; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 4px; flex: none; }
 .ws-picker .ws-empty { padding: 8px; font-size: 12px; opacity: 0.6; }
@@ -889,7 +889,7 @@ button.filt.on::after {
 .ws-editor .ie-actions { display: flex; align-items: center; gap: 8px; }
 .ws-editor .ie-actions .hint { flex: 1; color: var(--muted); font-size: 11px; }
 
-/* ---- modo Turnos (0.4.0) ---- */
+/* ---- Turns mode (0.4.0) ---- */
 .turns-actions { align-items: center; }
 .turns-actions .turns-count { color: var(--muted); }
 .turn-row { cursor: pointer; }
@@ -1012,7 +1012,7 @@ button.filt.on::after {
   padding: 8px;
 }
 
-/* ---- edición en vivo (✏️, 0.5.0) ---- */
+/* ---- live editing (✏️, 0.5.0) ---- */
 .file-head .fedit { padding: 2px 8px; }
 .file.editing > .file-head { border-bottom-color: var(--accent); }
 .editing-chip {
@@ -1046,14 +1046,14 @@ button.filt.on::after {
 }
 #pausedchip[hidden] { display: none; }
 
-/* ✏️ como toggle (0.5.2): activo = editando este archivo */
+/* ✏️ as a toggle (0.5.2): active = editing this file */
 button.fedit.on {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--accent-contrast);
 }
 
-/* ---- selección con contraste + revert ↩ (0.6.0) ---- */
+/* ---- selection with contrast + revert ↩ (0.6.0) ---- */
 ::selection { background: var(--accent); color: var(--accent-contrast); }
 .big-revert {
   background: var(--card);
@@ -1062,9 +1062,9 @@ button.fedit.on {
 }
 .big-revert:hover { background: var(--warn); color: #fff; }
 
-/* ---- pintado quirúrgico (0.8.0) ---- */
-/* capa de franjas de fragmentos pintados: misma técnica que .sel-layer pero
-   anclada al body del archivo (offsets medidos contra SU rect) */
+/* ---- surgical painting (0.8.0) ---- */
+/* stripe layer for painted fragments: same technique as .sel-layer but
+   anchored to the file body (offsets measured against ITS rect) */
 .frag-layer { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
 .file-body:has(.frag-layer) { position: relative; }
 .frag-stripe {
@@ -1073,23 +1073,25 @@ button.fedit.on {
   background: color-mix(in srgb, var(--warn) 30%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 45%, transparent);
 }
-/* modo edición puro: sin overlays de pintado */
+/* pure edit mode: no painting overlays */
 .file.editing .frag-layer { display: none; }
 
-/* ---- 垫片方框：行内词级变化高亮 ---- */
-/* spec：整行全红/全绿保持原底色；只改了个别词的行，把那些词用更醒目的
-   红/绿方框（粗描边 + 实色垫底）标出，红词在删除行、绿词在新增行。 */
+/* ---- shim box: inline word-level change highlight ---- */
+/* spec: a whole red/green row keeps its base background; rows with only a few
+   changed words get those words marked with a more visible red/green box
+   (thick outline + solid shim), red words on the deleted row, green words on
+   the added row. */
 .wc-layer { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
 .file-body:has(.wc-layer) { position: relative; }
-/* La cajita usa el VERDE/ROJO REAL del diff (muestreado de la fila por JS en
-   --wc-green/--wc-red) y destaca contra el fondo: sobre negro, un opacity
-   sólo APAGA el color (mezcla hacia negro), así que el relleno se calcula
-   PROGRAMÁTICAMENTE desde el color muestreado — mismo tono (h), luminosidad
-   +0.22 (tope 0.75) y cromo ×1.25 con piso 0.13 (tope 0.24) vía oklch
-   relativo. Rebajado de la 0.9.13 (spec 28/10: "con muchas palabras es
-   difícil leer, también con los colores y brillos elegidos"): alpha 0.42
-   deja pasar el 58% del texto. La primera línea background es fallback si
-   el oklch relativo no existe. */
+/* The box uses the REAL GREEN/RED of the diff (sampled from the row by JS into
+   --wc-green/--wc-red) and stands out against the background: on black, an
+   opacity only DIMS the color (blends toward black), so the fill is computed
+   PROGRAMMATICALLY from the sampled color — same hue (h), lightness +0.22
+   (cap 0.75) and chroma ×1.25 with a floor of 0.13 (cap 0.24) via relative
+   oklch. Tuned down from 0.9.13 (spec 28/10: "with many words it is hard to
+   read, also with the chosen colors and highlights"): alpha 0.42 lets 58% of
+   the text through. The first background line is a fallback when relative
+   oklch does not exist. */
 .wc-add {
   position: absolute;
   border-radius: 3px;
@@ -1102,7 +1104,7 @@ button.fedit.on {
   background: var(--wc-red, #f85149);
   background: oklch(from var(--wc-red, #f85149) min(l + 0.22, 0.75) min(max(c * 1.25, 0.13), 0.24) h / 0.42);
 }
-/* espacios agregados/borrados: circulito mínimo y TENUE (una corrida = un punto) */
+/* added/deleted spaces: minimal, FAINT dot (one run = one dot) */
 .wc-ws-add, .wc-ws-del {
   position: absolute;
   width: 3px;
@@ -1112,15 +1114,15 @@ button.fedit.on {
 }
 .wc-ws-add { background: var(--wc-green, #3fb950); opacity: 0.45; }
 .wc-ws-del { background: var(--wc-red, #f85149); opacity: 0.45; }
-/* (spec final 0.9.11: diff clásico como GitHub — cajas .wc-del sobre la
-   palabra removida de la fila ROJA y .wc-add sobre la agregada de la VERDE.
-   Los tachados inline .da-del de la 0.9.8 se eliminaron.) */
-/* 编辑模式下纯编辑视图：词级标记同样隐藏 */
+/* (final spec 0.9.11: classic diff like GitHub — .wc-del boxes over the removed
+   word of the RED row and .wc-add over the added one of the GREEN row. The
+   inline .da-del strikethroughs of 0.9.8 were removed.) */
+/* pure edit view in edit mode: word-level marks hidden too */
 .file.editing .wc-layer { display: none; }
-/* botones ? y ↩ de modo brocha (junto a ✏️) */
-/* (Los botones de modo brocha ? y ↩↩ se ELIMINARON en 0.9.17 — spec Damian:
-   el popup ＋/↩ tras pintar y Enter para ejecutar reemplazan los modos.) */
-/* mini aviso efímero ("no diff selected") */
+/* ? and ↩ buttons of brush mode (next to ✏️) */
+/* (The brush-mode buttons ? and ↩↩ were REMOVED in 0.9.17 — spec Damian:
+   the ＋/↩ popup after painting and Enter to execute replace the modes.) */
+/* ephemeral mini notice ("no diff selected") */
 .mini-notice {
   position: fixed;
   bottom: 8px;
@@ -1137,7 +1139,7 @@ button.fedit.on {
 .file-head .frev { padding: 2px 8px; color: var(--warn); }
 .file-head .frev:hover { border-color: var(--warn); background: var(--warn); color: #fff; }
 
-/* ↩ por línea: riel DERECHO del archivo (0.6.1) — donde viven los 💬 */
+/* ↩ per line: RIGHT rail of the file (0.6.1) — where the 💬 live */
 .hover-revert {
   left: auto;
   right: 2px;
@@ -1145,9 +1147,9 @@ button.fedit.on {
 }
 .hover-revert:hover { background: var(--warn); color: #fff; }
 
-/* Popup flotante ＋/↩ de la selección de texto (0.7.2): pegado al gesto del
-   mouse, centrado sobre dónde soltaste. Mismas acciones que los botones
-   grandes de abajo; z-index 25 = sobre la toolbar sticky (20), bajo findbar. */
+/* Floating ＋/↩ popup of the text selection (0.7.2): glued to the mouse
+   gesture, centered over where you released. Same actions as the big buttons
+   below; z-index 25 = above the sticky toolbar (20), below the findbar. */
 .sel-pop {
   position: fixed;
   z-index: 25;
@@ -1176,8 +1178,8 @@ button.fedit.on {
 .sel-pop button:hover { filter: brightness(1.12); }
 .sel-pop button.rev { background: var(--warn); color: #fff; }
 
-/* Chip de diagnóstico del flujo selección→popup (0.7.4): narra el último
-   evento arriba a la derecha, chiquito y sin interceptar el mouse. */
+/* Diagnostic chip of the selection→popup flow (0.7.4): narrates the last event
+   at the top right, small and without intercepting the mouse. */
 .diag-chip {
   position: fixed;
   top: 6px;
@@ -1196,8 +1198,8 @@ button.fedit.on {
   pointer-events: none;
 }
 
-/* Modo edición = PURO editor (0.6.4): sin ＋ ni ↩ ni cajitas ni 💬 — sólo
-   escribir/borrar y ⌘Z. Todo vuelve al salir del ✏️. */
+/* Edit mode = PURE editor (0.6.4): no ＋, no ↩, no checkboxes, no 💬 — only
+   typing/deleting and ⌘Z. Everything comes back on leaving ✏️. */
 .file.editing .hover-plus,
 .file.editing .hover-revert,
 .file.editing .sel-layer,
@@ -1207,10 +1209,10 @@ button.fedit.on {
 .file.editing .fplus,
 .file.editing .frev { display: none !important; }
 
-/* ================= 0.11.0 — feedback de carga =================
-   Todo lo que espera al server lo DICE: barra superior mientras hay un read
-   en vuelo, spinner en el objetivo clickeado, y skeletons con la forma de lo
-   que está por llegar (vista pendiente, lista, cuerpo de archivo). */
+/* ================= 0.11.0 — load feedback =================
+   Everything that waits for the server SAYS so: top bar while a read is in
+   flight, spinner on the clicked target, and skeletons shaped like what is
+   about to arrive (pending view, list, file body). */
 
 #loadbar {
   position: fixed;

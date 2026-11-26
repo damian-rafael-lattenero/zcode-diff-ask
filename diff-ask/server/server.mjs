@@ -7,12 +7,12 @@
 //                                     (git diff HEAD + untracked; the payload
 //                                     also carries upstream/ahead/behind for
 //                                     the panel's header chips)
-//   turn://list                     → turnos registrados (cada prompt = una
-//                                     foto del workspace; índice persistente)
-//   diff://turn/<id|latest>         → diff del turno (foto N vs foto N+1; el
-//                                     último, contra el working tree VIVO)
-//   diff://commit/<hash>            → diff de ese commit vs su primer padre
-//   log://commits?skip=&q=          → lista de commits (paginada) / búsqueda
+//   turn://list                     → recorded turns (each prompt = one
+//                                     snapshot of the workspace; persistent index)
+//   diff://turn/<id|latest>         → diff of the turn (snapshot N vs snapshot N+1;
+//                                     the last one, against the LIVE working tree)
+//   diff://commit/<hash>            → diff of that commit vs its first parent
+//   log://commits?skip=&q=          → commit list (paginated) / search
 //
 // Reactive updates: on resources/subscribe we fs.watch the worktree (plus .git)
 // and, when the git signature actually changes (status + numstat + HEAD +
@@ -33,13 +33,13 @@ const PLUGIN_ROOT = path.join(HERE, "..");
 const PANEL_URI = "ui://diff-ask/panel.html";
 const DIFF_URI = "diff://workspace";
 const WORKSPACE = process.env.ZCODE_WORKSPACE_ROOT || process.cwd();
-// Workspace ACTIVO: arranca en el de la sesión, pero el panel puede cambiarlo
-// (set_workspace) para diffejar otra carpeta del disco. Todo el server lee de
-// acá — builders, firma reactiva y watchers incluidos.
+// ACTIVE workspace: starts at the session's, but the panel can change it
+// (set_workspace) to diff another folder on disk. The whole server reads from
+// here — builders, reactive signature and watchers included.
 let activeWorkspace = WORKSPACE;
 const MAX_PATCH_BYTES = 1_500_000;
-// Archivos con before+after <= esto viajan con contenido COMPLETO en el JSON
-// (el panel diffea local y expande contexto sin red); más grandes → parche -U10.
+// Files with before+after <= this travel with FULL content in the JSON
+// (the panel diffs locally and expands context without the network); bigger → -U10 patch.
 const CONTENT_LIMIT = 300_000;
 // Mega commits (upstream-sync merges with thousands of files): with no caps,
 // enriching before/after cost 2 git-shows PER file SERIALLY — a 5103-file
@@ -62,10 +62,10 @@ const TURN_GIT_POOL = 4;
 export {
   MAX_CONTENT_FILES, MAX_LIST_FILES, ENRICH_CONCURRENCY, GIT_OUT_CAP,
 };
-// Árbol vacío canónico de git — el "padre" de un commit raíz, para que
-// `git diff <empty> <root>` liste el commit completo sin caso especial.
+// Canonical git empty tree — the "parent" of a root commit, so that
+// `git diff <empty> <root>` lists the whole commit with no special case.
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-// Formato del log: hash completo, corto, subject, autor, fecha relativa.
+// Log format: full hash, short hash, subject, author, relative date.
 const LOG_FMT = "%H%x1f%h%x1f%s%x1f%an%x1f%ar";
 
 let serverInfo = { name: "diff-ask", version: "0.1.0" };
@@ -164,9 +164,9 @@ export function parsePorcelainZ(out) {
 }
 
 export function parseNameStatusZ(out) {
-  // `git diff --name-status -z -M`: registros `STATUS\0PATH\0`; renames/copies
-  // agregan `\0ORIGEN` (path nuevo primero, igual que porcelain). STATUS puede
-  // traer score (R100/C75) — se normaliza a una letra para el chip del panel.
+  // `git diff --name-status -z -M`: `STATUS\0PATH\0` records; renames/copies
+  // add `\0ORIGIN` (new path first, same as porcelain). STATUS may
+  // carry a score (R100/C75) — normalized to one letter for the panel chip.
   const toks = out.split("\0").filter((t) => t !== "");
   const files = [];
   for (let i = 0; i < toks.length; i++) {
@@ -203,13 +203,13 @@ export function splitPatch(patchText) {
 }
 
 export function parseLogLine(line) {
-  // Una línea de `--format=$LOG_FMT` (campos separados por 0x1f).
+  // One line of `--format=$LOG_FMT` (fields separated by 0x1f).
   const [hash, short, subject, author, date] = line.split("\x1f");
   return hash ? { hash, short, subject: subject ?? "", author: author ?? "", date: date ?? "" } : null;
 }
 
-// numstat → Map por path nuevo (un rename puede traer `new\told` — se queda
-// con el primero, mismo criterio que el modo working original).
+// numstat → Map keyed by new path (a rename may carry `new\told` — the first
+// one wins, same criterion as the original working mode).
 function numstatMapOf(out) {
   const m = new Map();
   for (const line of out.split("\n")) {
@@ -219,14 +219,14 @@ function numstatMapOf(out) {
   return m;
 }
 
-// Contenido de `ref:path` (o null si no existe / muy grande / binario ilegible).
+// Content of `ref:path` (or null if missing / too big / unreadable binary).
 async function gitShow(ref, p, cwd) {
   const r = await runGit(["show", `${ref}:${p}`], { cwd });
   if (!r.ok || r.out.length > CONTENT_LIMIT) return null;
   return r.out;
 }
 
-// Contenido utf8 de un archivo (o null si no existe / binario / muy grande).
+// utf8 content of a file (or null if missing / binary / too big).
 // NUL check: Buffer first, so a binary file never rides the JSON payload as
 // mojibake (tracked binaries get flagged by numstat later; files outside git
 // only have this guard).
@@ -240,7 +240,7 @@ function readAbsFile(abs) {
   }
 }
 
-// Contenido actual del archivo de trabajo (o null si no existe / muy grande).
+// Current content of the working file (or null if missing / too big).
 function readWorkFile(p, cwd) {
   return readAbsFile(path.join(cwd, p));
 }
@@ -294,8 +294,8 @@ export async function enrichFiles({ entries, numstat, getBefore, getAfter, build
       f.deleted = n.deleted;
       if (n.added === "-") f.binary = true;
     } else if (!f.binary) {
-      // numstat no cubre untracked: contamos del contenido (o del parche
-      // --no-index) para que el resumen del panel sea real.
+      // numstat does not cover untracked: count from the content (or the
+      // --no-index patch) so the panel summary is real.
       if (f.status === "?" && typeof f.after === "string" && f.after.length) {
         f.added = String(f.after.split("\n").length - (f.after.endsWith("\n") ? 1 : 0));
         f.deleted = "0";
@@ -341,9 +341,9 @@ async function resolveUpstream(cwd) {
   return r.ok && r.out.trim() ? r.out.trim() : null;
 }
 
-// Cambia el workspace ACTIVO (chip 📁 del panel): valida que exista y sea un
-// repo git, re-arma los watchers y resetea la firma para que el próximo
-// evento notifique y el panel refresque solo.
+// Changes the ACTIVE workspace (the panel's 📁 chip): validates that it exists
+// and is a git repo, re-arms the watchers and resets the signature so the next
+// event notifies and the panel refreshes on its own.
 export async function setActiveWorkspace(input) {
   const raw = String(input ?? "").trim();
   if (!raw) return { error: "invalid_path", message: "Give me the path of a folder." };
@@ -352,7 +352,7 @@ export async function setActiveWorkspace(input) {
   try {
     stats = fs.statSync(p);
   } catch {
-    return { error: "invalid_path", message: `No existe: ${p}` };
+    return { error: "invalid_path", message: `Does not exist: ${p}` };
   }
   if (!stats.isDirectory()) return { error: "invalid_path", message: `Not a folder: ${p}` };
   // REALPATH (audit wave 5): the panel keys its watchers, URIs and diff roots
@@ -362,13 +362,13 @@ export async function setActiveWorkspace(input) {
   try {
     real = fs.realpathSync(p);
   } catch {
-    return { error: "invalid_path", message: `No existe: ${p}` };
+    return { error: "invalid_path", message: `Does not exist: ${p}` };
   }
   const inside = await runGit(["rev-parse", "--is-inside-work-tree"], { cwd: real });
   if (!inside.ok)
     return { error: "not_a_repo", message: `${real} is not a git repository. Diff Ask needs git.` };
   activeWorkspace = real;
-  lastSig = null; // el próximo cálculo de firma difiere → notifica y refresca
+  lastSig = null; // the next signature computation differs → notify and refresh
   worktreeWatcher?.close();
   gitWatcher?.close();
   worktreeWatcher = null;
@@ -379,13 +379,13 @@ export async function setActiveWorkspace(input) {
   return { ok: true, workspace: real };
 }
 
-// Lista los repos git LOCALES bajo una carpeta (chip 📁 del panel — spec
-// Damian 28/10: "un pequeño árbol que pueda ir para arriba y me filtre solo
-// las carpetas que tengan .git"). Recursivo con tope de profundidad y
-// SKIP de pesadas (node_modules, Library, hidden dirs — except .worktrees):
-// parado en ~/Projects
-// ves TODOS tus repos de una. Un repo puede contener sub-repos: se sigue
-// bajando igual. Tope de resultados para no colgar la UI en árboles raros.
+// Lists the LOCAL git repos under a folder (the panel's 📁 chip — spec
+// Damian 28/10: "a small tree that can go up and filter only the folders
+// that have .git" [translated]). Recursive with a depth cap and
+// SKIP of heavy ones (node_modules, Library, hidden dirs — except .worktrees):
+// standing in ~/Projects
+// you see ALL your repos at once. A repo can hold sub-repos: the walk keeps
+// going down. Result cap so the UI never hangs on odd trees.
 const GIT_WALK_SKIP = new Set([
   "node_modules", "Library", "Caches", ".Trash", "Application Support",
   "vendor", "target", "build", "dist", "out", "venv", ".venv", "__pycache__",
@@ -394,7 +394,7 @@ const GIT_WALK_SKIP = new Set([
 // Hidden dirs are skipped EXCEPT these worktree containers: ZCode's agent
 // convention is <parent>/.worktrees/<repo>-<slug> and a worktree's .git is a
 // FILE (handled below), so without this exception the picker never shows them
-// (Damian 13/11: "no se ven los de las carpetas ocultas").
+// (Damian 13/11: "the ones in hidden folders do not show up" [translated]).
 const GIT_WALK_HIDDEN_OK = new Set([".worktrees"]);
 export function listGitProjects(input, maxDepth = 4, maxResults = 400) {
   const under = path.resolve(String(input ?? "").trim().replace(/^~(?=\/|$)/, os.homedir()));
@@ -402,7 +402,7 @@ export function listGitProjects(input, maxDepth = 4, maxResults = 400) {
   try {
     stats = fs.statSync(under);
   } catch {
-    return { error: "invalid_path", message: `No existe: ${under}`, repos: [] };
+    return { error: "invalid_path", message: `Does not exist: ${under}`, repos: [] };
   }
   if (!stats.isDirectory()) return { error: "invalid_path", message: `Not a folder: ${under}`, repos: [] };
   const repos = [];
@@ -412,7 +412,7 @@ export function listGitProjects(input, maxDepth = 4, maxResults = 400) {
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
-      return; // sin permiso / desmontada: silencio
+      return; // no permission / unmounted: silence
     }
     for (const ent of entries) {
       if (repos.length >= maxResults) return;
@@ -420,7 +420,7 @@ export function listGitProjects(input, maxDepth = 4, maxResults = 400) {
       if (ent.name.startsWith(".") && !GIT_WALK_HIDDEN_OK.has(ent.name)) continue;
       const p = path.join(dir, ent.name);
       try {
-        // .git puede ser dir (repo normal) o archivo (worktree/submodule)
+        // .git can be a dir (normal repo) or a file (worktree/submodule)
         if (fs.statSync(path.join(p, ".git")).isFile() || fs.statSync(path.join(p, ".git")).isDirectory()) {
           // repos living inside a hidden worktree container (the agent
           // .worktrees) get flagged with the CONTAINER NAME so the panel can
@@ -442,18 +442,18 @@ export function listGitProjects(input, maxDepth = 4, maxResults = 400) {
 }
 
 // ------------------------------------------------- write_file (editor)
-// Autosave del editor del panel (estilo IntelliJ: siempre guarda). Política
-// de conflicto AGENTE GANA: si el archivo cambió en disco desde el contenido
-// que el panel tenía como base (expect_base = sha1), NO se pisa — la versión
-// del panel va a un shelve (contenido completo + .patch con la diferencia)
-// bajo ~/.zcode/diff-ask/shelved/<ws>/ y el panel cierra la edición.
+// Autosave of the panel editor (IntelliJ style: always saves). Conflict
+// policy AGENT WINS: if the file changed on disk since the content the panel
+// had as its base (expect_base = sha1), it is NOT overwritten — the panel's
+// version goes to a shelve (full content + .patch with the difference)
+// under ~/.zcode/diff-ask/shelved/<ws>/ and the panel closes the edit.
 export async function writeFileGuarded({ path: rel, content, base, expect_base: expect, on_conflict: onConflict = "shelve", workspace = activeWorkspace } = {}) {
   const ws = workspace;
   const abs = path.resolve(ws, String(rel ?? ""));
   if (abs !== ws && !abs.startsWith(ws + path.sep))
     return { error: "invalid_path", message: `The path "${rel}" escapes the workspace.` };
   if (typeof content !== "string")
-    return { error: "invalid_content", message: "Falta el contenido a guardar." };
+    return { error: "invalid_content", message: "Missing content to save." };
   const hash = (buf) => createHash("sha1").update(buf).digest("hex");
   let cur;
   try {
@@ -466,10 +466,10 @@ export async function writeFileGuarded({ path: rel, content, base, expect_base: 
     };
   }
   const curHash = hash(cur);
-  // La verificación de base se hace SIEMPRE acá (server-side): el panel manda
-  // el CONTENIDO base y este lado lo hashea con la MISMA función que el disco.
-  // El hash del lado del panel (crypto.subtle en el sandbox) demostró no ser
-  // confiable — shelvings con patch VACÍO: bytes idénticos, hashes distintos.
+  // The base check happens ALWAYS here (server-side): the panel sends the
+  // base CONTENT and this side hashes it with the SAME function as the disk.
+  // The panel-side hash (crypto.subtle in the sandbox) proved unreliable —
+  // shelvings with an EMPTY patch: identical bytes, different hashes.
   const baseOk =
     typeof base === "string"
       ? hash(Buffer.from(base, "utf8")) === curHash
@@ -477,8 +477,8 @@ export async function writeFileGuarded({ path: rel, content, base, expect_base: 
   if (!baseOk) {
     if (onConflict === "drop")
       return { conflict: true, dropped: true, current_hash: curHash, message: "The file changed on disk while you were editing (the agent wins); your edits were not saved." };
-    // shelve: contenido completo + patch con la diferencia (disco vs mío)
-    const stamp = new Date(); // hora local legible en el nombre
+    // shelve: full content + patch with the difference (disk vs mine)
+    const stamp = new Date(); // readable local time in the name
     const p2 = (n) => String(n).padStart(2, "0");
     const ts = `${p2(stamp.getHours())}${p2(stamp.getMinutes())}${p2(stamp.getSeconds())}`;
     const base = path.basename(String(rel));
@@ -494,7 +494,7 @@ export async function writeFileGuarded({ path: rel, content, base, expect_base: 
       const r = await runGit(["diff", "--no-index", "--no-color", "--", "disk", "mine"], { cwd: tmp, expectDiffExit: true });
       fs.writeFileSync(patchPath, r.out.replace(/^--- a\/disk/m, `--- a/${rel}`).replace(/^\+\+\+ b\/mine/m, `+++ b/${rel}`));
     } catch {
-      /* sin patch: el .mine ya es suficiente */
+      /* no patch: the .mine is enough */
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -509,7 +509,7 @@ export async function writeFileGuarded({ path: rel, content, base, expect_base: 
   return { ok: true, hash: hash(Buffer.from(content, "utf8")) };
 }
 
-// ------------------------------------------------------- diff vs una base
+// ------------------------------------------------------- diff vs a base
 // Working tree vs HEAD (the "unpushed" mode was removed in 0.10.0 — the
 // unpushed VIEW too; what survives is the upstream/ahead/behind info riding
 // every payload so the panel's working header can show its ↑/↓ chips).
@@ -590,7 +590,7 @@ export async function buildDiff({ includePatches = true, workspace = activeWorks
   };
 }
 
-// --------------------------------------------------------------- turnos (v2)
+// --------------------------------------------------------------- turns (v2)
 // A TURN = one prompt→stop window of a ZCode session. The app's hook system
 // taps both boundaries into turn-events.jsonl (UserPromptSubmit writes
 // {"type":"prompt",...}, Stop writes {"type":"stop","reply":...}; both carry
@@ -610,7 +610,7 @@ const MAX_TURN_COMMITS = 40;
 const MAX_TURN_OUTSIDE = 300;
 const MAX_TURN_DIRTY = 300; // per repo, after the noise filter
 // Repo label (and panel group header) for files touched OUTSIDE any git repo.
-// The panel renders this group as "Fuera de git" — keep both sides in sync.
+// The panel renders this group as "Outside git" — keep both sides in sync.
 const OUTSIDE_LABEL = "~";
 
 function wsKey(ws) {
@@ -726,8 +726,8 @@ function liveLane(sid) {
   return best;
 }
 
-// The union TERRITORY of every open lane (0.10.6: "solo de la
-// sesion/task"): each lane's workspace tree, the agent-worktree
+// The union TERRITORY of every open lane (0.10.6: "only the
+// session/task" [translated]): each lane's workspace tree, the agent-worktree
 // containers, and ~/.zcode (session state — plans, memories). Writes
 // anywhere else on the machine belong to other tasks or daemons and are
 // NEVER captured, so they cannot leak into another task's turn. Which
@@ -789,13 +789,13 @@ export function tapState() {
   return { ok: true, touched: tapTouched.size, gitRoots: [...tapGitRoots.keys()], openTurns: openTurns.size };
 }
 
-// ----------------------------------------------------------- inbox de turnos
+// ----------------------------------------------------------- turn inbox
 let inboxOffset = 0;
 let inboxInit = false;
 
-// Al arrancar: el offset arranca en el EOF actual — eventos anteriores a
-// esta vida del server no se pueden fotografiar (el estado ya cambió); su
-// historia, si existe, ya está en los índices que grabaron servers previos.
+// On startup: the offset starts at the current EOF — events older than
+// this server life cannot be snapshotted (the state already changed); their
+// history, if it exists, is already in the indexes written by previous servers.
 function initInboxOffset() {
   if (inboxInit) return;
   inboxInit = true;
@@ -836,7 +836,7 @@ async function drainInbox() {
   } catch {
     return;
   }
-  if (buf.length < inboxOffset) inboxOffset = 0; // rotaron/reemplazaron el archivo
+  if (buf.length < inboxOffset) inboxOffset = 0; // the file was rotated/replaced
   if (buf.length <= inboxOffset) return;
   const chunk = buf.subarray(inboxOffset).toString("utf8");
   inboxOffset = buf.length;
@@ -879,19 +879,19 @@ function reopenLiveLanes() {
     });
     for (const [k, v] of lanes) openTurns.set(k, v);
     if (openTurns.size) {
-      log(`boot: ${openTurns.size} ventana(s) reabierta(s) del inbox`);
+      log(`boot: ${openTurns.size} window(s) reopened from the inbox`);
       ensureTapWatcher();
     }
   } catch {
-    /* sin inbox: nada que reabrir */
+    /* no inbox: nothing to reopen */
   }
 }
 
 // ---- session timeline (whose cwd was active when) ------------------------
 // The $HOME-wide tap is machine-global: with several tasks open at once,
 // EVERY server's open turn used to claim every write — another task's
-// Turnos showed diff-ask files that a DIFFERENT session was editing
-// (Damian 22/11: "que atraiga hacia sí los cambios solo de la sesion/task").
+// Turns tab showed diff-ask files that a DIFFERENT session was editing
+// (Damian 22/11: "pull in only the changes of the session/task" [translated]).
 // Attribution rule: a repo that is the CWD of a DIFFERENT top-level session
 // whose turn was OPEN during this window is THAT session's work — excluded
 // here. Child sessions (sess_subagent_*, sess_workflow_*) never claim:
@@ -1156,7 +1156,7 @@ async function finalizeWindow(t, { interrupted }) {
   log(
     appBacked
       ? `turn ${rec.id}: files according to the app's checkpoints`
-      : `turno ${rec.id}: ${repos.length} repo(s), ${repos.reduce((n, r) => n + r.commits.length, 0)} commit(s), ${outside.length} fuera de git`,
+      : `turn ${rec.id}: ${repos.length} repo(s), ${repos.reduce((n, r) => n + r.commits.length, 0)} commit(s), ${outside.length} outside git`,
   );
   for (const uri of subs) sendNotification("notifications/resources/updated", { uri });
   return rec;
@@ -1176,7 +1176,7 @@ function ensureInboxWatcher() {
     inboxWatcher.on("error", () => {});
     inboxWatcher.unref?.();
   } catch {
-    /* sin watcher: turn mode still works leyendo el índice al refrescar */
+    /* no watcher: turn mode still works by reading the index on refresh */
   }
 }
 
@@ -1240,14 +1240,14 @@ function readTurnFiles() {
     try {
       const parsed = JSON.parse(fs.readFileSync(abs, "utf8"));
       if (parsed && parsed.id) rec = parsed;
-    } catch { /* turno corrupto: se ignora */ }
+    } catch { /* corrupt turn: ignored */ }
     turnFileCache.set(n, { mtimeMs: st.mtimeMs, size: st.size, rec });
     if (rec) out.push(rec);
   }
   // Dedupe by (sid, startedAt) (0.10.2): restart/deploy races finalized the
   // SAME prompt window more than once and legacy ids (stopMs-keyed) never
-  // collided — the panel showed "Es asi:" three times, most copies stamped
-  // interrupted with empty replies. Prefer the completed record; ties → the
+  // collided — the panel showed "Es asi:" three times [translated], most copies
+  // stamped interrupted with empty replies. Prefer the completed record; ties → the
   // latest stoppedAt.
   const byKey = new Map();
   for (const rec of out) {
@@ -1390,7 +1390,7 @@ async function turnEntries(repos, outside = [], { withContent = true } = {}) {
       entries.push({
         status: f.status, path: key,
         ...(f.oldPath ? { oldPath: `${label}/${f.oldPath}` } : {}),
-        repo: root, repoLabel: label, note: "sin commitear",
+        repo: root, repoLabel: label, note: "uncommitted",
         _src: { dirty: true, rel: f.path, oldRel: f.oldPath, abs: path.join(root, f.path) },
       });
     }
@@ -1407,7 +1407,7 @@ async function turnEntries(repos, outside = [], { withContent = true } = {}) {
     }
   }
   // Files OUTSIDE any git repo, LAST so their group header closes the list
-  // (the panel renders the "~" group as "Fuera de git").
+  // (the panel renders the "~" group as "Outside git").
   for (const raw of outside) {
     const e = outsideEntry(raw);
     if (e && !seen.has(e.path)) {
@@ -1531,8 +1531,8 @@ function sameFile(a, b) {
   }
 }
 
-// Diff de un turno: "latest" = turno EN VIVO (ventana abierta hasta ahora);
-// un id = turno guardado. Multi-repo: cada archivo viaja con repoLabel.
+// Diff of a turn: "latest" = LIVE turn (window open until now);
+// an id = saved turn. Multi-repo: every file travels with repoLabel.
 // withContent:false is the panel's light read (0.11.0): file headers and
 // counts only — the heavy before/after rides a per-file read when the user
 // reaches it (`buildTurnFile`), so switching turns never moves megabytes.
@@ -1578,7 +1578,7 @@ async function buildTurnBundle(id, { workspace = activeWorkspace, resolveFocus =
   } else {
     rec = sidTurns(scopeSid).find((t) => t.id === id) ?? null;
     if (!rec && id === "latest") {
-      // sin turno abierto (de esta sesión): el último guardado de la sesión
+      // no open turn (for this session): the session's last saved turn
       rec = sidTurns(scopeSid)[0] ?? null;
     }
     // Read-time attribution (0.10.6): records stored BEFORE the territory
@@ -1687,14 +1687,14 @@ async function buildTurnBundle(id, { workspace = activeWorkspace, resolveFocus =
             dirty: (r.dirty ?? []).length,
             ...(r.dirtyHidden ? { dirtyHidden: r.dirtyHidden } : {}),
           })),
-          // The pseudo-repo for files touched outside git (header "Fuera de git").
+          // The pseudo-repo for files touched outside git (header "Outside git").
           ...(outsideCount
             ? [{ label: OUTSIDE_LABEL, path: os.homedir(), commits: 0, dirty: 0, outside: outsideCount }]
             : []),
         ],
       outside: source.outside ?? [],
     },
-    baseLabel: `turno ${atLabel}`,
+    baseLabel: `turn ${atLabel}`,
     snapshotAt: rec.startedAt,
     dirty: entries.length > 0,
     truncated: pruned.truncated,
@@ -1833,7 +1833,7 @@ export async function listTurns({ skip = 0, limit = TURN_PAGE, sid: scopeSid } =
   const turns = [];
   for (let i = from; i < total && turns.length <= lim; i++) turns.push(await at(i));
   const hasMore = turns.length > lim;
-  // sessionFilter: the panel renders "· esta task" when non-null (0.10.1).
+  // sessionFilter: the panel renders "· this task" when non-null (0.10.1).
   return { count: total, skip: from, limit: lim, hasMore, sessionFilter: sid || null, turns: turns.slice(0, lim) };
 }
 
@@ -1843,7 +1843,7 @@ export async function deleteTurn(id, { workspace = activeWorkspace } = {}) {
   if (!rec) return { error: "unknown_turn", message: `I could not find turn "${id}".` };
   try {
     fs.rmSync(path.join(TURNS2_DIR, `${rec.id}.json`), { force: true });
-  } catch { /* ya no está */ }
+  } catch { /* gone already */ }
   return { ok: true, remaining: sidTurns().length };
 }
 
@@ -1853,12 +1853,12 @@ export async function clearTurns({ workspace = activeWorkspace } = {}) {
   if (!sid) {
     try {
       fs.rmSync(TURNS2_DIR, { recursive: true, force: true });
-    } catch { /* nada que borrar */ }
+    } catch { /* nothing to delete */ }
     turnStoreCache = null;
     openTurns.clear(); // global clear drops every live lane too
     return { ok: true, remaining: 0 };
   }
-  // Scoped (0.10.1): the panel's "Borrar todo" is per task view — with a
+  // Scoped (0.10.1): the panel's "Delete all" is per task view — with a
   // known session it must NOT nuke every other task's history. Its own
   // live lane dies with the view (dropped, never persisted as a record).
   openTurns.delete(sid);
@@ -1867,17 +1867,17 @@ export async function clearTurns({ workspace = activeWorkspace } = {}) {
     if (String(t.sid ?? "") === sid) {
       try {
         fs.rmSync(path.join(TURNS2_DIR, `${t.id}.json`), { force: true });
-      } catch { /* ya no está */ }
+      } catch { /* gone already */ }
     } else remaining++;
   }
   turnStoreCache = null;
   return { ok: true, remaining, scoped: sid };
 }
 
-// Default workspace for the panel's "Trabajo por repositorio" tab (spec
+// Default workspace for the panel's "Work per repository" tab (spec
 // 22/11): the git repo with the MOST changes of the last recorded turn. An
 // all-outside turn (or no turns at all) suggests nothing: the tab then
-// shows "seleccionar repositorio..." and waits for a manual pick.
+// shows "select repository…" and waits for a manual pick.
 //
 // 0.10.10 — "changes" follow the turn's own truth. When the app knows the
 // session they are the files the turn WROTE (its end-of-turn summary), and
@@ -1962,7 +1962,7 @@ export async function listCommits({ skip = 0, limit = 10, query = "", workspace 
   const q = query.trim();
 
   if (!q) {
-    // Paginado plano: pido limit+1 para saber si hay más ("…" en el panel).
+    // Plain pagination: request limit+1 to know whether there is more ("…" in the panel).
     const r = await runGit(
       ["log", "--skip", String(skip), "-n", String(limit + 1), `--format=${LOG_FMT}`],
       { cwd: ws },
@@ -1979,8 +1979,8 @@ export async function listCommits({ skip = 0, limit = 10, query = "", workspace 
     };
   }
 
-  // Búsqueda: hash exacto/prefijo primero (si resuelve), después por texto
-  // del título (--fixed-strings -i: substring literal, sin regex).
+  // Search: exact/prefix hash first (if it resolves), then by subject
+  // text (--fixed-strings -i: literal substring, no regex).
   let exact = null;
   if (/^[0-9a-f]{4,40}$/i.test(q)) {
     const v = await runGit(["rev-parse", "--verify", "--quiet", `${q}^{commit}`], { cwd: ws });
@@ -2027,8 +2027,8 @@ export async function buildCommitDiff(ref, { workspace = activeWorkspace } = {})
   const commit = parseLogLine(metaR.out.trim());
   const parents = parentsR.out.trim().split(/\s+/).filter(Boolean);
   const isMerge = parents.length > 1;
-  // Commit raíz: padre = árbol vacío canónico. Merge: primer padre (nota en
-  // el panel).
+  // Root commit: parent = canonical empty tree. Merge: first parent (noted in
+  // the panel).
   const parent = parents[0] ?? EMPTY_TREE;
 
   const nsR = await runGit(["diff", "--name-status", "-z", "-M", parent, sha], { cwd: ws });
@@ -2072,8 +2072,8 @@ function sendNotification(method, params) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
 }
 
-// La firma incluye el upstream: un fetch que mueva origin/* también cambia
-// los chips ↑/↓ del header de working y tiene que refrescar el panel.
+// The signature includes the upstream: a fetch that moves origin/* also changes
+// the working header's ↑/↓ chips and has to refresh the panel.
 async function signature() {
   const [s, n, h, u] = await Promise.all([
     runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
@@ -2241,7 +2241,7 @@ const TOOLS = [
   },
   {
     name: "clear_turns",
-    description: "Delete ALL recorded turns (the panel's 'Borrar todo').",
+    description: "Delete ALL recorded turns (the panel's 'Delete all').",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -2396,7 +2396,7 @@ async function handleRequest(msg) {
           });
           return {
             structuredContent: data,
-            content: [{ type: "text", text: `${data.turns.length} de ${data.count} turno(s).` }],
+            content: [{ type: "text", text: `${data.turns.length} of ${data.count} turn(s).` }],
           };
         }
         case "get_turn_diff":
@@ -2413,7 +2413,7 @@ async function handleRequest(msg) {
           data = await deleteTurn(String(params.arguments?.id ?? ""));
           return {
             structuredContent: data,
-            content: [{ type: "text", text: data.ok ? `Turno borrado (${data.remaining} restantes).` : data.message }],
+            content: [{ type: "text", text: data.ok ? `Turn deleted (${data.remaining} left).` : data.message }],
           };
         }
         case "write_file": {
@@ -2431,7 +2431,7 @@ async function handleRequest(msg) {
         }
         case "clear_turns": {
           data = await clearTurns();
-          return { structuredContent: data, content: [{ type: "text", text: "Turnos borrados." }] };
+          return { structuredContent: data, content: [{ type: "text", text: "Turns deleted." }] };
         }
         case "set_workspace": {
           data = await setActiveWorkspace(params.arguments?.path);
@@ -2457,8 +2457,8 @@ async function handleRequest(msg) {
               {
                 type: "text",
                 text: data.workspace
-                  ? `Sugerencia: ${data.workspace} (${data.commits} commit(s) + ${data.dirty} sucio(s), turno ${data.turnId}).`
-                  : `Sin sugerencia (${data.reason}).`,
+                  ? `Suggestion: ${data.workspace} (${data.commits} commit(s) + ${data.dirty} dirty, turn ${data.turnId}).`
+                  : `No suggestion (${data.reason}).`,
               },
             ],
           };
@@ -2480,8 +2480,8 @@ async function handleRequest(msg) {
         default:
           return { content: [{ type: "text", text: `Unknown tool: ${params.name}` }], isError: true };
       }
-      // El modelo no necesita el contenido completo de los archivos (before/
-      // after son para el panel): respuesta liviana con paths + parches.
+      // The model does not need the full file content (before/after are for the
+      // panel): a light response with paths + patches.
       const slim = data.error
         ? data
         : {

@@ -1,10 +1,10 @@
-// POPURRÍ RICO para prueba MANUAL del panel (pedido de Damian 27/10):
-// resetea tests/diffs a HEAD y aplica edits mucho más diversos que el
-// fixture del e2e — varias palabras AGREGADAS por línea, varias BORRADAS,
-// líneas mixtas (add+del), cambios intra-palabra, palabras GEMELAS
-// repetidas en la misma línea, bloques multilínea, en los 9 lenguajes.
-// El e2e NO usa esto: usa apply-fixture-mods.mjs (determinista, sus tests
-// dependen de ese contenido exacto). Re-ejecutable: siempre parte de HEAD.
+// RICH MIX for MANUAL panel testing (Damian's request 27/10):
+// resets tests/diffs to HEAD and applies edits far more diverse than the
+// e2e fixture — several ADDED words per line, several DELETED ones,
+// mixed lines (add+del), intra-word changes, TWIN words
+// repeated on the same line, multi-line blocks, across the 9 languages.
+// The e2e does NOT use this: it uses apply-fixture-mods.mjs (deterministic, its tests
+// depend on that exact content). Re-runnable: it always starts from HEAD.
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -13,86 +13,86 @@ import { fileURLToPath } from "node:url";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-// [find, replace] · ["+after", lines] inserta después de la línea que
-// contiene el anchor · ["-line"] borra la línea exacta.
+// [find, replace] · ["+after", lines] inserts after the line that
+// contains the anchor · ["-line"] deletes the exact line.
 const MODS = {
   "tests/diffs/notes.md": [
-    // dos palabras AGREGADAS en una línea
+    // two ADDED words on one line
     ["highlight individual words inside", "highlight two individual words carefully inside"],
-    // dos palabras BORRADAS ("about selection")
+    // two DELETED words ("about selection")
     ["The alpha section talks about selection.", "The alpha section talks."],
-    // línea MIXTA: agrega y borra a la vez
+    // MIXED line: adds and deletes at once
     ["another word much further down", "another marker much further below"],
     // INTRA-palabra
     ["works for single words,", "works for singular wordings,"],
-    // GEMELAS: "bravo" agregada DOS veces en la misma línea
+    // TWINS: "bravo" added TWICE on the same line
     ["Persistence is the", "bravo Persistence bravo is the"],
-    // línea BORRADA
+    // DELETED line
     ["- second bullet with the word bravo inside"],
-    // bloque AGREGADO de 3 líneas + vacía
+    // ADDED block of 3 lines + an empty one
     ["+Echo closes the notes with a small table:",
      ["", "Extra echo block added to test multi-line paints,", "with two full lines plus a trailing empty one.", ""]],
   ],
   "tests/diffs/server.ts": [
-    // DOS palabras cambiadas en la MISMA línea
+    // TWO changed words on the SAME line
     ['const payload = { status: "running", uptime: 12345 };',
      'const payload = { status: "ready", uptime: 99999 };'],
-    // palabra al PRINCIPIO + palabra al FINAL de la misma línea
+    // word at the START + word at the END of the same line
     ['function register(method: string, path: string, handler: Route["handler"]): void {',
      'async function register(method: string, path: string, handler: Route["handler"]): Promise<void> {'],
-    // bloque handler NUEVO de 4 líneas + vacía
+    // NEW handler block of 4 lines + an empty one
     ['+register("GET", "/charlie", async () => {',
      ['register("GET", "/delta", async () => {', '  const extra = true;',
       '  return new Response("delta", { status: 200 });', '});', ""]],
-    // línea BORRADA
+    // DELETED line
     ["  const body = await req.json();"],
-    // DOS palabras agregadas dentro de una línea
+    // TWO words added inside a line
     ['return Response.json({ received: body }, { status: 201 });',
      'return Response.json({ received: body, ok: true, cached: false }, { status: 201 });'],
     // INTRA-palabra
     ["url.pathname", "url.pathName"],
   ],
   "tests/diffs/parser.py": [
-    // DOS reemplazos en la misma línea (mixta add+del x2)
+    // TWO replacements on the same line (mixed add+del x2)
     ["Marker words: alpha (words), bravo (numbers), charlie (symbols).",
      "Marker words: alpha (tokens), bravo (digits), charlie (symbols)."],
-    // función NUEVA de 3 líneas + vacía
+    // NEW function of 3 lines + an empty one
     ["+def classify(token: Token) -> str:",
      ["", "def render(tokens):", '    return " ".join(t.text for t in tokens)', "    # extra line bravo"]],
-    // línea BORRADA
+    // DELETED line
     ['    if re.match(r"^\\w+$", token.text):'],
     // DOS tokens agregados en la firma
     ["def summarize(line: str) -> dict:", "def summarize(line: str, keep_all: bool = True) -> dict:"],
-    // frase BORRADA del medio de una línea
+    // DELETED phrase from the middle of a line
     ["kinds = [classify(t) for t in tokens if t.text.strip()]",
      "kinds = [classify(t) for t in tokens]"],
   ],
   "tests/diffs/types.go": [
-    // clásico: palabra cambiada en struct
+    // classic: changed word in a struct
     ["\tTitle string", "\tHeading string"],
     // campo NUEVO insertado
     ["+\tKind  string", ["\tExtra string"]],
-    // método NUEVO de 3 líneas + vacía
+    // NEW method of 3 lines + an empty one
     ["+func NewCollector(max int) *Collector {",
      ["// Render formats the record as one line.", "func (r Record) Render() string {",
       "\treturn r.Title", "}", ""]],
-    // DOS palabras cambiadas en la misma línea de comentario
+    // TWO changed words on the same comment line
     ["// Record is the base unit stored by the fixture collector.",
      "// Record is the main unit kept by the fixture collector."],
-    // línea BORRADA
+    // DELETED line
     ["// Collector gathers records with a bounded buffer."],
     // INTRA-palabra
     ["records []Record", "records []RecordX"],
   ],
   "tests/diffs/styles.css": [
-    // clásico: color
+    // classic: color
     ["--accent: #3fb950;", "--accent: #58a6ff;"],
     // DOS propiedades AGREGADAS dentro de :root
     ["+  --radius: 6px;", ["  --spacing: 4px,", "  --shadow: 0 1px 2px black;"]],
-    // bloque NUEVO de 4 líneas + vacía
+    // NEW block of 4 lines + an empty one
     ["+.button:hover {",
      ["", ".panel-footer {", "  border-top: 1px solid var(--danger);", "  padding: 8px 16px;", "}"]],
-    // línea BORRADA dentro de una regla existente
+    // DELETED line inside an existing rule
     ["  border-color: var(--accent);"],
   ],
   "tests/diffs/config.json": [
@@ -102,32 +102,32 @@ const MODS = {
     ['"port": 8080', '"port": 9090'],
     // clave INTRA-palabra
     ['"max_requests": 1000', '"max_request_limit": 1000'],
-    // línea BORRADA
+    // DELETED line
     ['    "max_payload_kb": 512,'],
   ],
   "tests/diffs/data.yaml": [
-    // clásico: item de lista cambiado
+    // classic: changed list item
     ["    - alpha", "    - foxtrot"],
-    // registro NUEVO de 4 líneas insertado
+    // NEW record of 4 lines inserted
     ["+  - id: 3", ["  - id: 4", "    kind: note", '    title: "Fourth record"', "    tags: [charlie, delta]"]],
     // DOS campos cambiados (uno agrega, otro cambia texto)
     ['    title: "Second record"', '    title: "Second record (edited)"'],
     ["    tags: [bravo, echo]", "    tags: [bravo, echo, extra]"],
-    // línea BORRADA
+    // DELETED line
     ["    tags: [charlie, foxtrot]"],
   ],
   "tests/diffs/shell.sh": [
     // DOS palabras agregadas en un echo
     ['echo "alpha: listing fixture files"', 'echo "alpha: listing all fixture files carefully"'],
-    // línea NUEVA en un case
+    // NEW line in a case
     ["+      ls -1 tests/diffs", ["      wc -l tests/diffs/*"]],
-    // línea BORRADA
+    // DELETED line
     ["    bravo)"],
   ],
   "tests/diffs/Makefile": [
-    // clásico
+    // classic
     ['@echo "nothing to clean"', '@echo "nothing to clean today"'],
-    // línea NUEVA en el target
+    // NEW line in the target
     ["+clean:", ['\t@echo "rich fixture variant"']],
   ],
   "tests/diffs/runner.nu": [
@@ -145,7 +145,7 @@ for (const [rel, ops] of Object.entries(MODS)) {
     if (op.length === 1) {
       const line = op[0];
       if (!content.split("\n").includes(line))
-        throw new Error(`${rel}: no existe la línea a borrar: ${JSON.stringify(line)}`);
+        throw new Error(`${rel}: line to delete does not exist: ${JSON.stringify(line)}`);
       content = content.split("\n").filter((l) => l !== line).join("\n");
     } else if (op[0].startsWith("+")) {
       const anchor = op[0].slice(1);
@@ -163,4 +163,4 @@ for (const [rel, ops] of Object.entries(MODS)) {
   }
   fs.writeFileSync(path.join(REPO, rel), content);
 }
-console.log(`fixture RICH (popurrí): ${n} edits en ${Object.keys(MODS).length} archivos`);
+console.log(`fixture RICH (mixed bag): ${n} edits in ${Object.keys(MODS).length} files`);
