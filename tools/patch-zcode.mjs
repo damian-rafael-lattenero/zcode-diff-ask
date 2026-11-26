@@ -37,7 +37,7 @@ const die = (m) => {
 
 if (UNPATCH) {
   const b = fs.readdirSync(BACKUP_DIR).sort().at(-1);
-  if (!b) die("no hay backup para restaurar");
+  if (!b) die("no backup to restore");
   const dir = path.join(BACKUP_DIR, b);
   log(`restaurando backup ${b}…`);
   execFileSync("cp", [path.join(dir, "app.asar"), ASAR], { stdio: "inherit" });
@@ -62,7 +62,7 @@ execFileSync("npx", ["-y", "@electron/asar", "extract", ASAR, WORK], {
   cwd: ROOT,
 });
 
-// Bundle principal del renderer: el .js más grande de out/renderer/assets.
+// Main renderer bundle: the largest .js under out/renderer/assets.
 const assetsDir = path.join(WORK, "out", "renderer", "assets");
 const bundle = fs
   .readdirSync(assetsDir)
@@ -138,7 +138,7 @@ patchOnce(
 
 // ---- B4: composer overlay inyectado (vanilla, fuera de React)
 // quoteLines soporta unified diff Y contenido plano (multi-file-diff pasa el
-// contenido nuevo; las líneas sin prefijo se toman como contexto).
+// new content; lines without a prefix are taken as context).
 const COMPOSER = `
 ;(function(){
   if (window.__daComposer) return;
@@ -239,7 +239,7 @@ patchOnce(
 
 // ------------------------------------------------------------- validate JS
 
-// El bundle es ESM: validamos sintaxis sobre una copia .mjs
+// The bundle is ESM: validate syntax on a .mjs copy.
 fs.writeFileSync(BUNDLE_PATH, src);
 const tmpCheck = "/tmp/da-bundle-check.mjs";
 fs.copyFileSync(BUNDLE_PATH, tmpCheck);

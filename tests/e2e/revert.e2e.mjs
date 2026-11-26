@@ -739,7 +739,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
   await waitPaint(NOTES, 2);
   frags = await evalJs(`__E2E.frags(${JSON.stringify(NOTES)})`);
   const oneLetter = frags[frags.length - 1]?.text ?? "";
-  check(frags.length === 2 && oneLetter.length === 1, `seleccionar UNA letra funciona (${JSON.stringify(frags.map((f) => f.text))})`);
+  check(frags.length === 2 && oneLetter.length === 1, `selecting ONE letter works (${JSON.stringify(frags.map((f) => f.text))})`);
   await shot("03-letra-unica+y-cit.png");
 
 //   // ============ F. ↩ of the two surgical ones together ============
@@ -1149,7 +1149,7 @@ console.error("    viewport:", JSON.stringify(await evalJs(`({iw: innerWidth, ih
 //   // re-render with identical content (refresh): the classic model is
 //   // kept — two rows, boxes, no duplication
   const CFG = "tests/diffs/config.json";
-  await panelStable(); // el refresh del revert puede seguir re-renderizando
+  await panelStable(); // the revert refresh may keep re-rendering
   await expandFile(CFG); // collapsed there are no rects: without expanding there are no boxes
   await evalJs("__DA.refresh(true)");
   await panelStable();
