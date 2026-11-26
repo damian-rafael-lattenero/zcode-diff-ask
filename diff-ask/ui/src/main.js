@@ -2025,7 +2025,7 @@ function pointToRowInfo(x, y, why = false) {
     if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
     const inner = host.shadowRoot.elementFromPoint(x, y);
     if (!inner) {
-      if (why) return { fail: "sin inner " + e.path.slice(-16) };
+      if (why) return { fail: "no inner " + e.path.slice(-16) };
       continue; // try the next file — it is not its fault
     }
     let node = inner;
@@ -4427,7 +4427,7 @@ function renderTurns() {
       <button class="ghost turn-prompt-btn" title="See the prompt and the turn summary">💬</button>
       <button class="ghost danger turn-del" title="Delete this turn">✕</button>`;
     row.querySelector(".turn-time").textContent = time;
-    row.querySelector(".turn-prompt").textContent = (t.prompt || "(sin texto)").split("\n")[0];
+    row.querySelector(".turn-prompt").textContent = (t.prompt || "(no text)").split("\n")[0];
     row.querySelector(".turn-prompt").title = [t.prompt, t.reply].filter(Boolean).join("\n\n");
     const meta = [];
     if (t.repoCount) meta.push(`${t.repoCount} repo${t.repoCount === 1 ? "" : "s"}`);
@@ -4436,7 +4436,7 @@ function renderTurns() {
     row.querySelector(".turn-meta").textContent = meta.join(" · ");
     if (t.isLive) row.querySelector(".turn-live").textContent = "live";
     else row.querySelector(".turn-del").remove(); // live row has no file to delete
-    if (t.interrupted) row.querySelector(".turn-live").textContent = "interrumpido";
+    if (t.interrupted) row.querySelector(".turn-live").textContent = "interrupted";
     row.querySelector(".turn-prompt-btn").onclick = (e) => {
       e.stopPropagation();
       openPromptCard(t);
