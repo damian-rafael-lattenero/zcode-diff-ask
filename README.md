@@ -143,7 +143,8 @@ Personal → dev-zcode-diff-ask-… → Diff Ask → Install. Restart ZCode afte
 every update (the panel is served from the cache at startup).
 
 Install via script (the whole chain, see
-[TESTING.md](docs/TESTING.md#installation)): rsync to the marketplace copy
+[TESTING.md](docs/TESTING.md#installing-a-new-version-the-whole-chain)): rsync
+to the marketplace copy
 (`~/.zcode/cli/plugins/marketplaces/dev-…/`), create
 `~/.zcode/cli/plugins/cache/dev-…/diff-ask/<version>/`, and patch
 `installed_plugins.json` (with a backup).
