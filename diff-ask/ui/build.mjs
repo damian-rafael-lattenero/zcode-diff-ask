@@ -17,11 +17,11 @@ const LIMIT = 4 * 1024 * 1024;
 // catalog, oniguruma/highlights wasm). Diffs render plain — same degradation
 // the host shows for unknown languages.
 const stub = (file) => path.join(HERE, "vendor", file);
-// 0.7.0: highlighting REAL por subconjunto — el backend shiki se reemplaza
-// por vendor/shiki-subset.mjs (gramáticas elegidas + motor JS sin wasm,
-// importadas por ruta). Sigue STUBBEADO el catálogo dinámico completo
-// (shiki/langs*, a lo que apunta el resolveLanguage de pierre), el motor
-// oniguruma+wasm y @pierre/highlights: esbuild sólo empaqueta el subset.
+// 0.7.0: REAL highlighting by subset — the shiki backend is replaced
+// by vendor/shiki-subset.mjs (chosen grammars + a JS engine without wasm,
+// imported by path). Still STUBBED: the full dynamic catalog
+// (shiki/langs*, what pierre's resolveLanguage points at), the
+// oniguruma+wasm engine and @pierre/highlights: esbuild only bundles the subset.
 const slimHighlighter = {
   name: "da-slim-highlighter",
   setup(builder) {
@@ -54,7 +54,7 @@ let js = result.outputFiles[0].text;
 js = js.replace(/<\/script/gi, "<\\/script");
 const css = fs.readFileSync(path.join(HERE, "src", "panel.css"), "utf8");
 
-// Sello de build: la UI muestra qué versión corrés (vX.Y.Z en el askbar).
+// Build stamp: the UI shows which version you run (vX.Y.Z in the askbar).
 const manifest = JSON.parse(
   fs.readFileSync(path.join(HERE, "..", ".zcode-plugin", "plugin.json"), "utf8"),
 );

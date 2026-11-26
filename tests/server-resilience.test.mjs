@@ -34,7 +34,7 @@ test("buildDiff: a deleted workspace returns not_a_repo, never throws", async ()
   const d = await buildDiff({ mode: "working", workspace: dir });
   assert.equal(d.error, "not_a_repo");
   assert.equal(d.workspace, dir);
-  assert.match(d.message, /no es un repositorio git/);
+  assert.match(d.message, /is not a git repository/);
 });
 
 test("buildDiff: a folder that stopped being a repo also returns not_a_repo", async () => {

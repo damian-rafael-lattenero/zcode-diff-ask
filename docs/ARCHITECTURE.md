@@ -1,83 +1,83 @@
-# Arquitectura de Diff Ask
+# Diff Ask architecture
 
-Documento de profundidad: qué hace cada pieza, cómo se conectan, y **por qué**
-es como es. Para el panorama general, ver el [README](../README.md). Para los
+Depth document: what each piece does, how they connect, and **why** it is
+the way it is. For the big picture, see the [README](../README.md). For the
 tests, [TESTING.md](TESTING.md).
 
 ---
 
-## 1. Mapa de componentes
+## 1. Component map
 
 ```
 zcode-diff-ask/
-├── diff-ask/                       ← el plugin (todo lo que se instala)
+├── diff-ask/                       ← the plugin (everything that installs)
 │   ├── .zcode-plugin/plugin.json   manifest: mcpServers (stdio) + ui.surfaces
-│   ├── server/server.mjs           server MCP (Node stdlib, CERO deps)
+│   ├── server/server.mjs           MCP server (Node stdlib, ZERO deps)
 │   ├── ui/
-│   │   ├── src/lib.js              LÓGICA PURA: word-diff, cirugía de chars,
-│   │   │                           restauración, mensajes. Sin DOM. ~500 líneas.
-│   │   ├── src/main.js             cáscara DOM/IO del panel. ~3.600 líneas.
-│   │   ├── src/panel.css           estilos (light/dark) + capas overlay.
-│   │   └── build.mjs               esbuild → dist/panel.html inline (~3,6 MB)
-│   ├── skills/diff-ask/SKILL.md    cómo el MODELO rutea las preguntas ancladas
+│   │   ├── src/lib.js              PURE LOGIC: word-diff, chars surgery,
+│   │   │                           restoration, messages. No DOM. ~500 lines.
+│   │   ├── src/main.js             DOM/IO shell of the panel. ~3,600 lines.
+│   │   ├── src/panel.css           styles (light/dark) + overlay layers.
+│   │   └── build.mjs               esbuild → dist/panel.html inline (~3.6 MB)
+│   ├── skills/diff-ask/SKILL.md    how the MODEL routes anchored questions
 │   └── dist/                       panel.html (build) + dev.html (harness)
-├── tests/                          pirámide (ver TESTING.md)
-│   ├── *.test.mjs                  unit + integración (node --test)
-│   ├── e2e/revert.e2e.mjs          rig e2e con mouse real
-│   └── diffs/                      fixture playground (base commiteada)
-└── marketplace.json                manifiesto del dev marketplace
+├── tests/                          pyramid (see TESTING.md)
+│   ├── *.test.mjs                  unit + integration (node --test)
+│   ├── e2e/revert.e2e.mjs          e2e rig with a real mouse
+│   └── diffs/                      fixture playground (committed base)
+└── marketplace.json                dev marketplace manifest
 ```
 
-## 2. Integración con el host (el fork de ZCode)
+## 2. Host integration (the ZCode fork)
 
-El plugin no vive solo: depende de cuatro superficies del fork. Entenderlas
-explica varias decisiones.
+The plugin does not live alone: it depends on four surfaces of the fork.
+Understanding them explains several decisions.
 
-| El fork provee | El plugin hace con eso |
+| The fork provides | The plugin does with it |
 |---|---|
-| **Plugin runtime**: `.zcode-plugin/plugin.json` declara `mcpServers` stdio; la app lo levanta vía `ZCode Helper __zcode-plugin-host` | `server.mjs` habla MCP por stdio (initialize/resources/tools/notifications) con puro Node |
-| **MCP Apps SDK** (`@modelcontextprotocol/ext-apps`): panel persistente (`ui.surfaces`) con `App.sendMessage` y `app.callServerTool` | El panel manda preguntas como MENSAJES DE USUARIO (anclados) y llama a `write_file`/`get_diff` como tools |
-| **Panel host sandboxeado**: el HTML se sirve desde el cache del plugin dentro de un iframe `zcode-sandbox://plugin-<id>` | El bundle es INLINE (un solo `panel.html` sin assets externos), límite del host: 4 MiB |
-| **Sistema de skills** | `SKILL.md` le enseña al modelo a reconocer los bloques "Diff Ask" y a responder con `# Code comments:` |
+| **Plugin runtime**: `.zcode-plugin/plugin.json` declares stdio `mcpServers`; the app brings it up via `ZCode Helper __zcode-plugin-host` | `server.mjs` speaks MCP over stdio (initialize/resources/tools/notifications) with pure Node |
+| **MCP Apps SDK** (`@modelcontextprotocol/ext-apps`): persistent panel (`ui.surfaces`) with `App.sendMessage` and `app.callServerTool` | The panel sends questions as USER MESSAGES (anchored) and calls `write_file`/`get_diff` as tools |
+| **Sandboxed panel host**: the HTML is served from the plugin cache inside a `zcode-sandbox://plugin-<id>` iframe | The bundle is INLINE (a single `panel.html` with no external assets), a host limit: 4 MiB |
+| **Skill system** | `SKILL.md` teaches the model to recognize the "Diff Ask" blocks and to answer with `# Code comments:` |
 
-Cadena de instalación (por qué a veces "no se actualiza"):
+Install chain (why it sometimes "does not update"):
 
 ```
-repo (build) → ~/.zcode/cli/plugins/marketplaces/dev-…/   (copia del marketplace)
-            → ~/.zcode/cli/plugins/cache/dev-…/diff-ask/<version>/  (lo que SE SIRVE)
-            → ~/.zcode/cli/plugins/installed_plugins.json  (registro: version+installPath)
+repo (build) → ~/.zcode/cli/plugins/marketplaces/dev-…/   (marketplace copy)
+            → ~/.zcode/cli/plugins/cache/dev-…/diff-ask/<version>/  (what IS SERVED)
+            → ~/.zcode/cli/plugins/installed_plugins.json  (registry: version+installPath)
 ```
 
-La app instala por directorio de versión y sirve desde el `installPath` del
-registro. Actualizar = refrescar las TRES cosas + reiniciar ZCode (el panel se
-carga al arrancar). Actualizar solo una produce los clásicos "sigue la versión
-vieja" o "sirve un dist mixto".
+The app installs per version directory and serves from the registry's
+`installPath`. Updating = refreshing the THREE things + restarting ZCode (the
+panel loads at startup). Updating only one produces the classic "the old
+version still runs" or "a mixed dist is served".
 
-El diff se RENDERIZA con `@pierre/diffs` (la misma lib que el diff nativo de
-la app): el custom element `<diffs-container>` monta su **shadow DOM** con las
-filas `[data-line]`, su propio tema pierre-dark/light y el `Editor` para
-editar. Ese shadow DOM es territorio de pierre — ver §6.
+The diff is RENDERED with `@pierre/diffs` (the same lib as the app's native
+diff): the `<diffs-container>` custom element mounts its **shadow DOM** with
+the `[data-line]` rows, its own pierre-dark/light theme and the `Editor` for
+editing. That shadow DOM is pierre's territory — see §6.
 
-## 3. El server (`server/server.mjs`)
+## 3. The server (`server/server.mjs`)
 
-Sin dependencias: MCP por stdio a mano (JSON-RPC línea por línea), y toda la
-potencia es `git` + `fs.watch`.
+No dependencies: MCP over stdio by hand (JSON-RPC line by line), and all the
+power is `git` + `fs.watch`.
 
 **Resources**
-- `diff://workspace` — el diff completo: `working` (HEAD+untracked). Desde
-  0.10.0 el modo `unpushed` no existe (la vista se eliminó); lo que sobrevive
-  es la info `upstream`/`ahead`/`behind` viajando en CADA payload working
-  (los chips ↑/↓ del header del panel). El payload incluye por archivo:
-  status, before/after COMPLETOS (cuando el tamaño lo permite), patch
-  unificado, y los `hunks` parseados con su `hunkContent` (la estructura
-  cambio-por-cambio que el revert camina).
-- `turn://list`, `diff://turn/<id|latest>` — sistema de **turnos v2**: cada
-  prompt del usuario (vía hook user-scope → `~/.zcode/diff-ask/turn-events.jsonl`)
-  abre una ventana prompt→stop; mientras está abierta un FSEvents sobre $HOME
-  acumula los paths tocados y al Stop el server agrupa por repo: los commits
-  hechos EN la ventana + los archivos sucios al final + los archivos tocados
-  fuera de cualquier repo. Un JSON por turno en `turns2/`, global entre
-  sesiones; `latest` diffea el turno abierto contra el árbol VIVO.
+- `diff://workspace` — the complete diff: `working` (HEAD+untracked). Since
+  0.10.0 the `unpushed` mode does not exist (the view was removed); what
+  survives is the `upstream`/`ahead`/`behind` info travelling in EVERY working
+  payload (the panel header's ↑/↓ chips). Per file the payload includes:
+  status, COMPLETE before/after (when size allows), unified patch, and the
+  parsed `hunks` with their `hunkContent` (the change-by-change structure the
+  revert walks).
+- `turn://list`, `diff://turn/<id|latest>` — the **turns v2** system: every
+  user prompt (via the user-scope hook → `~/.zcode/diff-ask/turn-events.jsonl`)
+  opens a prompt→stop window; while it is open an FSEvents watcher over $HOME
+  accumulates the touched paths and at Stop the server groups by repo: the
+  commits made IN the window + the files dirty at the end + the files touched
+  outside any repo. One JSON per turn in `turns2/`, global across sessions;
+  `latest` diffs the open turn against the LIVE tree.
   **Recording is a pure per-session fold (0.10.8, `turn-fold.mjs`)**: the
   inbox is an append-only log and the open state is its fold into ONE lane
   per sid — the reader's identity (the sticky request-context sid in the
@@ -105,8 +105,8 @@ potencia es `git` + `fs.watch`.
   wrote nothing, and `suggest_workspace` follows the turn's written files.
   Known gap: the app's panel also hides generated-UI source files
   (`::visualize` references parsed from the reply) — not ported here.
-- `log://commits`, `diff://commit/<hash>` — navegador de commits (páginas de
-  10 + búsqueda por hash/título).
+- `log://commits`, `diff://commit/<hash>` — commit browser (pages of 10 +
+  search by hash/title).
 - `diff://turn/<id>?light=1`, `diff://file/<id>?path=<key>` (0.11.0) — the
   panel's turn view is LAZY. The light read carries the file list, statuses
   and counts (KBs, even for a 1.5 MB turn) with `light: true` and a
@@ -119,57 +119,56 @@ potencia es `git` + `fs.watch`.
   cached per file by (mtime, size), so a new turn re-reads ONE file instead
   of the whole store (~2 s → ~50 ms on the live 8.7k-record store).
 
-**Reactividad**: `resources/subscribe` → `fs.watch` (worktree + `.git`,
-debounce 600 ms) → solo notifica si cambió la **firma de git** (status +
-numstat + HEAD + upstream). El panel re-lee el resource al recibir
-`resources/updated`.
+**Reactivity**: `resources/subscribe` → `fs.watch` (worktree + `.git`,
+600 ms debounce) → it only notifies if the **git signature** changed (status
++ numstat + HEAD + upstream). The panel re-reads the resource when it
+receives `resources/updated`.
 
-**Tools**: `get_diff` (abre el panel), `list_commits`,
+**Tools**: `get_diff` (opens the panel), `list_commits`,
 `get_commit_diff`, `list_turns`/`get_turn_diff`, `delete_turn`/`clear_turns`,
-`set_workspace` (cambiar de repo: re-valida, re-arma watchers),
-`suggest_workspace` (0.10.0: el repo con más cambios del último turno — el
-default del tab "Trabajo por repositorio"), `list_git_projects` (picker 📁) y
-**`write_file`** — la única puerta de escritura, con política de conflicto:
+`set_workspace` (switch repo: re-validates, re-arms the watchers),
+`suggest_workspace` (0.10.0: the repo with the most changes in the last turn
+— the default of the "Work per repository" tab), `list_git_projects` (📁
+picker) and **`write_file`** — the only write door, with a conflict policy:
 
 ```
 write_file(path, content, base)
-  base = sha1 del archivo cuando lo leíste
-  ├─ coincide → escribe
-  └─ difiere (el agente tocó el disco mientras tanto) → NO PISA:
-     shelve ~/.zcode/diff-ask/shelved/<ws>/<file>.{mine,patch} → "gana el agente"
+  base = sha1 of the file when you read it
+  ├─ matches → writes
+  └─ differs (the agent touched the disk meanwhile) → DOES NOT OVERWRITE:
+     shelve ~/.zcode/diff-ask/shelved/<ws>/<file>.{mine,patch} → "the agent wins"
 ```
 
-Toda escritura del panel (reverts, edición ✏️, descartes) pasa por acá. La
-política es deliberada: el agente nunca pierde trabajo por una edición
-humana en el panel, y el humano nunca pierde la suya (queda en el shelve).
+Every panel write (reverts, ✏️ editing, discards) goes through here. The
+policy is deliberate: the agent never loses work to a human edit in the
+panel, and the human never loses theirs (it stays in the shelve).
 
-## 4. El panel (`ui/src/main.js`) — el mapa de capas
+## 4. The panel (`ui/src/main.js`) — the layer map
 
 ```
-<section class="file">                       (light DOM del panel)
+<section class="file">                       (panel light DOM)
   <div class="file-head">  [↩][＋][✏️][?][↩↩]  chev · path · counts
   <div class="file-body">
-    <diffs-container>  ← shadow DOM de pierre: filas [data-line], gutter,
-    │                    tokens de sintaxis, su propio tema
-    └── (nuestro, via shadowRoot): styles inyectados (.da-extra, ::selection)
-    <div class="wc-layer">     ← overlay ABSOLUTO: cajas por palabra (roja/verde)
-    <div class="frag-layer">   ← overlay ABSOLUTO: franjas de lo pintado
-    <div class="anchor-layer"> ← chips 💬 de preguntas ancladas
+    <diffs-container>  ← pierre's shadow DOM: [data-line] rows, gutter,
+    │                    syntax tokens, its own theme
+    └── (ours, via shadowRoot): injected styles (.da-extra, ::selection)
+    <div class="wc-layer">     ← ABSOLUTE overlay: per-word boxes (red/green)
+    <div class="frag-layer">   ← ABSOLUTE overlay: painted stripes
+    <div class="anchor-layer"> ← 💬 chips of anchored questions
 ```
 
-**El modelo de decoración**: pierre es el dueño del DOM del diff. El panel
-decora POR ENCIMA con capas absolutas posicionadas midiendo
-`Range.getClientRects()` de las filas del shadow. Casi nunca escribe el DOM
-de pierre — la única excepción es `hlColorize` (§7) que reemplaza el contenido
-de una fila con tokens coloreados. Todo lo demás (cajas, franjas, dots de
-espacios) vive en overlays.
+**The decoration model**: pierre owns the diff DOM. The panel decorates ON TOP
+with absolute layers positioned by measuring `Range.getClientRects()` of the
+shadow's rows. It almost never writes pierre's DOM — the only exception is
+`hlColorize` (§7) which replaces a row's content with colored tokens.
+Everything else (boxes, stripes, space dots) lives in overlays.
 
 **Loading (0.11.0)**: navigation paints a skeleton shell within a frame
 (`paintPendingView`: modebar + shimmer file sections) and the clicked
 row/tab spins; the top `#loadbar` runs while ANY bridge read/tool call is in
 flight. Turn views render headers from the light payload; a file body shows
 shimmer rows until its content lands, and a failed fetch leaves an honest
-note + Reintentar. Caches: view payloads per URI (switch-back renders the
+note + Retry. Caches: view payloads per URI (switch-back renders the
 cached headers first — stale-while-revalidate, then the signature
 short-circuit skips the rebuild when nothing changed) and file contents per
 turn+path+REVISION (the app's write count rides the header, so a live turn
@@ -178,7 +177,8 @@ Hover prefetches (one turn read, at most two file reads). Highlighting is
 skipped above 200 KB per side or 1,200 lines: content and diff stay complete,
 only the colors are not painted.
 
-**Big files & highlighting (0.11.1)**: expanding a 3.5k-line file used toblock the main thread ~800 ms INSIDE `FileDiff.render` — pierre's own
+**Big files & highlighting (0.11.1)**: expanding a 3.5k-line file used to
+block the main thread ~800 ms INSIDE `FileDiff.render` — pierre's own
 tokenizer ran on the whole diff (profile: `findNextMatchSync` + the TS
 grammar's regexes). Fixes: (1) the FileDiff is constructed with
 `tokenizeMaxLength = HL_MAX_LINES` — the lib's `isDiffMassive` threshold
@@ -219,200 +219,200 @@ gets `filter: brightness(1.6) saturate(1.05)`. The traits are computed once by
 `npm run icons` (paint colors only — never metadata like `color="#000"`),
 not at runtime.
 
-Cada pasada de decoración (`markChangedWords`) es:
-1. **Pre-gate** (corre SIEMPRE): parear dels↔adds del mismo cambio, reset de
-   estado de builds viejos.
-2. Muestreo de colores reales (§8) → CSS custom properties.
-3. **Gate de firma** (`_wcSig`): si no cambió nada (mismas filas/altura/
-   largos), no recomputar rects — el layout no cambió.
-4. Recomputar cajas: `changedWordRanges` por pareja → `wordRanges` parte cada
-   rango en PALABRAS → una caja por palabra, espacios limpios entre ellas.
+Every decoration pass (`markChangedWords`) is:
+1. **Pre-gate** (ALWAYS runs): pair the same change's dels↔adds, reset the
+   state of old builds.
+2. Sampling of real colors (§8) → CSS custom properties.
+3. **Signature gate** (`_wcSig`): if nothing changed (same rows/height/
+   lengths), do not recompute rects — the layout did not change.
+4. Recompute the boxes: `changedWordRanges` per pair → `wordRanges` splits
+   each range into WORDS → one box per word, clean spaces between them.
 
-## 5. El pincel quirúrgico — pipeline completo (el corazón)
+## 5. The surgical brush — complete pipeline (the heart)
 
-### 5.1 Gestos → selección
+### 5.1 Gestures → selection
 
-Los gestos nativos definen la semántica (decisión: no inventar modos):
+Native gestures define the semantics (decision: do not invent modes):
 
-| Gesto | Selecciona | Cómo se detecta |
+| Gesture | Selects | How it is detected |
 |---|---|---|
-| doble-click | una palabra | `click.detail === 2` + walk de límites de palabra Unicode |
-| triple-click | la línea entera | `detail >= 3` (el click nativo sabe el conteo real) |
-| drag | rango de chars exacto | camino geométrico (abajo) |
-| drag vertical | líneas enteras | Δy ≥ 14px y Δx < 8px |
+| double-click | one word | `click.detail === 2` + a walk of Unicode word boundaries |
+| triple-click | the whole line | `detail >= 3` (the native click knows the real count) |
+| drag | exact char range | geometric path (below) |
+| vertical drag | whole lines | Δy ≥ 14px and Δx < 8px |
 
-**Hit-testing geométrico**: `caretRangeFromPoint` RETARGEA al shadow host
-(inservible), y `String(selection)` miente con los newlines de Chromium. En
-su lugar: `shadowRoot.elementFromPoint` sí atraviesa el shadow, y el offset
-de carácter se resuelve por **búsqueda binaria sobre rects de Ranges**
-internos (`offsetAtX`) — los rects del shadow son geometría real aunque la
-Selection no los exponga. Un gesto se representa como `dragPath`
-`{x0,y0,x1,y1,at,live,detail}`: `at` = id del gesto (dedupe), `live` =
-última actividad (los drags humanos multilínea tardan >1,2 s; el camino
-geométrico no puede morir a mitad de gesto). Palabras repetidas en la fila:
-la ocurrencia se elige por GEOMETRÍA (el rect más cercano al punto de
-release), jamás por `indexOf`.
+**Geometric hit-testing**: `caretRangeFromPoint` RETARGETS to the shadow host
+(useless), and `String(selection)` lies with Chromium's newlines. Instead:
+`shadowRoot.elementFromPoint` does pierce the shadow, and the character offset
+is resolved by **binary search over internal Range rects** (`offsetAtX`) — the
+shadow's rects are real geometry even though the Selection does not expose
+them. A gesture is represented as `dragPath`
+`{x0,y0,x1,y1,at,live,detail}`: `at` = the gesture id (dedupe), `live` = the
+last activity (human multi-line drags take >1.2 s; the geometric path must not
+die mid-gesture). Repeated words in the row: the occurrence is chosen by
+GEOMETRY (the rect closest to the release point), never by `indexOf`.
 
-### 5.2 Selección → frags
+### 5.2 Selection → frags
 
-Un frag es **siempre offsets de caracteres contra la línea del ARCHIVO**:
+A frag is **always character offsets against the FILE's line**:
 
 ```js
-{ side: "new"|"old", line: <línea del archivo>, offA, offB }   // [a,b)
+{ side: "new"|"old", line: <file line>, offA, offB }   // [a,b)
 ```
 
-- Pintar en la fila **verde** → frag `new` (offsets sobre la línea del disco).
-- Pintar en la fila **roja** → frag `old` (offsets sobre la línea VIEJA).
-- **Coexistencia por chars**: pintar una palabra NO despinta pintadas vecinas
-  salvo que solapen caracteres con la nueva (dos palabras de la misma fila
-  coexisten; repintar exactamente lo mismo = despintar a propósito).
-- **Un gesto = una pintada**: un mismo gesto genera varias `selectionchange`
-  (release → settle) y la primera pintada post-release gana (lock por
-  `dragPath.at`).
+- Painting on the **green** row → `new` frag (offsets over the disk line).
+- Painting on the **red** row → `old` frag (offsets over the OLD line).
+- **Coexistence by chars**: painting a word does NOT unpaint neighboring
+  painted ones unless they overlap characters with the new one (two words of
+  the same row coexist; repainting exactly the same = unpainting on purpose).
+- **One gesture = one paint**: the same gesture fires several
+  `selectionchange` events (release → settle) and the first paint after
+  release wins (lock by `dragPath.at`).
 
-### 5.3 Frags → archivo nuevo (`revertFrags` en lib.js)
+### 5.3 Frags → new file (`revertFrags` in lib.js)
 
-Camina los hunks por su `hunkContent` (bloques change/context) manteniendo el
-alineamiento viejo↔nuevo. Por cada línea:
+It walks the hunks through their `hunkContent` (change/context blocks) keeping
+the old↔new alignment. Per line:
 
-- **Línea nueva con pintadas (lado verde)** → `surgeryLine(after, before,
-  sels)`: borra exactamente los chars pintados que caen en tokens AGREGADOS
-  (word-diff LCS), con reglas de espacios para no dejar dobles espacios ni
-  palabras pegadas. Si la pintada cubre **todo el cambio** de la línea
-  (`coversFullChange`: la línea completa o todos los rangos agregados) → la
-  línea vuelve al ORIGINAL directo (atajo "quiero esta línea como era").
-- **Línea vieja pintada (lado rojo, pareja)** → `restoreOldWords(after,
-  before, sels)`: recorre la pareja por REGIONES de cambio a nivel token:
-  - toda la palabra-vieja contentiva pintada → **swap**: la región vuelve al
-    texto viejo (pintar la roja entera = la línea original);
-  - algunas palabras pintadas → vuelven y el reemplazo SE MANTIENE
-    ("the quick brown fox"→"the slow fox" con "quick" → "the quick slow fox");
-  - media palabra → no restaura (el doble-click pinta palabras enteras).
-- **Línea vieja SIN pareja** (borrada entera) → vuelve tal cual (no hay dónde
-  splicearle una palabra suelta).
-- Roja y verde de la misma pareja pintadas → gana el rojo.
+- **New line with paintings (green side)** → `surgeryLine(after, before,
+  sels)`: deletes exactly the painted chars that fall on ADDED tokens (LCS
+  word-diff), with space rules so no double spaces or glued words are left.
+  If the painting covers **the whole change** of the line
+  (`coversFullChange`: the whole line or all the added ranges) → the line goes
+  back to the ORIGINAL directly (the "I want this line as it was" shortcut).
+- **Painted old line (red side, pair)** → `restoreOldWords(after, before,
+  sels)`: it walks the pair by change REGIONS at the token level:
+  - the whole containing old word painted → **swap**: the region goes back to
+    the old text (painting the whole red = the original line);
+  - some words painted → they come back and the replacement STAYS
+    ("the quick brown fox"→"the slow fox" with "quick" → "the quick slow fox");
+  - half a word → not restored (double-click paints whole words).
+- **Old line WITHOUT a pair** (deleted whole) → comes back as is (there is no
+  place to splice a lone word into).
+- Red and green of the same pair both painted → red wins.
 
-El resultado son las líneas nuevas del archivo → `write_file` con `base` →
-conflicto imposible de pasar por arriba (§3) → el panel se auto-refresca
-(no esperar al watcher: fs.watch de macOS se come eventos — lección dura).
+The result is the file's new lines → `write_file` with `base` → a conflict
+impossible to override (§3) → the panel self-refreshes (do not wait for the
+watcher: macOS fs.watch swallows events — a hard lesson).
 
-### 5.4 Ejecución
+### 5.4 Execution
 
-- Sin modo: popup flotante ＋/↩ junto a la selección (pintada única).
-- **Modo brocha** `?`/`↩↩`: acumula N pintadas SIN popups, y el botón del
-  toolbar (segundo click) o **Enter** ejecuta TODO en una sola escritura.
+- No mode: floating ＋/↩ popup next to the selection (single paint).
+- **Brush mode** `?`/`↩↩`: accumulates N paints WITHOUT popups, and the
+  toolbar button (second click) or **Enter** runs EVERYTHING in one write.
 
-## 6. Edición en vivo (✏️)
+## 6. Live editing (✏️)
 
-`Editor` de pierre enganchado al `FileDiff`: cada tecla re-difiera (el editor
-mantiene espejos SPAN propios en el shadow, aparte de las filas diff).
-Autosave con debounce 900 ms vía `write_file`; ⌘Z/⌘⇧Z nativos; ↩ Descartar
-restaura el contenido de antes del ✏️. El refresh reactivo queda en pausa
-mientras editás (chip honesto) y se aplica al salir.
+pierre's `Editor` hooked to the `FileDiff`: every keystroke re-diffs (the
+editor keeps its own SPAN mirrors in the shadow, apart from the diff rows).
+Autosave with a 900 ms debounce via `write_file`; native ⌘Z/⌘⇧Z; ↩ Discard
+restores the content from before the ✏️. The reactive refresh stays paused
+while you edit (an honest chip) and is applied on exit.
 
-**La regla de oro (lección 0.9.9)**: en edición, NINGUNA capa del panel toca
-el archivo. El MutationObserver del shadow dispara con cada tecla, y el
-colorizador les reescribía filas ENTERAS con tokens del contenido VIEJO
-(`fileData.after` no vive-actualiza) encima de las filas vivas del editor —
-lo tipado quedaba negro/pisado. Hoy `hlColorize` y el loop del rAF saltan
-`entry.edit`, y el e2e lo vigila con `entry._hlRuns` (contador de corridas).
+**The golden rule (0.9.9 lesson)**: in edit mode, NO panel layer touches the
+file. The shadow's MutationObserver fires on every keystroke, and the
+colorizer overwrote WHOLE rows with tokens from the OLD content
+(`fileData.after` does not live-update) on top of the editor's live rows —
+what you typed turned black/overwritten. Today `hlColorize` and the rAF loop
+skip `entry.edit`, and the e2e watches it with `entry._hlRuns` (a run
+counter).
 
 ## 7. Syntax highlighting
 
-12 lenguajes bundleados (json, yaml, python, ts/js, markdown, html, css,
-bash, kotlin, haskell, nushell) con el motor JS de shiki (sin wasm) — el subset entra
-en el límite de 4 MiB. El renderer embebido de pierre no cablea tokens en
-nuestro contexto, así que el PANEL pinta: `hlColorize` reemplaza el contenido
-de la fila ENTERA (`r.innerHTML`) con spans coloreados — reemplazo completo,
-no del primer span: los tokens de pierre viven en VARIOS spans hermanos y
-escribir solo el primero dejaba los restantes = **texto duplicado** (bug real
-de la 0.9.7, invisible al rig hasta que el rig aprendió a asertar texto
-EXACTO). Idempotente por tema (`dataset.hl`), re-pintado en expansión de
-hunks; en edición no corre (§6). Fuera del subset → plain.
+12 bundled languages (json, yaml, python, ts/js, markdown, html, css,
+bash, kotlin, haskell, nushell) with shiki's JS engine (no wasm) — the subset
+fits the 4 MiB limit. pierre's embedded renderer does not wire tokens in our
+context, so the PANEL paints: `hlColorize` replaces the content of the WHOLE
+row (`r.innerHTML`) with colored spans — a full replacement, not the first
+span: pierre's tokens live in SEVERAL sibling spans and writing only the first
+left the rest = **duplicated text** (a real 0.9.7 bug, invisible to the rig
+until the rig learned to assert EXACT text). Idempotent per theme
+(`dataset.hl`), re-painted on hunk expansion; in edit mode it does not run
+(§6). Outside the subset → plain.
 
-## 8. Colores de las cajas — derivados, nunca fijos
+## 8. Box colors — derived, never fixed
 
-El relleno de las cajas de palabra se calcula PROGRAMÁTICAMENTE desde el
-color REAL de la fila del diff (muestreado con `getComputedStyle`; pierre
-expone colores en sintaxis moderna — `lab(...)` — así que no se parsean: se
-dejan como custom properties y el navegador resuelve):
+The word boxes' fill is computed PROGRAMMATICALLY from the diff row's REAL
+color (sampled with `getComputedStyle`; pierre exposes colors in modern syntax
+— `lab(...)` — so they are not parsed: they are left as custom properties and
+the browser resolves them):
 
 ```css
-/* panel.css — la fórmula viva */
+/* panel.css — the live formula */
 background: oklch(from var(--wc-green) min(l + 0.22, 0.75)
                                min(max(c * 1.25, 0.13), 0.24) h / 0.42);
 ```
 
-Por qué así: sobre un fondo **negro**, un `opacity` solo MEZCLA HACIA NEGRO —
-nunca puede brillar. Y un color fijo lavaba el texto en algún tema. La
-fórmula mantiene el tono (`h`) del tema real, sube luminosidad/cromo con
-topes y pisos (sin piso de cromo, los colores tenues muestreados salen casi
-grises), y el alpha deja pasar el 58 % del texto. Una caja **por palabra**
-(espacios limpios entre cajas) para que una línea con muchos cambios se siga
-leyendo.
+Why like this: over a **black** background, an `opacity` only MIXES TOWARD
+BLACK — it can never glow. And a fixed color washed the text out in some
+theme. The formula keeps the real theme's hue (`h`), lifts lightness/chroma
+with ceilings and floors (without a chroma floor, the sampled faint colors
+come out almost gray), and the alpha lets 58 % of the text through. One box
+**per word** (clean spaces between boxes) so a line with many changes stays
+readable.
 
-## 9. Preguntas ancladas
+## 9. Anchored questions
 
-Hover de línea → ＋ del gutter (o cajitas del gutter para rangos, o ＋ del
-head para el archivo) → composer → `app.sendMessage` como mensaje de USUARIO
-con `- \`path:line\` (Diff Ask · diff, líneas a-b · side):` + las líneas
-citadas verbatim. El header nombra el scope (modo/turno/commit). El skill
-(`SKILL.md`) le enseña al modelo a responder SOBRE esas líneas y a fijar
-respuestas con `# Code comments:` (tarjetas nativas de la app). Los 💬 del
-panel son las preguntas ancladas, colapsadas sobre su línea.
+Line hover → the gutter's ＋ (or the gutter's boxes for ranges, or the head's
+＋ for the file) → composer → `app.sendMessage` as a USER message with
+`- \`path:line\` (Diff Ask · diff, lines a-b · side):` + the lines quoted
+verbatim. The header names the scope (mode/turn/commit). The skill
+(`SKILL.md`) teaches the model to answer ABOUT those lines and to pin answers
+with `# Code comments:` (the app's native cards). The panel's 💬 are the
+anchored questions, collapsed over their line.
 
 ---
 
-## 10. Decisiones de diseño (el por qué, con la historia)
+## 10. Design decisions (the why, with the history)
 
-1. **Quirúrgico SIEMPRE.** Pintar borra/restaura exactamente los chars
-   pintados. (0.9.1 probó "adición pura → borrar línea entera": a Damian le
-   revertía las 3 líneas cuando pintaba 3 palabras — regresión inmediata.)
-2. **Diff clásico de dos filas, estilo GitHub** (0.9.11, spec final). El
-   camino probó: una fila por línea con la roja oculta (0.9.4) → los
-   removidos tachados DENTRO de la fila verde (0.9.8) → ambas descartadas:
-   "la línea roja con la palabra en rojo, abajo la verde con la verde".
-   La lección: los modelos de una fila optimizan pixels y pierden lectura.
-3. **Los gestos nativos mandan** (doble/triple/drag): la selección se comporta
-   como en un editor, que es donde vive la mano del usuario.
-4. **Offsets contra el archivo, siempre** — y cuando hubo que convivir con
-   DOM mezclado (era de los tachados), las conversiones de espacio viven en
-   utilidades únicas y testeadas (`mergedOffToNew`, `newRangeToMergedSegs`).
-   Hoy quedan como defensa: sin tachados, merged == new.
-5. **Parejas roja/verde quirúrgicas en ambos lados** (0.9.14): pintar una
-   palabra de la roja la restaura EN SU LUGAR. Antes: pareja atómica (la
-   roja pintada = línea entera al original). La atómica sobrevive como caso
-   extremo (pintar todo = swap completo) y para rojas sin pareja.
-6. **Coexistencia por chars, no por filas**: "se despintaba lo pintado al
-   pintar lo nuevo" se arregló midiendo solapamiento de CARACTERES.
-7. **El editor ✏️ es territorio de pierre** (0.9.9): capas propias = bugs de
-   render sobre filas vivas. Aislamiento total.
-8. **Colores muestreados + derivados** (0.9.10–0.9.15): parsear colores a
-   mano falló dos veces (regex `rgba?(` no matchea `lab()`, y el canvas ya
-   tampoco normaliza). La fórmula oklch relativa es corta, correcta en
-   cualquier sintaxis futura, y se adapta sola al tema.
-9. **Una caja por palabra**: el word-diff devuelve rangos mergeados; con
-   muchas palabras cambiadas el bloque continuo era ilegible. Los espacios
-   limpios entre cajas hacen la legibilidad.
-10. **Agente gana en conflictos de escritura** + shelve: la política menos
-    sorprendente para un humano que edita encima de un agente que trabaja.
-11. **Refresh reactivo + auto-refresh tras escribir**: fs.watch de macOS
-    pierde eventos justo después de un write propio (visto con 12 shelves
-    seguidos); `writeReverted` se refresca solo.
-12. **lib.js pura, overlays, idempotencia con firma**: todo lo testeable sin
-    browser está en lib; toda decoración es una pasada idempotente con gate
-    de firma y sus invariantes ANTES del gate (las invariantes que quedaron
-    adentro del gate se saltaban en refresh de contenido idéntico — la roja
-    pareada "se duplicaba").
+1. **Surgical ALWAYS.** Painting deletes/restores exactly the painted chars.
+   (0.9.1 tried "pure addition → delete the whole line": it reverted Damian's
+   3 lines when he painted 3 words — immediate regression.)
+2. **Classic two-row diff, GitHub style** (0.9.11, final spec). The path
+   tried: one row per line with the red hidden (0.9.4) → the removals struck
+   through INSIDE the green row (0.9.8) → both discarded: "the red line with
+   the word in red, below the green one with the green one". The lesson:
+   single-row models optimize pixels and lose readability.
+3. **Native gestures rule** (double/triple/drag): the selection behaves like
+   in an editor, which is where the user's hand lives.
+4. **Offsets against the file, always** — and when we had to coexist with
+   mixed DOM (the strike-through era), the space conversions live in single,
+   tested utilities (`mergedOffToNew`, `newRangeToMergedSegs`). Today they
+   remain as defense: with no strike-throughs, merged == new.
+5. **Surgical red/green pairs on both sides** (0.9.14): painting a word of the
+   red one restores it IN PLACE. Before: atomic pair (the painted red = the
+   whole line back to the original). The atomic one survives as an edge case
+   (painting everything = full swap) and for reds without a pair.
+6. **Coexistence by chars, not by rows**: "painting the new unpainted the
+   painted" was fixed by measuring CHARACTER overlap.
+7. **The ✏️ editor is pierre's territory** (0.9.9): our own layers = render
+   bugs over live rows. Total isolation.
+8. **Sampled + derived colors** (0.9.10–0.9.15): parsing colors by hand failed
+   twice (the `rgba?(` regex does not match `lab()`, and the canvas does not
+   normalize them either). The relative oklch formula is short, correct in any
+   future syntax, and adapts to the theme by itself.
+9. **One box per word**: the word-diff returns merged ranges; with many
+   changed words the continuous block was unreadable. The clean spaces
+   between boxes restore legibility.
+10. **The agent wins on write conflicts** + shelve: the least surprising
+    policy for a human editing on top of an agent that is working.
+11. **Reactive refresh + auto-refresh after writing**: macOS fs.watch loses
+    events right after a write of our own (seen with 12 consecutive shelves);
+    `writeReverted` refreshes itself.
+12. **Pure lib.js, overlays, idempotence with a signature**: everything
+    testable without a browser lives in lib; every decoration is an
+    idempotent pass with a signature gate and its invariants BEFORE the gate
+    (the invariants that ended up inside the gate were skipped on an identical
+    content refresh — the paired red "duplicated itself").
 
-## 11. Límites conocidos
+## 11. Known limits
 
-- El e2e puede flamear bajo carga del sistema (timing de CDP) → reintentar.
-- `fs.watch` de macOS: el watcher del server puede perder un evento
-  (mitigado: firma + auto-refresh post-write; test del watcher es el único
-  flaky conocido de unit).
-- Highlighting fuera del subset de 12 lenguajes → plain.
-- El revert de una roja SIN pareja es atómico por diseño (no hay dónde
-  splicear una palabra suelta en una línea que no existe).
-- `apply-fixture-mods.mjs` resetea `tests/diffs/` desde HEAD: los cambios
-  manuales que tengas ahí se pierden al correr el e2e.
+- The e2e can flake under system load (CDP timing) → retry.
+- macOS `fs.watch`: the server's watcher may lose an event (mitigated:
+  signature + post-write auto-refresh; the watcher test is the only known
+  unit flaky one).
+- Highlighting outside the 12-language subset → plain.
+- Reverting a red WITHOUT a pair is atomic by design (there is no place to
+  splice a lone word into a line that does not exist).
+- `apply-fixture-mods.mjs` resets `tests/diffs/` from HEAD: any manual changes
+  you have there are lost when the e2e runs.

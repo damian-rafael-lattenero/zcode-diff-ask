@@ -346,7 +346,7 @@ async function resolveUpstream(cwd) {
 // evento notifique y el panel refresque solo.
 export async function setActiveWorkspace(input) {
   const raw = String(input ?? "").trim();
-  if (!raw) return { error: "invalid_path", message: "Pasame la ruta de una carpeta." };
+  if (!raw) return { error: "invalid_path", message: "Give me the path of a folder." };
   const p = path.resolve(raw.replace(/^~(?=\/|$)/, os.homedir()));
   let stats;
   try {
@@ -354,7 +354,7 @@ export async function setActiveWorkspace(input) {
   } catch {
     return { error: "invalid_path", message: `No existe: ${p}` };
   }
-  if (!stats.isDirectory()) return { error: "invalid_path", message: `No es una carpeta: ${p}` };
+  if (!stats.isDirectory()) return { error: "invalid_path", message: `Not a folder: ${p}` };
   // REALPATH (audit wave 5): the panel keys its watchers, URIs and diff roots
   // off ONE canonical path — a symlinked workspace used to make the watchers
   // and the git CWD disagree about which tree is being diffed.
@@ -366,7 +366,7 @@ export async function setActiveWorkspace(input) {
   }
   const inside = await runGit(["rev-parse", "--is-inside-work-tree"], { cwd: real });
   if (!inside.ok)
-    return { error: "not_a_repo", message: `${real} no es un repositorio git. Diff Ask necesita git.` };
+    return { error: "not_a_repo", message: `${real} is not a git repository. Diff Ask needs git.` };
   activeWorkspace = real;
   lastSig = null; // el próximo cálculo de firma difiere → notifica y refresca
   worktreeWatcher?.close();
@@ -404,7 +404,7 @@ export function listGitProjects(input, maxDepth = 4, maxResults = 400) {
   } catch {
     return { error: "invalid_path", message: `No existe: ${under}`, repos: [] };
   }
-  if (!stats.isDirectory()) return { error: "invalid_path", message: `No es una carpeta: ${under}`, repos: [] };
+  if (!stats.isDirectory()) return { error: "invalid_path", message: `Not a folder: ${under}`, repos: [] };
   const repos = [];
   const walk = (dir, depth) => {
     if (repos.length >= maxResults) return;
@@ -451,7 +451,7 @@ export async function writeFileGuarded({ path: rel, content, base, expect_base: 
   const ws = workspace;
   const abs = path.resolve(ws, String(rel ?? ""));
   if (abs !== ws && !abs.startsWith(ws + path.sep))
-    return { error: "invalid_path", message: `La ruta "${rel}" sale del workspace.` };
+    return { error: "invalid_path", message: `The path "${rel}" escapes the workspace.` };
   if (typeof content !== "string")
     return { error: "invalid_content", message: "Falta el contenido a guardar." };
   const hash = (buf) => createHash("sha1").update(buf).digest("hex");
@@ -462,7 +462,7 @@ export async function writeFileGuarded({ path: rel, content, base, expect_base: 
     return {
       conflict: true,
       onConflict: "drop",
-      message: `El archivo ya no existe en disco (¿lo borraron mientras editabas?). Tu versión no se guardó.`,
+      message: `The file no longer exists on disk (was it deleted while you were editing?). Your version was not saved.`,
     };
   }
   const curHash = hash(cur);
@@ -476,7 +476,7 @@ export async function writeFileGuarded({ path: rel, content, base, expect_base: 
       : String(expect ?? "") === curHash;
   if (!baseOk) {
     if (onConflict === "drop")
-      return { conflict: true, dropped: true, current_hash: curHash, message: "El archivo cambió en disco mientras editabas (gana el agente); tus ediciones no se guardaron." };
+      return { conflict: true, dropped: true, current_hash: curHash, message: "The file changed on disk while you were editing (the agent wins); your edits were not saved." };
     // shelve: contenido completo + patch con la diferencia (disco vs mío)
     const stamp = new Date(); // hora local legible en el nombre
     const p2 = (n) => String(n).padStart(2, "0");
@@ -502,7 +502,7 @@ export async function writeFileGuarded({ path: rel, content, base, expect_base: 
       conflict: true,
       shelved: [minePath, patchPath],
       current_hash: curHash,
-      message: `El archivo cambió en disco mientras editabas (gana el agente). Tu versión quedó en ${minePath} (+ .patch con la diferencia).`,
+      message: `The file changed on disk while you were editing (the agent wins). Your version was shelved at ${minePath} (+ .patch with the difference).`,
     };
   }
   fs.writeFileSync(abs, content);
@@ -521,7 +521,7 @@ export async function buildDiff({ includePatches = true, workspace = activeWorks
   if (!meta.inside)
     return {
       error: "not_a_repo",
-      message: `El workspace no es un repositorio git (${ws}). Diff Ask necesita git.`,
+      message: `The workspace is not a git repository (${ws}). Diff Ask needs git.`,
       workspace: ws,
     };
 
@@ -1071,7 +1071,7 @@ export function outsideEntry(raw, home = os.homedir()) {
     path: key,
     repoLabel: OUTSIDE_LABEL,
     repo: home,
-    note: gone ? "borrado en el turno (fuera de git)" : "fuera de git",
+    note: gone ? "deleted in the turn (outside git)" : "fuera de git",
     ...(gone ? { gone: true } : {}),
     _src: { outside: true, abs },
   };
@@ -1145,7 +1145,7 @@ async function finalizeWindow(t, { interrupted }) {
     // (the real stop may have landed first on another process).
     const existing = readTurnFiles().find((r) => r.id === rec.id);
     if (existing && !existing.interrupted && interrupted) {
-      log(`turno ${rec.id}: finalize interrumpido ignorado (ya está completado)`);
+      log(`turn ${rec.id}: interrupted finalize ignored (already completed)`);
       return existing;
     }
     fs.writeFileSync(path.join(TURNS2_DIR, `${rec.id}.json`), JSON.stringify(rec));
@@ -1155,7 +1155,7 @@ async function finalizeWindow(t, { interrupted }) {
   }
   log(
     appBacked
-      ? `turno ${rec.id}: archivos según los checkpoints de la app`
+      ? `turn ${rec.id}: files according to the app's checkpoints`
       : `turno ${rec.id}: ${repos.length} repo(s), ${repos.reduce((n, r) => n + r.commits.length, 0)} commit(s), ${outside.length} fuera de git`,
   );
   for (const uri of subs) sendNotification("notifications/resources/updated", { uri });
@@ -1501,7 +1501,7 @@ let pendingFocus = null; // { abs, turn, atMs } | null
 
 export function requestTurnFocus(rawPath, turn = "latest", atMs = Date.now()) {
   const raw = String(rawPath ?? "").trim();
-  if (!raw) return { ok: false, message: "focus vacío" };
+  if (!raw) return { ok: false, message: "empty focus" };
   pendingFocus = {
     abs: path.resolve(raw.replace(/^~(?=\/|$)/, os.homedir())),
     turn: String(turn || "latest"),
@@ -1615,13 +1615,13 @@ async function buildTurnBundle(id, { workspace = activeWorkspace, resolveFocus =
       if (id !== "latest")
         return {
           entries: [],
-          payload: { error: "unknown_turn", message: `No encontré el turno "${id}".`, workspace, files: [], fileCount: 0 },
+          payload: { error: "unknown_turn", message: `I could not find turn "${id}".`, workspace, files: [], fileCount: 0 },
         };
       return {
         entries: [],
         payload: {
           error: "no_turns",
-          message: "Todavía no hay turnos registrados. Cada mensaje en la sesión abre un turno y lo cierra al terminar la respuesta.",
+          message: "No turns recorded yet. Every message in the session opens a turn and closes it when the answer ends.",
           workspace,
           files: [],
           fileCount: 0,
@@ -1745,7 +1745,7 @@ export async function buildTurnFile(id, filePath, { workspace = activeWorkspace,
     bundle = turnEntryCache.get(key);
   }
   const entry = bundle?.entries.find((e) => e.path === filePath);
-  if (!entry) return { error: "unknown_file", path: filePath, content: true, message: `El turno no tiene el archivo "${filePath}".` };
+  if (!entry) return { error: "unknown_file", path: filePath, content: true, message: `The turn does not have the file "${filePath}".` };
   if (entry._content) return entry._content;
   let content;
   if (entry._src?.app) {
@@ -1840,7 +1840,7 @@ export async function listTurns({ skip = 0, limit = TURN_PAGE, sid: scopeSid } =
 export async function deleteTurn(id, { workspace = activeWorkspace } = {}) {
   await inboxLane.catch(() => {}); // no in-flight finalize may resurrect the file
   const rec = sidTurns().find((t) => t.id === id);
-  if (!rec) return { error: "unknown_turn", message: `No encontré el turno "${id}".` };
+  if (!rec) return { error: "unknown_turn", message: `I could not find turn "${id}".` };
   try {
     fs.rmSync(path.join(TURNS2_DIR, `${rec.id}.json`), { force: true });
   } catch { /* ya no está */ }
@@ -1958,7 +1958,7 @@ export async function listCommits({ skip = 0, limit = 10, query = "", workspace 
   const ws = workspace;
   const meta = await repoMeta(ws);
   if (!meta.inside)
-    return { error: "not_a_repo", message: `El workspace no es un repositorio git (${ws}).`, workspace: ws };
+    return { error: "not_a_repo", message: `The workspace is not a git repository (${ws}).`, workspace: ws };
   const q = query.trim();
 
   if (!q) {
@@ -2013,10 +2013,10 @@ export async function buildCommitDiff(ref, { workspace = activeWorkspace } = {})
   const ws = workspace;
   const meta = await repoMeta(ws);
   if (!meta.inside)
-    return { error: "not_a_repo", message: `El workspace no es un repositorio git (${ws}).`, workspace: ws };
+    return { error: "not_a_repo", message: `The workspace is not a git repository (${ws}).`, workspace: ws };
   const full = await runGit(["rev-parse", "--verify", `${ref}^{commit}`], { cwd: ws });
   if (!full.ok)
-    return { error: "unknown_commit", message: `No encontré el commit "${ref}" en ${ws}.`, workspace: ws };
+    return { error: "unknown_commit", message: `I could not find commit "${ref}" in ${ws}.`, workspace: ws };
   const sha = full.out.trim();
 
   const [metaR, parentsR, numR] = await Promise.all([
@@ -2467,7 +2467,7 @@ async function handleRequest(msg) {
           data = whoAmI();
           return {
             structuredContent: data,
-            content: [{ type: "text", text: `Sesión: ${data.sessionId ?? "(global)"} · workspace: ${data.workspace}` }],
+            content: [{ type: "text", text: `Session: ${data.sessionId ?? "(global)"} · workspace: ${data.workspace}` }],
           };
         }
         case "tap_state": {
@@ -2495,7 +2495,7 @@ async function handleRequest(msg) {
             type: "text",
             text: data.error
               ? data.message
-              : `${data.fileCount} archivo(s) con cambios en ${data.branch} (${data.head}) vs ${data.baseLabel}${data.truncated ? " — recortado por tamaño (parches y/o lista de archivos)" : ""}. Detalle en structuredContent.`,
+              : `${data.fileCount} file(s) with changes in ${data.branch} (${data.head}) vs ${data.baseLabel}${data.truncated ? " — truncated by size (patches and/or file list)" : ""}. Details in structuredContent.`,
           },
         ],
       };

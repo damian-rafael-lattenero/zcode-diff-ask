@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// patch-zcode.mjs — enciende el "+" en el diff nativo (B) y redirige el botón
-// "Changes" de Git tools al panel Diff Ask (A). Todo por anchors de texto con
-// capturas de nombres minificados: si un anchor no matchea EXACTAMENTE una
-// vez, aborta sin tocar nada de la app.
+// patch-zcode.mjs — turns on the "+" in the native diff (B) and redirects the
+// "Changes" button of Git tools to the Diff Ask panel (A). Everything by text
+// anchors with minified-name captures: if an anchor does not match EXACTLY
+// once, it aborts without touching anything in the app.
 //
-//   node tools/patch-zcode.mjs --dry-run   # extrae + parchea en /tmp y valida
-//   node tools/patch-zcode.mjs             # aplica (backup + asar + plist + codesign)
-//   node tools/patch-zcode.mjs --unpatch   # restaura el último backup
+//   node tools/patch-zcode.mjs --dry-run   # extracts + patches in /tmp and validates
+//   node tools/patch-zcode.mjs             # applies (backup + asar + plist + codesign)
+//   node tools/patch-zcode.mjs --unpatch   # restores the last backup
 //
-// Tras cada update de ZCode hay que re-ejecutarlo (el update pisa todo).
+// After every ZCode update it has to be re-run (the update overwrites everything).
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -47,7 +47,7 @@ if (UNPATCH) {
     ? ["--force", "--deep", "--sign", "-", "--options", "runtime", "--entitlements", ent, APP]
     : ["--force", "--deep", "--sign", "-", APP];
   execFileSync("codesign", signArgs, { stdio: "inherit" });
-  log("✓ restaurado y re-firmado. Reiniciá ZCode.");
+  log("✓ restored and re-signed. Restart ZCode.");
   process.exit(0);
 }
 
@@ -69,7 +69,7 @@ const bundle = fs
   .filter((f) => f.endsWith(".js"))
   .map((f) => ({ f, size: fs.statSync(path.join(assetsDir, f)).size }))
   .sort((a, b) => b.size - a.size)[0];
-if (!bundle || bundle.size < 4_000_000) die("no encontré el bundle principal del renderer");
+if (!bundle || bundle.size < 4_000_000) die("could not find the renderer main bundle");
 const BUNDLE_PATH = path.join(assetsDir, bundle.f);
 let src = fs.readFileSync(BUNDLE_PATH, "utf8");
 log(`bundle: ${bundle.f} (${(bundle.size / 1e6).toFixed(1)} MB)`);
@@ -175,9 +175,9 @@ const COMPOSER = `
     card.innerHTML = '<div style="font:600 11px ui-monospace,Menlo,monospace;margin-bottom:6px;color:var(--color-accent,#6f8dff)"></div>' +
       '<textarea rows="3" style="width:100%;box-sizing:border-box;background:var(--color-input,#16181c);color:inherit;border:1px solid var(--color-border,#3a3f47);border-radius:6px;padding:6px;font:inherit;resize:vertical"></textarea>' +
       '<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px">' +
-      '<button data-a="c" style="font:inherit;padding:3px 12px;background:transparent;color:inherit;border:1px solid var(--color-border,#3a3f47);border-radius:6px;cursor:pointer">Cancelar</button>' +
-      '<button data-a="s" style="font:inherit;padding:3px 12px;background:var(--color-accent,#4268d8);color:#fff;border:0;border-radius:6px;cursor:pointer">Preguntar</button></div>';
-    card.firstChild.textContent = (filePath || '') + ':' + lines + (side === 'deletions' ? ' · deletions' : '') + ' — ⌘↵ envía';
+      '<button data-a="c" style="font:inherit;padding:3px 12px;background:transparent;color:inherit;border:1px solid var(--color-border,#3a3f47);border-radius:6px;cursor:pointer">Cancel</button>' +
+      '<button data-a="s" style="font:inherit;padding:3px 12px;background:var(--color-accent,#4268d8);color:#fff;border:0;border-radius:6px;cursor:pointer">Ask</button></div>';
+    card.firstChild.textContent = (filePath || '') + ':' + lines + (side === 'deletions' ? ' · deletions' : '') + ' — ⌘↵ sends';
     var ta = card.querySelector('textarea'); ta.focus();
     var close = function(){ card.remove(); };
     card.querySelector('[data-a=c]').onclick = close;
@@ -196,9 +196,9 @@ const COMPOSER = `
 `;
 src += COMPOSER;
 applied++;
-log("✓ B4 composer overlay inyectado");
+log("✓ B4 composer overlay injected");
 
-// ---- A1: hook de apertura de plugin-UI (nombre minificado → dinámico)
+// ---- A1: plugin-UI open hook (minified name → dynamic)
 const hookMatch = src.match(/function (\w+)\(e\)\{let \w+=Ea\(\),\w+=Nl\(\)\?\.pluginUiBridgeService/);
 if (!hookMatch) die("anchor NO ENCONTRADO: hook open-plugin-UI (A1)");
 const HOOK = hookMatch[1];
@@ -214,7 +214,7 @@ try {
 } catch {}
 log(`  pluginId: ${PLUGIN_ID}`);
 
-// ---- A2: inyectar el hook en Q2t (padre de la tarjeta Git tools) y publicarlo
+// ---- A2: inject the hook into Q2t (parent of the Git tools card) and publish it
 const q2t = src.match(
   /function \w+\(\{workspacePath:(\w+),workspaceIdentity:(\w+),gitSummary:\w+,gitDirtyFileCount:\w+=0,gitWorktreeReviewSourceId:/,
 );
@@ -229,7 +229,7 @@ patchOnce(
   (whole, R, Z, B) => `onOpenWorkflowRunDirectory:${R},className:${Z}}){${INJECT}let ${B}=zO(),`,
 );
 
-// ---- A3: onClick del botón Changes → Diff Ask (con fallback nativo)
+// ---- A3: Changes button onClick → Diff Ask (with native fallback)
 patchOnce(
   "A3 Changes → Diff Ask",
   /onClick:\(\)=>\{(\w+)\?\.\((\w+)\?\?void 0\)\}(,children:\[\(0,\$\.jsx\)\(\w+,\{className:`size-4 shrink-0)/,
@@ -249,8 +249,8 @@ log(`✓ sintaxis OK (${applied} parches aplicados)`);
 // ------------------------------------------------------------------ dry run
 
 if (DRY) {
-  log(`\nDRY-RUN OK — ${applied} parches + composer validados en ${BUNDLE_PATH}`);
-  log("Nada de la app se tocó. El extraído queda en /tmp/da-asar-work para inspección.");
+  log(`\nDRY-RUN OK — ${applied} patches + composer validated in ${BUNDLE_PATH}`);
+  log("Nothing in the app was touched. The extraction stays in /tmp/da-asar-work for inspection.");
   process.exit(0);
 }
 
@@ -262,8 +262,8 @@ const bdir = path.join(BACKUP_DIR, `${version}-${new Date().toISOString().replac
 fs.mkdirSync(bdir, { recursive: true });
 fs.copyFileSync(ASAR, path.join(bdir, "app.asar"));
 fs.copyFileSync(PLIST, path.join(bdir, "Info.plist"));
-// Entitlements actuales: la app corre con hardened runtime; re-firmar sin
-// ellos rompería el JIT del renderer. Los guardamos y los re-usamos.
+// Current entitlements: the app runs with the hardened runtime; re-signing without
+// them would break the renderer JIT. We save them and reuse them.
 const entPath = path.join(bdir, "entitlements.plist");
 execFileSync("codesign", ["-d", "--entitlements", "-", "--xml", APP], {
   stdio: ["ignore", fs.openSync(entPath, "w"), "inherit"],
@@ -297,8 +297,8 @@ execFileSync("codesign", ["--verify", APP]);
 log("✓ codesign verify OK");
 
 log(`
-LISTO. Cerrá y reabrí ZCode:
-  • El botón "Changes" de Git tools abre Diff Ask (fallback: diff nativo si el plugin no está disponible).
-  • El diff nativo (pestaña Review) tiene "+" por línea → composer → la pregunta entra al chat anclada a path:línea.
-Para deshacer: node tools/patch-zcode.mjs --unpatch
-Tras cada update de ZCode: re-ejecutar este script (avisa si algún anchor cambió).`);
+DONE. Close and reopen ZCode:
+  • The "Changes" button of Git tools opens Diff Ask (fallback: native diff if the plugin is unavailable).
+  • The native diff (Review tab) has a "+" per line → composer → the question enters the chat anchored to path:line.
+To undo: node tools/patch-zcode.mjs --unpatch
+After every ZCode update: re-run this script (it warns if any anchor changed).`);

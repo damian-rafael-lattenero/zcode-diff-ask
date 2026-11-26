@@ -50,7 +50,7 @@ export function extractLines(patch, side, start, end) {
 export function rangeLabel(range) {
   const side = range.side ?? "additions";
   const lines = range.end > range.start ? `${range.start}-${range.end}` : `${range.start}`;
-  return { side, lines, label: `líneas ${lines} · ${side === "deletions" ? "deletions" : "additions"}` };
+  return { side, lines, label: `lines ${lines} · ${side === "deletions" ? "deletions" : "additions"}` };
 }
 
 // Índices de fila seleccionados (SET de cajitas) → corridas contiguas

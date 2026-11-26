@@ -31,9 +31,9 @@ test("extractLines: contexto cuenta en ambos lados (número propio de cada lado)
   assert.deepEqual(extractLines(PATCH, "deletions", 5, 5), ["ctx6"]);  // old 5
 });
 
-test("rangeLabel: single y multi línea, ambos lados", () => {
-  assert.equal(rangeLabel({ start: 7, end: 7, side: "additions" }).label, "líneas 7 · additions");
-  assert.equal(rangeLabel({ start: 4, end: 6, side: "deletions" }).label, "líneas 4-6 · deletions");
+test("rangeLabel: single and multi line, both sides", () => {
+  assert.equal(rangeLabel({ start: 7, end: 7, side: "additions" }).label, "lines 7 · additions");
+  assert.equal(rangeLabel({ start: 4, end: 6, side: "deletions" }).label, "lines 4-6 · deletions");
   assert.equal(rangeLabel({ start: 4, end: 6 }).lines, "4-6"); // side default
 });
 

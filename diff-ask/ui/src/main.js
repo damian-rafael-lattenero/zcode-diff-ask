@@ -43,8 +43,8 @@ const app = new App({ name: "diff-ask", version: "0.1.0" }, {});
 //               repositorio...". The "Commits" button (internal sub-view, no
 //               tab of its own) opens the chosen repo's history.
 const MODES = [
-  { id: "turns", label: "Turnos", title: "Turno a turno: los archivos que cada uno escribió — los mismos que lista el resumen de fin de turno de ZCode, agrupados por repo y carpeta (el último, en vivo)" },
-  { id: "working", label: "Trabajo por repositorio", title: "Cambios sin commitear del repositorio elegido con 📁 (vs HEAD + untracked); su botón Commits abre el historial" },
+  { id: "turns", label: "Turnos", title: "Turn by turn: the files each one wrote — the same ones ZCode's end-of-turn summary lists, grouped by repo and folder (the last one, live)" },
+  { id: "working", label: "Trabajo por repositorio", title: "Uncommitted changes of the repository chosen with 📁 (vs HEAD + untracked); its Commits button opens the history" },
 ];
 let mode = "turns";
 let commitSel = null; // hash en vista de diff de commit (null = lista)
@@ -195,7 +195,7 @@ function openWorkspacePicker() {
     if (!ordered.length) {
       const d = document.createElement("div");
       d.className = "ws-empty";
-      d.textContent = repos.length ? "nada coincide con el filtro" : "no hay repos git acá — probá ⬆";
+      d.textContent = repos.length ? "nothing matches the filter" : "no hay repos git acá — probá ⬆";
       list.appendChild(d);
       return;
     }
@@ -220,7 +220,7 @@ function openWorkspacePicker() {
     if (ordered.length > 120) {
       const d = document.createElement("div");
       d.className = "ws-empty";
-      d.textContent = `…y ${ordered.length - 120} más — afiná el filtro`;
+      d.textContent = `…and ${ordered.length - 120} more — narrow the filter`;
       list.appendChild(d);
     }
   };
@@ -229,7 +229,7 @@ function openWorkspacePicker() {
     crumb.textContent = root;
     const parent = wsParentOf(root);
     upBtn.disabled = !parent;
-    upBtn.title = parent ? `Subir a ${parent}` : "Ya estás en la raíz";
+    upBtn.title = parent ? `Subir a ${parent}` : "You are already at the root";
     list.textContent = "";
     const d = document.createElement("div");
     d.className = "ws-empty";
@@ -265,7 +265,7 @@ async function applyWorkspace(p, { silent = false } = {}) {
   try {
     const res = await callTool("set_workspace", { path: p });
     const sc = res?.structuredContent;
-    if (!sc?.ok) throw new Error(sc?.message ?? "no se pudo cambiar la carpeta");
+    if (!sc?.ok) throw new Error(sc?.message ?? "could not change the folder");
     currentWorkspace = sc.workspace;
     wsChosen = true;
     collapsedPaths.clear();
@@ -460,7 +460,7 @@ function ensurePausedChip() {
   const c = document.createElement("div");
   c.id = "pausedchip";
   c.hidden = true;
-  c.textContent = "✏️ editando — el refresco automático sigue en pausa; al terminar se actualiza solo";
+  c.textContent = "✏️ editing — automatic refresh stays paused; it updates itself when you finish";
   document.body.prepend(c);
 }
 
@@ -484,7 +484,7 @@ function updateEditUI() {
       header.querySelector(".filt")?.before(btn);
     }
     btn.textContent = `↩ Descartar (${n})`;
-    btn.title = "Descartar TODAS mis ediciones (vuelve al contenido de antes de cada ✏️)";
+    btn.title = "Discard ALL my edits (goes back to the content from before each ✏️)";
     btn.onclick = discardAllEdits;
   } else if (btn) btn.remove();
 }
@@ -509,7 +509,7 @@ async function startEditing(entry) {
   entry.section.querySelector(".file-head .fplus")?.after(chip);
   entry.section.classList.add("editing");
   entry.editBtn?.classList.add("on");
-  if (entry.editBtn) entry.editBtn.title = "Salir del modo edición (guarda)";
+  if (entry.editBtn) entry.editBtn.title = "Leave edit mode (saves)";
   editor.focus();
   updateEditUI();
 }
@@ -544,7 +544,7 @@ async function saveEntry(entry) {
 // quedó mi versión (el server ya la shelfó con su .patch).
 function handleConflict(entry, sc) {
   endEdit(entry, "discard");
-  showEditBanner(sc.message ?? "El archivo cambió en disco mientras editabas (gana el agente).", true);
+  showEditBanner(sc.message ?? "The file changed on disk while you were editing (the agent wins).", true);
   if (editingCount() === 0) refresh();
 }
 
@@ -558,7 +558,7 @@ function endEdit(entry, cleanUpMode = "complete") {
   entry.section.classList.remove("editing");
   entry.section.querySelector(".editing-chip")?.remove();
   entry.editBtn?.classList.remove("on");
-  if (entry.editBtn) entry.editBtn.title = "Editar este archivo acá mismo (autosave, ⌘Z, ↩ descartar)";
+  if (entry.editBtn) entry.editBtn.title = "Edit this file right here (autosave, ⌘Z, ↩ discard)";
   updateEditUI();
 }
 
@@ -615,7 +615,7 @@ async function writeReverted(entry, content, label) {
       refresh();
       return;
     }
-    if (sc?.conflict) return showEditBanner(sc.message ?? "El archivo cambió en disco (gana el agente).", true);
+    if (sc?.conflict) return showEditBanner(sc.message ?? "The file changed on disk (the agent wins).", true);
     throw new Error(sc?.message ?? "write_file sin respuesta");
   } catch (e) {
     chip(`⚠ revert ${entry.path}: ${e?.message ?? e}`);
@@ -624,11 +624,11 @@ async function writeReverted(entry, content, label) {
 
 function revertGuard(entry) {
   if (entry.edit) {
-    chip("⚠ cerrá la edición ✏️ de este archivo antes de revertir");
+    chip("⚠ close the ✏️ edit of this file before reverting");
     return false;
   }
   if (typeof entry.fileData?.after !== "string" || typeof entry.fileData?.before !== "string") {
-    chip("⚠ este archivo no tiene contenido completo (¿binario/grande?)");
+    chip("⚠ this file has no complete content (binary/large?)");
     return false;
   }
   return true;
@@ -658,7 +658,7 @@ async function revertKeys(entryIn, keys) {
   if (!revertGuard(entry)) return;
   const diff = entry.fd?.getInputDiff?.();
   if (!diff || diff.isPartial || !Array.isArray(diff.hunks)) {
-    chip("⚠ no tengo el alineamiento de este archivo");
+    chip("⚠ I do not have this file's alignment");
     return;
   }
   const selOld = new Set();
@@ -673,17 +673,17 @@ async function revertKeys(entryIn, keys) {
   const beforeLines = entry.fileData.before.split("\n");
   const newLines = revertLines(beforeLines, afterLines, diff.hunks, selOld, selNew);
   if (!newLines) {
-    chip("⚠ no pude reconstruir el revert (alineamiento inconsistente)");
+    chip("⚠ I could not rebuild the revert (inconsistent alignment)");
     return;
   }
   // chip HONESTO: si la reconstrucción es idéntica, esas líneas no tenían
   // cambios que revertir (p.ej. contexto seleccionado solito).
   if (newLines.join("\n") === entry.fileData.after) {
-    chip("⚠ esas líneas no tienen cambios para revertir");
+    chip("⚠ those lines have no changes to revert");
     return;
   }
   const n = selOld.size + selNew.size;
-  await writeReverted(entry, newLines.join("\n"), `↩ ${n} línea${n === 1 ? "" : "s"} revertida${n === 1 ? "" : "s"}`);
+  await writeReverted(entry, newLines.join("\n"), `↩ ${n} line${n === 1 ? "" : "s"} reverted`);
 }
 
 async function revertSelection(entry) {
@@ -1043,7 +1043,7 @@ async function sendAllPending() {
     chip(`✓ ${n} pregunta${n === 1 ? "" : "s"} en el chat`);
   } catch {
     await app.updateModelContext({ content: [{ type: "text", text }] });
-    chip(`↪ contexto listo (${n} pregunta${n === 1 ? "" : "s"}) — mandá tu mensaje`);
+    chip(`↪ context ready (${n} question${n === 1 ? "" : "s"}) — send your message`);
   }
   pendingAsks.length = 0;
   renderPile();
@@ -1085,12 +1085,12 @@ function ensureShell() {
   const askbar = document.createElement("div");
   askbar.id = "askbar";
   askbar.innerHTML = `
-    <textarea id="askbar-input" rows="2" placeholder="Preguntá algo del diff (sin ancla)…"></textarea>
+    <textarea id="askbar-input" rows="2" placeholder="Ask something about the diff (no anchor)…"></textarea>
     <div class="askbar-actions">
       <span class="hint">Enter agrega a la pila · Shift+Enter salto de línea · ⌘↵ envía todo</span>
       <button class="ghost danger" id="askbar-clear" title="Borrar todas las preguntas pendientes">🗑 Borrar todo</button>
       <button class="primary" id="askbar-send" disabled>Enviar todo (⌘↵)</button>
-      <span class="ver" title="Versión del panel — para saber qué build corrés"></span>
+      <span class="ver" title="Panel version — to know which build you are running"></span>
     </div>`;
   document.body.append(loadbar, pile, askbar);
   const input = askbar.querySelector("#askbar-input");
@@ -1206,7 +1206,7 @@ function pruneStaleAsks() {
     if (!row) continue; // hunk collapsed / row not rendered: keep + head chip
     if (!anchorStillValid(a.quoteLines, row.textContent)) { pendingAsks.splice(i, 1); dropped++; }
   }
-  if (dropped) chip(`💬 ${dropped} pregunta${dropped === 1 ? "" : "s"} descartada${dropped === 1 ? "" : "s"}: la línea cambió`);
+  if (dropped) chip(`💬 ${dropped} question${dropped === 1 ? "" : "s"} dropped: the line changed`);
 }
 
 document.addEventListener("keydown", (e) => {
@@ -1289,10 +1289,10 @@ function openComposer(entry, path, range, opts = {}) {
   card.innerHTML = `
     <div class="composer-head">
       <span class="anchor"></span>
-      <span class="range-ext" title="Extendé la pregunta hasta esa línea">hasta <input type="number" min="${working.start}" step="1"></span>
+      <span class="range-ext" title="Extend the question up to that line">hasta <input type="number" min="${working.start}" step="1"></span>
       <button class="ghost close" title="Cancelar">✕</button>
     </div>
-    <textarea rows="3" placeholder="Preguntá sobre ${label}…"></textarea>
+    <textarea rows="3" placeholder="Ask about ${label}…"></textarea>
     <div class="composer-actions">
       <span class="hint">⌘↵ envía</span>
       <button class="ghost cancel">Cancelar</button>
@@ -1301,7 +1301,7 @@ function openComposer(entry, path, range, opts = {}) {
   const anchor = card.querySelector(".anchor");
   const paint = () => {
     anchor.textContent = `${path}:${rangeLabel(working).lines}`;
-    ta.placeholder = `Preguntá sobre ${rangeLabel(working).label}…`;
+    ta.placeholder = `Ask about ${rangeLabel(working).label}…`;
   };
   const ext = card.querySelector(".range-ext input");
   ext.value = working.end;
@@ -1385,7 +1385,7 @@ function selectionAsk() {
   // da true y el rango queda en light DOM con rects 0×0, PERO el texto sobrevive
   // (String(sel) completo). isCollapsed ya NO puede decidir solo: hay texto, hay selección.
   const text = sel?.toString() ?? "";
-  if (!sel || !text.trim()) return diagNull("colapsada/texto vacío");
+  if (!sel || !text.trim()) return diagNull("collapsed/empty text");
   if (sel.rangeCount) {
     const range = sel.getRangeAt(0);
     const host = containerOf(range.startContainer);
@@ -1552,7 +1552,7 @@ function renderSelUI(entry) {
   const big = document.createElement("button");
   big.className = "big-plus";
   big.textContent = "＋";
-  big.title = "Preguntar sobre la selección";
+  big.title = "Ask about the selection";
   const br = last.getBoundingClientRect();
   big.style.top = `${br.bottom - bodyRect.top + 3}px`;
   big.style.left = "2px"; // riel izquierdo (el número ya no ocupa cajita propia)
@@ -1565,7 +1565,7 @@ function renderSelUI(entry) {
     const rev = document.createElement("button");
     rev.className = "big-plus big-revert";
     rev.textContent = "↩";
-    rev.title = "Revertir la selección al original (verde y rojo por igual)";
+    rev.title = "Revert the selection to the original (green and red alike)";
     rev.style.top = big.style.top;
     rev.style.left = "36px";
     rev.onclick = () => revertSelection(entry);
@@ -1684,7 +1684,7 @@ function paintCurrentSelection() {
   if (lastUiPointer) return;
   const sel = document.getSelection();
   if (!sel || !String(sel).trim()) {
-    if (!boxSel.size && !fragSelTotal()) hideSelPop("seleccionó nada");
+    if (!boxSel.size && !fragSelTotal()) hideSelPop("selected nothing");
     return;
   }
   // 1) drag conocido → entry por hit-test del punto inicial, frag por carets
@@ -1695,13 +1695,13 @@ function paintCurrentSelection() {
     if (entry && !entry.edit) {
       const byCaret = caretFrag(entry);
       if (byCaret) return void toggleFrag(entry, byCaret);
-      diagSel("caretFrag ✗ sobre el entry del drag (sigue por texto)");
+      diagSel("caretFrag ✗ over the drag entry (falls back to text match)");
     }
   }
   // 2) fallback: selección → filas por rango/texto → offsets derivados
   const info = selectionAsk();
   if (info && !info.entry.edit) paintFromSelection(info.entry, info.rows, info.text);
-  else if (info?.entry?.edit) diagSel("selchg → archivo en edición, ignorada");
+  else if (info?.entry?.edit) diagSel("selchg → file in edit mode, ignored");
 }
 
 // 0.7.4 respaldo: si por lo que fuere el selectionchange no llegara (webview
@@ -1720,7 +1720,7 @@ document.addEventListener("pointerup", (e) => {
     if (!sel || !String(sel).trim()) return; // retarget: no confiar en isCollapsed
     const before = fragSelTotal();
     paintCurrentSelection();
-    if (fragSelTotal() > before) diagSel("respaldo pointerup → pintó");
+    if (fragSelTotal() > before) diagSel("pointerup fallback → painted");
   }, 180);
 }, true);
 
@@ -1765,7 +1765,7 @@ function showSelPop(entry, anchor = null, actions = null) {
     const sel = document.getSelection();
     rect = sel?.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : null;
     if (!rect || (!rect.width && !rect.height)) {
-      diagSel("showSelPop → rect 0×0, sin popup (¿selección retargeteada?)");
+      diagSel("showSelPop → rect 0×0, no popup (selection retargeted?)");
       return;
     }
     p = selPopAt;
@@ -1775,7 +1775,7 @@ function showSelPop(entry, anchor = null, actions = null) {
   pop.className = "sel-pop";
   const ask = document.createElement("button");
   ask.textContent = "＋";
-  ask.title = "Preguntar sobre la selección";
+  ask.title = "Ask about the selection";
   ask.onclick = () => { hideSelPop(); actions?.frag ? openFragComposer(entry) : openComposerMulti(entry); };
   pop.appendChild(ask);
   // ↩ sólo si hay original al cual volver (archivo nuevo no tiene)
@@ -1783,7 +1783,7 @@ function showSelPop(entry, anchor = null, actions = null) {
     const rev = document.createElement("button");
     rev.className = "rev";
     rev.textContent = "↩";
-    rev.title = "Revertir la selección al original";
+    rev.title = "Revert the selection to the original";
     rev.onclick = () => { hideSelPop(); actions?.frag ? revertPainted(entry) : revertSelection(entry); };
     pop.appendChild(rev);
   }
@@ -1810,7 +1810,7 @@ function showSelPop(entry, anchor = null, actions = null) {
   if (y < 6) y = Math.min(rect.bottom + 8, Math.max(6, window.innerHeight - h - 6));
   pop.style.left = `${Math.round(x)}px`;
   pop.style.top = `${Math.round(y)}px`;
-  diagSel(`popup ＋${pop.children.length > 1 ? "↩" : ""} @${Math.round(x)},${Math.round(y)} (${anchor?.row ? "fin de selección" : anchor ? "gutter" : "texto"})`);
+  diagSel(`popup ＋${pop.children.length > 1 ? "↩" : ""} @${Math.round(x)},${Math.round(y)} (${anchor?.row ? "selection end" : anchor ? "gutter" : "text"})`);
 }
 
 // el popup queda desanclado al scrollear: se va (los grandes siguen)
@@ -2057,7 +2057,7 @@ function caretFrag(entry) {
   const A = pointToRowInfo(dragPath.x0, dragPath.y0);
   const B = pointToRowInfo(dragPath.x1, dragPath.y1);
   if (!A || !B || A.entry !== entry || B.entry !== entry) {
-    diagSel(`caretFrag ✗ A=${A ? A.entry.path.slice(-14) : "null"} B=${B ? B.entry.path.slice(-14) : "null"} (cae al match por texto)`);
+    diagSel(`caretFrag ✗ A=${A ? A.entry.path.slice(-14) : "null"} B=${B ? B.entry.path.slice(-14) : "null"} (falls back to text match)`);
     return null;
   }
   // gesto NATIVO: doble-click = palabra, triple-click = línea, drag = rango.
@@ -2553,10 +2553,10 @@ function renderFragBadge(entry) {
     // LÍNEA (quirúrgico, dos flechas) del rollback de ARCHIVO (una)
     else btn.innerHTML = '<span class="dbl">↩</span><span class="dbl">↩</span>' + (active && n ? '<span class="ok">✓</span>' : "");
     btn.title = active
-      ? (n ? `Ejecutar sobre ${n} fragmento${n === 1 ? "" : "s"} pintado${n === 1 ? "" : "s"} (Esc despinta)` : "Modo pintar para preguntar — seleccioná fragmentos")
+      ? (n ? `Ejecutar sobre ${n} fragmento${n === 1 ? "" : "s"} pintado${n === 1 ? "" : "s"} (Esc despinta)` : "Paint mode to ask — select fragments")
       : m === "ask"
-        ? "Modo brocha: pintá fragmentos y después preguntás"
-        : "Modo brocha: pintá fragmentos y después revertís (quirúrgico)";
+        ? "Brush mode: paint fragments and then ask"
+        : "Brush mode: paint fragments and then revert (surgical)";
   }
 }
 
@@ -2641,7 +2641,7 @@ async function openFragComposer(entry) {
     </div>`;
   card.querySelector(".anchor").textContent = `${entry.path} · ${frags.length} fragmento${frags.length === 1 ? "" : "s"}`;
   const ta = card.querySelector("textarea");
-  ta.placeholder = `Preguntá sobre ${frags.length} fragmento${frags.length === 1 ? "" : "s"} pintado${frags.length === 1 ? "" : "s"}…`;
+  ta.placeholder = `Ask about ${frags.length} painted fragment${frags.length === 1 ? "" : "s"}…`;
   entry.section.appendChild(card);
   const close = () => card.remove();
   card.querySelector(".close").onclick = close;
@@ -2668,7 +2668,7 @@ async function openFragComposer(entry) {
         return a === b ? String(a) : `${a}-${b}`;
       })
       .join(", ");
-    queueQuestion(entry.path, range ?? { start: 1, end: 1, side: "additions" }, quote, q, null, spans, `líneas ${labelLines}`);
+    queueQuestion(entry.path, range ?? { start: 1, end: 1, side: "additions" }, quote, q, null, spans, `lines ${labelLines}`);
     close();
   };
   card.querySelector(".ask").onclick = submit;
@@ -2683,18 +2683,18 @@ async function revertPainted(entry) {
   const uiFrags = fragSel.get(entry.path) ?? [];
   if (!uiFrags.length) return;
   const diff = entry.fd?.getInputDiff?.();
-  if (!diff || !Array.isArray(diff.hunks)) return chip("⚠ no tengo el alineamiento de este archivo");
+  if (!diff || !Array.isArray(diff.hunks)) return chip("⚠ I do not have this file's alignment");
   const libFrags = fragsToLib(entry);
   diagSel(`rev input: ${JSON.stringify(libFrags).slice(0, 150)}`);
   const res = revertFrags(entry.beforeLines, entry.afterLines, diff.hunks, libFrags);
   diagSel(`rev res: ${res?.noDiff ? "noDiff" : res?.lines ? "lines:" + res.lines.length : String(res)}`);
-  if (!res) return chip("⚠ no pude reconstruir el revert (alineamiento inconsistente)");
+  if (!res) return chip("⚠ I could not rebuild the revert (inconsistent alignment)");
   if (res.noDiff) {
     clearFrags(entry);
     return miniNotice("no diff selected");
   }
   const n = uiFrags.length;
-  await writeReverted(entry, res.lines.join("\n"), `↩ quirúrgico: ${n} fragmento${n === 1 ? "" : "s"}`);
+  await writeReverted(entry, res.lines.join("\n"), `↩ surgical: ${n} fragment${n === 1 ? "" : "s"}`);
   clearFrags(entry);
 }
 
@@ -2766,7 +2766,7 @@ function showHoverPlus(entry, row) {
   hoverPlus = document.createElement("button");
   hoverPlus.className = "hover-plus";
   hoverPlus.textContent = "＋";
-  hoverPlus.title = "Preguntar sobre esta línea";
+  hoverPlus.title = "Ask about this line";
   hoverPlus.onclick = () => {
     hideHoverPlus();
     const idx = contentRowsOf(entry).indexOf(row);
@@ -2780,7 +2780,7 @@ function showHoverPlus(entry, row) {
     hoverRevert = document.createElement("button");
     hoverRevert.className = "hover-plus hover-revert";
     hoverRevert.textContent = "↩";
-    hoverRevert.title = "Revertir esta línea al original";
+    hoverRevert.title = "Revert this line to the original";
     hoverRevert.onclick = () => {
       const key = keyOfRow(row);
       hideHoverPlus();
@@ -2885,7 +2885,7 @@ function openComposerMulti(entry) {
     </div>`;
   card.querySelector(".anchor").textContent = `${entry.path}:${lines}`;
   const ta = card.querySelector("textarea");
-  ta.placeholder = `Preguntá sobre líneas ${lines}…`;
+  ta.placeholder = `Ask about lines ${lines}…`;
   const close = () => card.remove();
   card.querySelector(".close").onclick = close;
   card.querySelector(".cancel").onclick = close;
@@ -2896,7 +2896,7 @@ function openComposerMulti(entry) {
     pendingAsks.push({
       kind: "line", path: entry.path,
       start: ranges[0].start, end: ranges[ranges.length - 1].end,
-      lines, label: `líneas ${lines} · ${side}`, side, quoteLines, question: q, spans, ranges,
+      lines, label: `lines ${lines} · ${side}`, side, quoteLines, question: q, spans, ranges,
     });
     close();
     setBoxSel(entry, new Set()); // la pregunta quedó anclada: selección a cero
@@ -2995,7 +2995,7 @@ function addHeadChip(entry, i, note) {
   chip.className = "head-marker";
   chip.textContent = "💬";
   const a = pendingAsks[i];
-  chip.title = note ? `${a.path}:${a.lines} (línea no visible — expandila)` : `${a.path} · archivo`;
+  chip.title = note ? `${a.path}:${a.lines} (line not visible — expand it)` : `${a.path} · archivo`;
   chip.onclick = () => openInlineEditor(i, chip);
   entry.section.querySelector(".file-head .fplus").after(chip);
 }
@@ -3127,9 +3127,9 @@ function turnRepoHead(label, repo) {
   // captured model only meets loose files as they are now.
   head.title = outside
     ? diffData?.turn?.source === "app"
-      ? "Archivos que el turno escribió fuera de cualquier repositorio git (con su contenido de antes y de después)."
-      : "Archivos que el turno tocó fuera de cualquier repositorio git (se muestran enteros en verde; no hay forma de saber cómo estaban antes)."
-    : `Todos los archivos de este grupo pertenecen al repositorio ${repo?.path ?? label}`;
+      ? "Files the turn wrote outside any git repository (with their content before and after)."
+      : "Files the turn touched outside any git repository (shown whole in green; there is no way to know how they were before)."
+    : `Every file in this group belongs to the repository ${repo?.path ?? label}`;
   const bits = [];
   if (repo?.files !== undefined) bits.push(`${repo.files} archivo${repo.files === 1 ? "" : "s"}`);
   if (repo?.commits) bits.push(`${repo.commits} commit${repo.commits === 1 ? "" : "s"}`);
@@ -3157,8 +3157,8 @@ function turnFolderHead(label, dir) {
   head.dataset.group = key;
   head.innerHTML = `<span class="trh-chev"></span><span class="tfh-label"></span>`;
   head.querySelector(".trh-chev").textContent = collapsedGroups.has(key) ? "▸" : "▾";
-  head.querySelector(".tfh-label").textContent = dir || "(raíz)";
-  head.title = dir ? `Carpeta ${dir}` : "Archivos en la raíz del repositorio";
+  head.querySelector(".tfh-label").textContent = dir || "(root)";
+  head.title = dir ? `Carpeta ${dir}` : "Files at the repository root";
   head.onclick = () => {
     if (collapsedGroups.has(key)) collapsedGroups.delete(key);
     else collapsedGroups.add(key);
@@ -3299,7 +3299,7 @@ function paintBodyError(entry, err) {
   entry.body.textContent = "";
   const box = document.createElement("div");
   box.className = "plain-note";
-  box.textContent = `No pude cargar el contenido de este archivo (${err?.message ?? err}).`;
+  box.textContent = `I could not load this file's content (${err?.message ?? err}).`;
   const retry = document.createElement("button");
   retry.className = "ghost";
   retry.textContent = "Reintentar";
@@ -3422,7 +3422,7 @@ function renderFileInner(f) {  const section = document.createElement("section")
     <span class="lang-chip"></span>
     <span class="path"><span class="fname"></span><span class="fdir"></span></span>
     <span class="counts"></span>
-    <span class="fh-spin" hidden title="Cargando el contenido del archivo…"></span>
+    <span class="fh-spin" hidden title="Loading the file content…"></span>
     <button class="ghost fplus" title="Preguntar sobre este archivo">＋</button>`;
   const langChip = head.querySelector(".lang-chip");
   if (badge.svg) {
@@ -3489,7 +3489,7 @@ function renderFileInner(f) {  const section = document.createElement("section")
     const editBtn = document.createElement("button");
     editBtn.className = "ghost fedit";
     editBtn.textContent = "✏️";
-    editBtn.title = "Editar este archivo acá mismo (autosave, ⌘Z, ↩ descartar)";
+    editBtn.title = "Edit this file right here (autosave, ⌘Z, ↩ discard)";
     editBtn.onclick = (e) => {
       e.stopPropagation();
       if (entry.edit) saveEntry(entry).finally(() => endEdit(entry, "complete"));
@@ -3514,7 +3514,7 @@ function renderFileInner(f) {  const section = document.createElement("section")
     const revBtn = document.createElement("button");
     revBtn.className = "ghost frev";
     revBtn.textContent = "↩";
-    revBtn.title = "Revertir TODO este archivo al original";
+    revBtn.title = "Revert this WHOLE file to the original";
     revBtn.onclick = (e) => {
       e.stopPropagation();
       revertWholeFile(entry);
@@ -3533,7 +3533,7 @@ function renderFileInner(f) {  const section = document.createElement("section")
     entry.noDiff = true;
     const info = document.createElement("div");
     info.className = "plain-note";
-    info.textContent = "Archivo binario — sin diff de texto.";
+    info.textContent = "Binary file — no text diff.";
     body.appendChild(info);
     return;
   }
@@ -3545,7 +3545,7 @@ function renderFileInner(f) {  const section = document.createElement("section")
     entry.noDiff = true;
     const info = document.createElement("div");
     info.className = "plain-note";
-    info.textContent = "Tocado en el turno y ya no existe (fuera de git) — sin contenido previo que mostrar.";
+    info.textContent = "Touched in the turn and no longer exists (outside git) — no previous content to show.";
     body.appendChild(info);
     return;
   }
@@ -3632,7 +3632,7 @@ function hydrateFileDiff(entry) {
     const info = document.createElement("div");
     info.className = "plain-note";
     info.textContent =
-      f.status === "R" ? "Renombre sin cambios de contenido." : "Sin parche (archivo grande o sin cambios de texto).";
+      f.status === "R" ? "Rename with no content changes." : "Sin parche (archivo grande o sin cambios de texto).";
     entry.body.appendChild(info);
     return;
   }
@@ -3643,7 +3643,7 @@ function hydrateFileDiff(entry) {
     entry.noDiff = true;
     const info = document.createElement("div");
     info.className = "plain-note";
-    info.textContent = "El parche de este archivo no se pudo parsear.";
+    info.textContent = "This file's patch could not be parsed.";
     entry.body.appendChild(info);
     return;
   }
@@ -3677,7 +3677,7 @@ function openComposerFile(entry, path, summary) {
       <span class="anchor"></span>
       <button class="ghost close" title="Cancelar">✕</button>
     </div>
-    <textarea rows="3" placeholder="Preguntá sobre este archivo…"></textarea>
+    <textarea rows="3" placeholder="Ask about this file…"></textarea>
     <div class="composer-actions">
       <span class="hint">⌘↵ envía</span>
       <button class="ghost cancel">Cancelar</button>
@@ -3734,15 +3734,15 @@ function renderModebar(root) {
     ws.className = "ghost ws" + (wsChosen ? "" : " empty");
     ws.textContent = wsChosen ? `📁 ${wsLabel()}` : "📁 seleccionar repositorio...";
     ws.title = wsChosen && currentWorkspace
-      ? `${currentWorkspace}\n(click para cambiar la carpeta del diff)`
-      : "Elegir el repositorio cuyo trabajo querés ver";
+      ? `${currentWorkspace}\n(click to change the diff folder)`
+      : "Choose the repository whose work you want to see";
     ws.onclick = openWorkspacePicker;
     modebar.appendChild(ws);
     if (wsChosen) {
       const cb = document.createElement("button");
       cb.className = "ghost ws-commits";
       cb.textContent = "Commits";
-      cb.title = "Historial de commits de este repositorio";
+      cb.title = "Commit history of this repository";
       if (mode === "commits") cb.classList.add("active");
       cb.onclick = () => openCommits();
       modebar.appendChild(cb);
@@ -3762,11 +3762,11 @@ function renderRepoPickerPrompt() {
   const box = document.createElement("div");
   box.className = "state";
   const p = document.createElement("div");
-  p.textContent = "Sin repositorio elegido: el último turno no dejó cambios en ningún repo git (o no hay turnos).";
+  p.textContent = "No repository chosen: the last turn left no changes in any git repo (or there are no turns).";
   const b = document.createElement("button");
   b.className = "ghost ws-switch";
   b.textContent = "📁 seleccionar repositorio…";
-  b.title = "Elegir el repositorio cuyo trabajo querés ver";
+  b.title = "Choose the repository whose work you want to see";
   b.onclick = openWorkspacePicker;
   box.append(p, b);
   root.appendChild(box);
@@ -3786,7 +3786,7 @@ async function ensureWorkspaceForRepoTab() {
     const sc = res?.structuredContent;
     if (sc?.ok && sc.workspace) {
       if (await applyWorkspace(sc.workspace, { silent: true }))
-        chip(`📁 ${wsLabel()} — el repo con más cambios del último turno`);
+        chip(`📁 ${wsLabel()} — the repo with the most changes in the last turn`);
       else renderRepoPickerPrompt();
       return;
     }
@@ -3814,7 +3814,7 @@ function renderRepoError(root, message) {
   const b = document.createElement("button");
   b.className = "ghost ws-switch";
   b.textContent = "📁 Elegir otra carpeta";
-  b.title = "El workspace actual no existe o no es un repo git — cambiá a una carpeta válida";
+  b.title = "The current workspace does not exist or is not a git repo — switch to a valid folder";
   b.onclick = openWorkspacePicker;
   box.append(p, b);
   root.appendChild(box);
@@ -3866,11 +3866,11 @@ function renderAll() {
       renderModebar(root);
       const st = document.createElement("div");
       st.className = "state";
-      st.textContent = diffData.message ?? "Todavía no hay turnos.";
+      st.textContent = diffData.message ?? "No turns yet.";
       root.appendChild(st);
       return;
     }
-    renderRepoError(root, diffData?.message ?? "Sin datos del diff.");
+    renderRepoError(root, diffData?.message ?? "No diff data.");
     return;
   }
 
@@ -3884,9 +3884,9 @@ function renderAll() {
   header.innerHTML = `
     <div class="meta"></div>
     ${mode === "commits" || mode === "turns" ? `<button class="ghost back" title="Volver a la lista">${mode === "commits" ? "← Commits" : "← Turnos"}</button>` : ""}
-    <button class="ghost filt" data-filt="add" title="Mostrar/ocultar líneas agregadas">＋</button>
-    <button class="ghost filt" data-filt="del" title="Mostrar/ocultar líneas borradas">−</button>
-    <button class="ghost filt" data-filt="ctx" title="Mostrar/ocultar líneas de contexto (sin cambio)">≡</button>
+    <button class="ghost filt" data-filt="add" title="Show/hide added lines">＋</button>
+    <button class="ghost filt" data-filt="del" title="Show/hide removed lines">−</button>
+    <button class="ghost filt" data-filt="ctx" title="Show/hide context lines (no change)">≡</button>
     <button class="ghost fold" title="Colapsar todos los archivos">⊟</button>
     <button class="ghost unfold" title="Expandir todos los archivos">⊞</button>
     <button class="ghost refresh" title="Refrescar el diff ahora">⟳</button>`;
@@ -3906,7 +3906,7 @@ function renderAll() {
     const to = tn.stoppedAt ? ` → ${esc(tn.stoppedAt.slice(11, 16))}` : "";
     bits.push(`<b>turno ${esc(from)}${to}</b>`);
     if (tn.isLive) bits.push('<span class="tot-a">en vivo</span>');
-    if (tn.interrupted) bits.push('<span class="tot-m">interrumpido por el próximo prompt</span>');
+    if (tn.interrupted) bits.push('<span class="tot-m">interrupted by the next prompt</span>');
     for (const r of tn.repos ?? []) {
       // An app-backed turn counts the files it wrote (0.10.10); the captured
       // model counts commits and dirty files.
@@ -4018,7 +4018,7 @@ function renderAll() {
 
   const hint = document.createElement("div");
   hint.className = "hint-bar";
-  hint.textContent = "Modos arriba: Turnos (los archivos que escribió cada turno — los mismos que lista el resumen de fin de turno de ZCode; el último en vivo, agrupado por repo y carpeta) · Trabajo por repositorio (sin commitear vs HEAD, del repo elegido con 📁 — su botón Commits abre el historial). ⌘F busca en el diff (Enter cicla) · ＋/−/≡ filtran líneas agregadas/borradas/contexto. Click en un NÚMERO = seleccionarlo (arrastrás y pintás varios, salteados también) → ＋ grande abre la pregunta · hover en una línea → ＋ · ＋ del encabezado = archivo. Abajo: libres; ⌘↵ manda todo junto.";
+  hint.textContent = "Modes above: Turns (the files each turn wrote — the same ones ZCode's end-of-turn summary lists; the last one live, grouped by repo and folder) · Work per repository (uncommitted vs HEAD, from the repo chosen with 📁 — its Commits button opens the history). ⌘F searches within the diff (Enter cycles) · ＋/−/≡ filter added/removed/context lines. Click a NUMBER = select it (drag to paint several, skipped ones too) → the big ＋ opens the question · hover a line → ＋ · the header ＋ = file. Below: free-form; ⌘↵ sends everything together.";
   root.appendChild(hint);
 
   if (!diffData.files.length) {
@@ -4026,8 +4026,8 @@ function renderAll() {
     clean.className = "state clean";
     clean.textContent =
       mode === "turns" && diffData.turn?.source === "app"
-        ? "Este turno no escribió archivos: el resumen de fin de turno de ZCode tampoco lista ninguno."
-        : `Árbol limpio — sin cambios contra ${diffData.baseLabel ?? "HEAD"}.`;
+        ? "This turn wrote no files: ZCode's end-of-turn summary lists none either."
+        : `Clean tree — no changes against ${diffData.baseLabel ?? "HEAD"}.`;
     root.appendChild(clean);
     keptComposers = []; // el diff quedó vacío: las preguntas ancladas no tienen ancla
     return;
@@ -4036,8 +4036,8 @@ function renderAll() {
     const tr = document.createElement("div");
     tr.className = "state warn";
     tr.textContent = diffData.light
-      ? `Diff muy grande: se muestran los primeros ${diffData.files.length} de ${diffData.fileCount} archivos (el contenido se carga al abrirlos).`
-      : `Diff muy grande: se muestran los primeros ${diffData.files.length} de ${diffData.fileCount} archivos y algunos parches se omitieron.`;
+      ? `Very large diff: showing the first ${diffData.files.length} of ${diffData.fileCount} files (content loads when you open them).`
+      : `Very large diff: showing the first ${diffData.files.length} of ${diffData.fileCount} files and some patches were omitted.`;
     root.appendChild(tr);
   }
   for (const f of diffData.files) {
@@ -4183,7 +4183,7 @@ async function loadCommits(reset = false) {
   if (data.error) {
     const root = document.getElementById("root");
     root.textContent = "";
-    renderRepoError(root, data.message ?? "No pude leer el log.");
+    renderRepoError(root, data.message ?? "I could not read the log.");
     return;
   }
   const seen = new Set(commitsState.list.map((c) => c.hash));
@@ -4207,11 +4207,11 @@ function renderCommits() {
 
   const bar = document.createElement("div");
   bar.className = "commits-search";
-  bar.innerHTML = `<input type="search" placeholder="Hash o texto del título… (Enter busca)">`;
+  bar.innerHTML = `<input type="search" placeholder="Hash or title text… (Enter searches)">`;
   const back = document.createElement("button");
   back.className = "ghost back-ws";
   back.textContent = "← Trabajo del repo";
-  back.title = `Volver al árbol de trabajo de ${wsLabel()}`;
+  back.title = `Back to the working tree of ${wsLabel()}`;
   back.onclick = () => backToWorking();
   bar.prepend(back);
   const input = bar.querySelector("input");
@@ -4231,7 +4231,7 @@ function renderCommits() {
     const st = document.createElement("div");
     st.className = "state";
     st.textContent = commitsState.query
-      ? `Nada para “${commitsState.query}”. Probá con un hash más corto o parte del título.`
+      ? `Nothing for “${commitsState.query}”. Try a shorter hash or part of the title.`
       : "Sin commits.";
     root.appendChild(st);
     return;
@@ -4261,7 +4261,7 @@ function renderCommits() {
     const more = document.createElement("button");
     more.className = "more-btn";
     more.textContent = "…";
-    more.title = "Cargar 10 commits más";
+    more.title = "Load 10 more commits";
     more.onclick = () => {
       more.classList.add("loading");
       more.textContent = "cargando…";
@@ -4303,7 +4303,7 @@ async function loadTurns(reset = false) {
   if (data.error) {
     const root = document.getElementById("root");
     root.textContent = "";
-    renderRepoError(root, data.message ?? "No pude leer los turnos.");
+    renderRepoError(root, data.message ?? "I could not read the turns.");
     return;
   }
   // Append with dedupe ("latest" can overlap pages); skip advances by what is
@@ -4346,7 +4346,7 @@ function openPromptCard(turn) {
 async function deleteTurnById(id) {
   try {
     const res = await callTool("delete_turn", { id });
-    if (!res?.structuredContent?.ok) throw new Error(res?.structuredContent?.message ?? "no se pudo borrar");
+    if (!res?.structuredContent?.ok) throw new Error(res?.structuredContent?.message ?? "could not delete");
     loadTurns(true);
   } catch (e) {
     chip(`⚠ ${e?.message ?? e}`);
@@ -4367,12 +4367,12 @@ function renderTurns() {
   const count = document.createElement("span");
   count.className = "turns-count";
   count.textContent = turnsState.total
-    ? `${turnsState.total} turno${turnsState.total === 1 ? "" : "s"} de esta task · mostrando ${turnsState.list.length}${turnsState.sessionFilter ? "" : " (todas)"}`
+    ? `${turnsState.total} turn${turnsState.total === 1 ? "" : "s"} of this task · showing ${turnsState.list.length}${turnsState.sessionFilter ? "" : " (all)"}`
     : "";
   const clear = document.createElement("button");
   clear.className = "ghost danger";
   clear.textContent = "🗑 Borrar todo";
-  clear.title = "Borrar TODOS los turnos (global, todas las sesiones)";
+  clear.title = "Delete ALL turns (global, every session)";
   clear.onclick = () => {
     if (clear.dataset.armed) {
       callTool("clear_turns", {})
@@ -4381,7 +4381,7 @@ function renderTurns() {
       return;
     }
     clear.dataset.armed = "1";
-    clear.textContent = "¿Seguro? BORRAR TODO";
+    clear.textContent = "Sure? DELETE EVERYTHING";
     setTimeout(() => {
       delete clear.dataset.armed;
       clear.textContent = "🗑 Borrar todo";
@@ -4395,7 +4395,7 @@ function renderTurns() {
     if (turnsLoading) return paintListSkeleton(root, "turns");
     const st = document.createElement("div");
     st.className = "state";
-    st.textContent = "Todavía no hay turnos. Cada mensaje en la sesión abre un turno y el fin de la respuesta lo cierra: cada uno lista los archivos que escribió, igual que el resumen de fin de turno de ZCode.";
+    st.textContent = "No turns yet. Every message in the session opens a turn and the end of the answer closes it: each one lists the files it wrote, just like ZCode's end-of-turn summary.";
     root.appendChild(st);
     return;
   }
@@ -4421,7 +4421,7 @@ function renderTurns() {
       <span class="turn-prompt"></span>
       <span class="commit-meta turn-meta"></span>
       <span class="turn-live"></span>
-      <button class="ghost turn-prompt-btn" title="Ver el prompt y el resumen del turno">💬</button>
+      <button class="ghost turn-prompt-btn" title="See the prompt and the turn summary">💬</button>
       <button class="ghost danger turn-del" title="Borrar este turno">✕</button>`;
     row.querySelector(".turn-time").textContent = time;
     row.querySelector(".turn-prompt").textContent = (t.prompt || "(sin texto)").split("\n")[0];
@@ -4454,7 +4454,7 @@ function renderTurns() {
     const more = document.createElement("button");
     more.className = "more-btn";
     more.textContent = "…";
-    more.title = "Cargar 10 turnos más";
+    more.title = "Load 10 more turns";
     more.onclick = () => {
       more.classList.add("loading");
       more.textContent = "cargando…";
@@ -4805,7 +4805,7 @@ async function refresh(explicit = false) {
     root.textContent = "";
     // Without a mode bar a transport error would leave the user stuck in the
     // current mode (no chips to exit with).
-    renderRepoError(root, `No pude leer el diff: ${e?.message ?? e}`);
+    renderRepoError(root, `I could not read the diff: ${e?.message ?? e}`);
   } finally {
     root.classList.remove("loading");
   }
@@ -4835,7 +4835,7 @@ async function boot() {
   try {
     await app.connect();
   } catch (e) {
-    document.getElementById("root").textContent = `Sin conexión con el host: ${e?.message ?? e}`;
+    document.getElementById("root").textContent = `No connection to the host: ${e?.message ?? e}`;
     return;
   }
   applyTheme(app.getHostContext());
